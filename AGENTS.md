@@ -1,0 +1,1 @@
+Build command: go build -ldflags="-H windowsgui" -o ollama-proxy.exe .
