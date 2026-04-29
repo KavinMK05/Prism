@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -27,11 +28,18 @@ func main() {
 }
 
 func runProxyServer() {
-	cfg := loadConfig()
-	apiKey := cfg.getActiveAPIKey()
-	if apiKey == "" {
-		log.Fatal("API key is required. Set it via the tray menu or environment variable.")
+	// Open log file directly instead of relying on stderr redirection
+	logDir := filepath.Join(os.Getenv("APPDATA"), "ollama-proxy")
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "proxy.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		log.SetOutput(logFile)
 	}
+
+	cfg := loadConfig()
+	proxyAPIKey := "prism"
+	upstreamAPIKey := cfg.getActiveAPIKey()
 
 	port := os.Getenv("OLLAMA_PROXY_PORT")
 	if port == "" {
@@ -47,7 +55,7 @@ func runProxyServer() {
 	providerType := cfg.getProviderType()
 	modelRemap := loadModelRemapping()
 
-	proxy := NewProxy(upstreamURL, apiKey, providerType, modelRemap)
+	proxy := NewProxy(upstreamURL, upstreamAPIKey, providerType, modelRemap)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)
@@ -55,13 +63,13 @@ func runProxyServer() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", loggingMiddleware(handleRoot))
-	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(apiKey, proxy.HandleMessages)))
-	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(apiKey, handleCountTokens)))
+	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, proxy.HandleMessages)))
+	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(proxyAPIKey, handleCountTokens)))
 	mux.HandleFunc("/health", loggingMiddleware(handleHealth))
 
 	addr := host + ":" + port
 
-	log.Printf("ollama-proxy starting on %s → %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
+	log.Printf("ollama-proxy starting on %s -> %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
 
 	server := &http.Server{
 		Addr:    addr,
@@ -106,7 +114,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("← %s %s %s", r.Method, r.URL.Path, r.RemoteAddr)
+		log.Printf("<- %s %s %s", r.Method, r.URL.Path, r.RemoteAddr)
 		next(w, r)
 	}
 }

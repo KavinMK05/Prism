@@ -25,21 +25,21 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	log.Printf("→ %s %s (streaming)", upstreamReq.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s (streaming)", upstreamReq.Method, p.upstreamURL+"/api/chat")
 
 	resp, err := p.client.Do(upstreamReq)
 	if err != nil {
-		log.Printf("✗ Upstream request failed: %v", err)
+		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("← %d from upstream", resp.StatusCode)
+	log.Printf("<- %d from upstream", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("✗ Upstream error response: %s", string(respBody))
+		log.Printf("[ERR] Upstream error response: %s", string(respBody))
 		writeAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
 		return
 	}

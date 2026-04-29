@@ -288,7 +288,7 @@ func getEffectiveModel(remap *ModelRemapping, requestedModel string) string {
 }
 
 func logModelRemap(from, to, reason string) {
-	log.Printf("⊞ Model remap (%s): %s → %s", reason, from, to)
+	log.Printf("[map] Model remap (%s): %s -> %s", reason, from, to)
 }
 
 func validateBaseURL(rawURL string) error {

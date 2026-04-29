@@ -26,21 +26,21 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	log.Printf("→ %s %s (streaming)", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s (streaming)", req.Method, p.upstreamURL+"/v1/chat/completions")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		log.Printf("✗ Upstream request failed: %v", err)
+		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("← %d from upstream", resp.StatusCode)
+	log.Printf("<- %d from upstream", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("✗ Upstream error response: %s", string(respBody))
+		log.Printf("[ERR] Upstream error response: %s", string(respBody))
 		writeAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
 		return
 	}
@@ -219,6 +219,38 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 			}
 		}
 
+		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+			if !thinkingBlockOpen {
+				writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
+					"type":  "content_block_start",
+					"index": contentBlockIndex,
+					"content_block": map[string]interface{}{
+						"type":     "thinking",
+						"thinking": "",
+					},
+				})
+				thinkingBlockOpen = true
+				hasContentBlock = true
+			}
+			writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": contentBlockIndex,
+				"delta": map[string]interface{}{
+					"type":     "thinking_delta",
+					"thinking": *choice.Delta.ReasoningContent,
+				},
+			})
+		}
+
+		if (choice.Delta.ReasoningContent == nil || *choice.Delta.ReasoningContent == "") && thinkingBlockOpen {
+			writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": contentBlockIndex,
+			})
+			contentBlockIndex++
+			thinkingBlockOpen = false
+		}
+
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			if !textBlockOpen && !thinkingBlockOpen && len(toolUseBlocksOpen) == 0 {
 				writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
@@ -251,6 +283,15 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 				stopReason = "max_tokens"
 			case "tool_calls", "function_call":
 				stopReason = "tool_use"
+			}
+
+			if thinkingBlockOpen {
+				writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
+					"type":  "content_block_stop",
+					"index": contentBlockIndex,
+				})
+				contentBlockIndex++
+				thinkingBlockOpen = false
 			}
 
 			if textBlockOpen {

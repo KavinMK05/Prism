@@ -164,11 +164,12 @@ type OpenAIChatRequest struct {
 }
 
 type OpenAIChatMessage struct {
-	Role      string                 `json:"role"`
-	Content   interface{}            `json:"content"`
-	ToolCalls []OpenAIToolCall       `json:"tool_calls,omitempty"`
-	ToolID    string                 `json:"tool_call_id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
+	Role             string                 `json:"role"`
+	Content          interface{}            `json:"content"`
+	ToolCalls        []OpenAIToolCall       `json:"tool_calls,omitempty"`
+	ToolID           string                 `json:"tool_call_id,omitempty"`
+	Name             string                 `json:"name,omitempty"`
+	ReasoningContent string                 `json:"reasoning_content,omitempty"`
 }
 
 type OpenAIToolCall struct {
@@ -234,7 +235,8 @@ type OpenAIStreamChoice struct {
 }
 
 type OpenAIStreamDelta struct {
-	Role      string           `json:"role,omitempty"`
-	Content   *string          `json:"content,omitempty"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          *string          `json:"content,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 }

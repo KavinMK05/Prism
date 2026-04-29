@@ -108,7 +108,7 @@ The proxy listens on `http://127.0.0.1:11434` by default.
 {
   "inferenceProvider": "gateway",
   "inferenceGatewayBaseUrl": "http://127.0.0.1:11434",
-  "inferenceGatewayApiKey": "your-api-key-here",
+  "inferenceGatewayApiKey": "prism",
   "inferenceModels": [
     { "name": "glm-5.1:cloud" },
     { "name": "deepseek-v4-flash:cloud", "supports1m": true }

@@ -198,6 +198,13 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 
 	choice := resp.Choices[0]
 
+	if choice.Message.ReasoningContent != "" {
+		content = append(content, AnthropicThinkingBlock{
+			Type:     "thinking",
+			Thinking: choice.Message.ReasoningContent,
+		})
+	}
+
 	if choice.Message.Content != "" {
 		text, ok := choice.Message.Content.(string)
 		if ok && text != "" {
@@ -258,7 +265,6 @@ func (p *Proxy) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request) {
 
 	var anthroReq AnthropicRequest
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&anthroReq); err != nil {
 		writeAnthropicError(w, 400, "invalid_request_error", fmt.Sprintf("Failed to parse request: %v", err))
 		return
@@ -291,21 +297,21 @@ func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	log.Printf("→ %s %s", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s", req.Method, p.upstreamURL+"/v1/chat/completions")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		log.Printf("✗ Upstream request failed: %v", err)
+		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("← %d from upstream", resp.StatusCode)
+	log.Printf("<- %d from upstream", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("✗ Upstream error response: %s", string(respBody))
+		log.Printf("[ERR] Upstream error response: %s", string(respBody))
 		writeAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
 		return
 	}

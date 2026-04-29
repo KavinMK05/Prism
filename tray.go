@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,9 +29,58 @@ var (
 	logFile          *os.File
 	logFileMu        sync.Mutex
 	proxyPID         int
+	proxyCmd         *exec.Cmd
+	proxyRunningMu   sync.Mutex
 )
 
 const CREATE_NO_WINDOW = 0x08000000
+
+func findPIDsOnPort(port string) []int {
+	out, err := exec.Command("netstat", "-ano").Output()
+	if err != nil {
+		return nil
+	}
+	seen := map[int]bool{}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		addr := fields[1]
+		state := fields[3]
+		if !strings.HasSuffix(addr, ":"+port) || state != "LISTENING" {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[4])
+		if err != nil || pid == 0 || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+func killOrphanOnPort() {
+	port := os.Getenv("OLLAMA_PROXY_PORT")
+	if port == "" {
+		port = "11434"
+	}
+
+	proxyRunningMu.Lock()
+	knownPID := proxyPID
+	proxyRunningMu.Unlock()
+
+	for _, pid := range findPIDsOnPort(port) {
+		if pid == knownPID {
+			continue
+		}
+		log.Printf("Killing orphaned process %d on port %s", pid, port)
+		runHidden(exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/F")).Run()
+		time.Sleep(300 * time.Millisecond)
+	}
+}
 
 func runHidden(cmd *exec.Cmd) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -233,6 +283,9 @@ func startProxyProcess() {
 	if isProxyRunning() {
 		return
 	}
+
+	killOrphanOnPort()
+
 	logFileMu.Lock()
 	closeLogFileLocked()
 
@@ -240,7 +293,7 @@ func startProxyProcess() {
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "proxy.log")
 	var err error
-	logFile, err = os.Create(logPath)
+	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		logFileMu.Unlock()
 		log.Printf("Failed to create log file: %v", err)
@@ -258,14 +311,32 @@ func startProxyProcess() {
 		log.Printf("Failed to start proxy: %v", err)
 		return
 	}
+
+	proxyRunningMu.Lock()
 	proxyPID = cmd.Process.Pid
+	proxyCmd = cmd
+	proxyRunningMu.Unlock()
+
+	go func() {
+		err := cmd.Wait()
+		proxyRunningMu.Lock()
+		proxyPID = 0
+		proxyCmd = nil
+		proxyRunningMu.Unlock()
+		if err != nil {
+			log.Printf("Proxy process exited with error: %v", err)
+		}
+	}()
 }
 
 func stopProxyProcess() {
+	proxyRunningMu.Lock()
 	if proxyPID != 0 {
 		runHidden(exec.Command("taskkill", "/PID", fmt.Sprintf("%d", proxyPID), "/F")).Run()
 		proxyPID = 0
+		proxyCmd = nil
 	}
+	proxyRunningMu.Unlock()
 	time.Sleep(300 * time.Millisecond)
 	closeLogFileMutex()
 }
@@ -300,16 +371,27 @@ func getExePath() string {
 	return exe
 }
 
+const STILL_ACTIVE = 259
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
 func isProxyRunning() bool {
-	if proxyPID == 0 {
+	proxyRunningMu.Lock()
+	pid := proxyPID
+	proxyRunningMu.Unlock()
+	if pid == 0 {
 		return false
 	}
-	proc, err := os.FindProcess(proxyPID)
+	handle, err := syscall.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		return false
 	}
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	defer syscall.CloseHandle(handle)
+	var exitCode uint32
+	err = syscall.GetExitCodeProcess(handle, &exitCode)
+	if err != nil {
+		return false
+	}
+	return exitCode == STILL_ACTIVE
 }
 
 func getLogFilePath() string {
@@ -318,8 +400,45 @@ func getLogFilePath() string {
 
 func openLogsConsole() {
 	logPath := getLogFilePath()
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("Get-Content -Path '%s' -Wait -Tail 50", strings.ReplaceAll(logPath, "'", "''")))
+	escaped := strings.ReplaceAll(logPath, "'", "''")
+
+	script := fmt.Sprintf(`$path = '%s'
+$host.ui.RawUI.WindowTitle = 'Prism Logs'
+$lastSize = -1
+while ($true) {
+    if (Test-Path $path) {
+        $item = Get-Item $path
+        if ($item.Length -ne $lastSize) {
+            $lines = Get-Content $path
+            $start = [Math]::Max(0, $lines.Length - 50)
+            Clear-Host
+            Write-Host '=== Prism Log Viewer ===' -ForegroundColor Cyan
+            Write-Host ('File: ' + $path)
+            Write-Host ('Size: ' + $item.Length + ' bytes | Lines: ' + $lines.Length)
+            Write-Host '========================' -ForegroundColor Cyan
+            for ($i = $start; $i -lt $lines.Length; $i++) {
+                Write-Host $lines[$i]
+            }
+            $lastSize = $item.Length
+        }
+    } else {
+        Clear-Host
+        Write-Host '=== Prism Log Viewer ===' -ForegroundColor Cyan
+        Write-Host 'Waiting for log file...' -ForegroundColor Yellow
+        Write-Host ('Expected: ' + $path)
+        $lastSize = -1
+    }
+    Start-Sleep -Milliseconds 500
+}
+`, escaped)
+
+	tmpPS1 := filepath.Join(os.TempDir(), "prism-logs.ps1")
+	os.WriteFile(tmpPS1, []byte(script), 0600)
+
+	// Use "cmd /c start" so Windows explicitly creates a new console window.
+	// Directly spawning PowerShell from a -H windowsgui app has no console to inherit,
+	// so output often disappears into the void.
+	cmd := exec.Command("cmd", "/c", "start", "powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpPS1)
 	cmd.Start()
 }
 
