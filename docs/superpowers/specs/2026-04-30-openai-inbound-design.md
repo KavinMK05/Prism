@@ -67,7 +67,7 @@ Client ──/v1/chat/─────→├─ OpenAI→Ollama ─────�
 | Path | Transformation |
 |------|---------------|
 | OpenAI→Ollama streaming | Read Ollama NDJSON chunks → emit OpenAI SSE (`data: {...}\n\n` with `object: "chat.completion.chunk"`) |
-| OpenAI→OpenAI streaming | Pass-through — read upstream SSE, forward to client byte-by-byte |
+| OpenAI→OpenAI streaming | Pass-through — read upstream SSE lines, forward each line to client |
 
 ## `/v1/models` Endpoint
 
