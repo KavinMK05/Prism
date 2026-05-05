@@ -10,7 +10,7 @@ Translate between Anthropic, OpenAI, and Ollama API formats — in a single 5MB 
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
-<!-- ![Prism screenshot](./docs/screenshot.png) -->
+![Prism screenshot](./docs/screenshot.png)
 *Screenshot coming soon*
 
 </div>
