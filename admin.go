@@ -15,6 +15,7 @@ import (
 )
 
 //go:embed admin.html
+//go:embed docs/icon.png
 var adminFS embed.FS
 
 var (
@@ -38,6 +39,17 @@ func startAdminServer(cfg *Config, port string) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		html, _ := adminFS.ReadFile("admin.html")
 		w.Write(html)
+	})
+
+	// Serve the brand icon
+	mux.HandleFunc("/admin/icon.png", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		icon, _ := adminFS.ReadFile("docs/icon.png")
+		w.Write(icon)
 	})
 
 	// API: Get config

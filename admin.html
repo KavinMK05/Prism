@@ -1,186 +1,533 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Prism Settings</title>
 <style>
+  /* ── Theme Tokens ── */
   :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #242836;
-    --border: #2e3348;
-    --text: #e2e4ed;
-    --text-dim: #8b8fa3;
-    --accent: #6c8cff;
-    --accent-hover: #5a78f0;
-    --success: #4caf80;
-    --danger: #e05555;
-    --danger-hover: #c94444;
-    --radius: 8px;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-secondary: #fafafa;
+    --border: #e5e5e5;
+    --border-strong: #d4d4d4;
+    --text: #171717;
+    --text-secondary: #737373;
+    --text-tertiary: #a3a3a3;
+    --accent: #171717;
+    --accent-text: #ffffff;
+    --accent-hover: #404040;
+    --danger: #ef4444;
+    --danger-hover: #dc2626;
+    --success: #22c55e;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-pill: 999px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.04);
   }
+
+  [data-theme="dark"] {
+    --bg: #0a0a0a;
+    --surface: #171717;
+    --surface-hover: #262626;
+    --surface-secondary: #1a1a1a;
+    --border: #262626;
+    --border-strong: #404040;
+    --text: #fafafa;
+    --text-secondary: #a3a3a3;
+    --text-tertiary: #737373;
+    --accent: #fafafa;
+    --accent-text: #0a0a0a;
+    --accent-hover: #e5e5e5;
+    --danger: #f87171;
+    --danger-hover: #ef4444;
+    --success: #4ade80;
+    --shadow: 0 1px 2px rgba(0,0,0,0.2);
+  }
+
   * { margin:0; padding:0; box-sizing:border-box; }
+
   body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.2s, color 0.2s;
   }
-  .header {
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: 20px 32px;
-    display: flex; align-items: center; gap: 16px;
+
+  /* ── Layout ── */
+  .container { max-width: 720px; margin: 0 auto; padding: 40px 24px; }
+
+  /* ── Header ── */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 32px;
   }
-  .header h1 { font-size: 20px; font-weight: 600; }
-  .header .badge {
-    font-size: 12px; padding: 2px 10px; border-radius: 12px;
-    background: rgba(108,140,255,0.15); color: var(--accent);
+  .page-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    object-fit: contain;
+  }
+  .page-header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
     font-weight: 500;
+    color: var(--text-secondary);
   }
   .status-dot {
-    width: 10px; height: 10px; border-radius: 50%;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
     display: inline-block;
   }
-  .status-dot.running { background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .status-dot.running {
+    background: var(--success);
+    box-shadow: 0 0 0 3px rgba(34,197,94,0.18);
+  }
   .status-dot.stopped { background: var(--danger); }
 
-  .container { max-width: 720px; margin: 0 auto; padding: 32px 24px; }
+  /* Theme Toggle */
+  .theme-toggle {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .theme-toggle:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .theme-toggle svg {
+    width: 18px;
+    height: 18px;
+  }
 
+  /* ── Tabs ── */
   .tabs {
-    display: flex; gap: 4px; background: var(--surface); border-radius: var(--radius);
-    padding: 4px; margin-bottom: 24px;
+    display: flex;
+    gap: 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 28px;
   }
   .tab {
-    flex: 1; padding: 10px 16px; border: none; border-radius: 6px;
-    background: transparent; color: var(--text-dim); cursor: pointer;
-    font-size: 14px; font-weight: 500; transition: all 0.15s;
+    padding: 0 2px 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    position: relative;
+    transition: color 0.15s;
   }
   .tab:hover { color: var(--text); }
-  .tab.active { background: var(--accent); color: #fff; }
+  .tab.active {
+    color: var(--text);
+  }
+  .tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--text);
+    border-radius: 1px;
+  }
 
+  /* ── Panels ── */
   .panel { display: none; }
   .panel.active { display: block; }
 
+  /* ── Cards ── */
   .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-bottom: 16px;
+    transition: border-color 0.15s;
   }
-  .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .card h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    letter-spacing: -0.2px;
+  }
+  .card-description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
 
-  .field { margin-bottom: 16px; }
+  /* ── Fields ── */
+  .field { margin-bottom: 20px; }
   .field:last-child { margin-bottom: 0; }
   .field label {
-    display: block; font-size: 13px; color: var(--text-dim);
-    margin-bottom: 6px; font-weight: 500;
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 6px;
   }
-  .field input, .field select {
-    width: 100%; padding: 10px 12px; border-radius: 6px;
-    border: 1px solid var(--border); background: var(--surface2);
-    color: var(--text); font-size: 14px; outline: none;
-    transition: border-color 0.15s;
+  .field input,
+  .field select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    font-family: inherit;
   }
-  .field input:focus, .field select:focus { border-color: var(--accent); }
-  .field input::placeholder { color: var(--text-dim); }
+  .field input:focus,
+  .field select:focus {
+    border-color: var(--text-tertiary);
+    box-shadow: 0 0 0 3px rgba(128,128,128,0.08);
+  }
+  .field input::placeholder { color: var(--text-tertiary); }
 
-  .btn-row { display: flex; gap: 8px; margin-top: 16px; }
+  .input-with-icon {
+    position: relative;
+  }
+  .input-with-icon input { padding-right: 40px; }
+  .input-icon-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    transition: color 0.15s, background 0.15s;
+  }
+  .input-icon-btn:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .input-icon-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .key-display {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    background: var(--surface-secondary);
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    word-break: break-all;
+  }
+
+  /* ── Buttons ── */
+  .btn-row { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
   .btn {
-    padding: 9px 20px; border-radius: 6px; border: none; cursor: pointer;
-    font-size: 14px; font-weight: 500; transition: all 0.15s;
+    padding: 10px 18px;
+    border-radius: var(--radius-pill);
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
   }
-  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
   .btn-primary:hover { background: var(--accent-hover); }
-  .btn-danger { background: var(--danger); color: #fff; }
-  .btn-danger:hover { background: var(--danger-hover); }
-  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-  .btn-ghost:hover { border-color: var(--accent); }
+  .btn-danger {
+    background: var(--surface);
+    color: var(--danger);
+    border: 1px solid var(--border);
+  }
+  .btn-danger:hover {
+    background: rgba(239,68,68,0.08);
+    border-color: var(--danger);
+  }
+  .btn-ghost {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
 
+  /* ── Provider Cards ── */
   .provider-cards { display: flex; flex-direction: column; gap: 8px; }
   .provider-card {
-    display: flex; align-items: center; gap: 12px; padding: 14px 16px;
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: var(--radius); cursor: pointer; transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all 0.15s;
   }
-  .provider-card:hover { border-color: var(--accent); }
-  .provider-card.active { border-color: var(--accent); background: rgba(108,140,255,0.06); }
+  .provider-card:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+  }
+  .provider-card.active {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+  }
   .provider-card .radio {
-    width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border);
-    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border-strong);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
     transition: border-color 0.15s;
   }
-  .provider-card.active .radio { border-color: var(--accent); }
+  .provider-card.active .radio {
+    border-color: var(--text);
+  }
   .provider-card.active .radio::after {
-    content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+    content: '';
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--text);
   }
   .provider-card .info { flex: 1; }
-  .provider-card .info .name { font-size: 14px; font-weight: 500; }
-  .provider-card .info .url { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-
-  .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
-  .toast {
-    padding: 12px 20px; border-radius: var(--radius); margin-bottom: 8px;
-    font-size: 14px; font-weight: 500; opacity: 0; transform: translateX(40px);
-    transition: all 0.3s; min-width: 200px;
+  .provider-card .info .name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
   }
-  .toast.show { opacity: 1; transform: translateX(0); }
-  .toast.success { background: rgba(76,175,128,0.15); color: var(--success); border: 1px solid rgba(76,175,128,0.3); }
-  .toast.error { background: rgba(224,85,85,0.15); color: var(--danger); border: 1px solid rgba(224,85,85,0.3); }
-
-  .alias-row {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  .provider-card .info .url {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
   }
-  .alias-row input { flex: 1; }
-  .alias-row .arrow { color: var(--text-dim); font-size: 16px; flex-shrink: 0; }
-  .alias-row .btn-remove {
-    width: 32px; height: 32px; border-radius: 6px; border: none;
-    background: transparent; color: var(--danger); cursor: pointer;
-    font-size: 18px; display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0; transition: background 0.15s;
-  }
-  .alias-row .btn-remove:hover { background: rgba(224,85,85,0.12); }
 
-  .model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  /* ── Model Tags ── */
+  .model-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
   .model-tag {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 16px; font-size: 12px; color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
   }
   .model-tag .remove {
-    cursor: pointer; color: var(--text-dim); font-size: 14px; line-height: 1;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    font-size: 16px;
+    line-height: 1;
     transition: color 0.15s;
+    padding: 0 2px;
   }
   .model-tag .remove:hover { color: var(--danger); }
 
-  .add-model-row { display: flex; gap: 8px; }
-  .add-model-row input { flex: 1; }
-
-  .custom-fields { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
-
-  .info-text { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
-
-  .key-display {
-    font-family: 'Cascadia Code', 'Consolas', monospace;
-    font-size: 13px; background: var(--surface2); padding: 8px 12px;
-    border-radius: 6px; border: 1px solid var(--border);
+  .add-model-row { display: flex; gap: 10px; }
+  .add-model-row input,
+  .alias-row input {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    font-family: inherit;
+  }
+  .add-model-row input:focus,
+  .alias-row input:focus {
+    border-color: var(--text-tertiary);
+    box-shadow: 0 0 0 3px rgba(128,128,128,0.08);
+  }
+  .add-model-row input::placeholder,
+  .alias-row input::placeholder {
+    color: var(--text-tertiary);
   }
 
+  /* ── Aliases ── */
+  .alias-list { display: flex; flex-direction: column; gap: 10px; }
+  .alias-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .alias-row .arrow {
+    color: var(--text-tertiary);
+    font-size: 14px;
+    flex-shrink: 0;
+    font-weight: 500;
+  }
+  .alias-row .btn-remove {
+    border: none;
+    background: transparent;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+  .alias-row .btn-remove:hover { color: var(--danger-hover); }
+
+  .add-alias-btn {
+    margin-top: 4px;
+  }
+
+  /* ── Logs ── */
+  .log-view {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ── Toast ── */
+  .toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .toast {
+    padding: 12px 18px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    transform: translateX(20px);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    min-width: 220px;
+    max-width: 360px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+  }
+  .toast.show { opacity: 1; transform: translateX(0); }
+  .toast.success {
+    background: var(--surface);
+    color: var(--success);
+    border-color: rgba(34,197,94,0.25);
+  }
+  .toast.error {
+    background: var(--surface);
+    color: var(--danger);
+    border-color: rgba(239,68,68,0.25);
+  }
+
+  /* ── Info text ── */
+  .info-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+
+  /* ── Responsive ── */
   @media (max-width: 600px) {
-    .container { padding: 16px; }
-    .header { padding: 16px; }
+    .container { padding: 20px 16px; }
+    .page-header { margin-bottom: 24px; }
+    .page-header h1 { font-size: 18px; }
+    .card { padding: 18px; }
     .alias-row { flex-wrap: wrap; }
-    .alias-row input { min-width: 0; }
+    .alias-row .arrow { display: none; }
+    .alias-row input { min-width: 0; width: 100%; }
+    .alias-row input:first-child { margin-bottom: 0; }
   }
 </style>
+  <link rel="icon" type="image/png" href="/admin/icon.png" />
 </head>
 <body>
 
-<div class="header">
-  <span class="status-dot" id="statusDot"></span>
-  <h1>Prism Settings</h1>
-  <span class="badge" id="statusBadge">—</span>
-</div>
-
 <div class="container">
+  <!-- Header -->
+  <div class="page-header">
+    <div class="page-header-left">
+      <img src="/admin/icon.png" alt="Prism" class="brand-icon" />
+      <h1>Prism Settings</h1>
+      <span class="status-pill">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusBadge">—</span>
+      </span>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+      <!-- Sun icon -->
+      <svg id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      <!-- Moon icon -->
+      <svg id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+
+  <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" data-tab="provider">Provider</button>
     <button class="tab" data-tab="models">Models</button>
@@ -202,10 +549,15 @@
       </div>
       <div class="field">
         <label>API Key</label>
-        <input type="password" id="customAPIKey" placeholder="sk-...">
+        <div class="input-with-icon">
+          <input type="password" id="customAPIKey" placeholder="sk-...">
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('customAPIKey', this)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn-primary" onclick="saveCustomProvider()">Save Custom Provider</button>
+        <button class="btn btn-primary" onclick="saveCustomProvider()">Save Changes</button>
       </div>
     </div>
 
@@ -217,7 +569,12 @@
       </div>
       <div class="field">
         <label>Set New Key</label>
-        <input type="password" id="newAPIKey" placeholder="Enter new API key">
+        <div class="input-with-icon">
+          <input type="password" id="newAPIKey" placeholder="Enter new API key">
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('newAPIKey', this)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="saveAPIKey()">Update Key</button>
@@ -229,15 +586,15 @@
   <div class="panel" id="panel-models">
     <div class="card">
       <h3>Default Model</h3>
-      <div class="field">
-        <label>When an unknown model is requested, route to this model instead</label>
+      <p class="card-description">When an unknown model is requested, route to this model instead.</p>
+      <div class="field" style="margin-bottom:0">
         <input type="text" id="defaultModel" placeholder="e.g. glm-5.1:cloud">
       </div>
     </div>
 
     <div class="card">
       <h3>Known Models</h3>
-      <p class="info-text" style="margin-bottom:12px">Models in this list pass through without remapping.</p>
+      <p class="card-description">Models in this list pass through without remapping.</p>
       <div class="model-tags" id="knownModels"></div>
       <div class="add-model-row">
         <input type="text" id="addKnownModel" placeholder="Add model name..." onkeydown="if(event.key==='Enter')addKnownModel()">
@@ -247,9 +604,9 @@
 
     <div class="card">
       <h3>Model Aliases</h3>
-      <p class="info-text" style="margin-bottom:12px">Map incoming model names to different upstream models.</p>
-      <div id="aliasRows"></div>
-      <div class="add-model-row" style="margin-top:8px">
+      <p class="card-description">Map incoming model names to different upstream models.</p>
+      <div class="alias-list" id="aliasRows"></div>
+      <div class="btn-row add-alias-btn">
         <button class="btn btn-ghost" onclick="addAliasRow()">+ Add Alias</button>
       </div>
     </div>
@@ -272,7 +629,7 @@
 
     <div class="card">
       <h3>Logs</h3>
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Cascadia Code','Consolas',monospace;font-size:12px;line-height:1.6" id="logView">Loading...</div>
+      <div class="log-view" id="logView">Loading...</div>
       <div class="btn-row">
         <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
       </div>
@@ -286,7 +643,38 @@
 let currentConfig = null;
 let currentRemap = null;
 
-// --- Tabs ---
+// ── Theme ──
+function initTheme() {
+  const saved = localStorage.getItem('prism-theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  setTheme(theme);
+}
+
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('prism-theme', theme);
+  document.getElementById('icon-sun').style.display = theme === 'dark' ? 'none' : 'block';
+  document.getElementById('icon-moon').style.display = theme === 'dark' ? 'block' : 'none';
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  setTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+// ── Password visibility ──
+function togglePasswordVisibility(inputId, btn) {
+  const input = document.getElementById(inputId);
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  // Update icon
+  btn.innerHTML = isHidden
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+}
+
+// ── Tabs ──
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -297,7 +685,7 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// --- Toast ---
+// ── Toast ──
 function toast(msg, type='success') {
   const el = document.createElement('div');
   el.className = 'toast ' + type;
@@ -307,14 +695,14 @@ function toast(msg, type='success') {
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000);
 }
 
-// --- API helpers ---
+// ── API helpers ──
 async function api(path, opts) {
   const res = await fetch('/admin' + path, opts);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-// --- Load config ---
+// ── Load config ──
 async function loadConfig() {
   currentConfig = await api('/config');
   renderProviderCards();
@@ -327,21 +715,20 @@ function renderProviderCards() {
   const providers = [
     { id: 'ollama_cloud', name: 'Ollama Cloud', url: c.ollama_cloud.base_url },
     { id: 'opencode_go', name: 'OpenCode Go', url: c.opencode_go.base_url },
-    { id: 'custom', name: 'Custom', url: c.custom.base_url || '(not set)' },
+    { id: 'custom', name: 'Custom', url: c.custom.base_url || 'Not configured' },
   ];
   const container = document.getElementById('providerCards');
   container.innerHTML = providers.map(p => `
     <div class="provider-card ${c.active_provider === p.id ? 'active' : ''}" onclick="selectProvider('${p.id}')">
       <div class="radio"></div>
       <div class="info">
-        <div class="name">${p.name}</div>
-        <div class="url">${p.url}</div>
+        <div class="name">${esc(p.name)}</div>
+        <div class="url">${esc(p.url)}</div>
       </div>
     </div>
   `).join('');
 
-  // Show custom fields if custom is active
-  const showCustom = c.active_provider === 'custom' || true; // always show for editing
+  const showCustom = c.active_provider === 'custom' || true;
   document.getElementById('customProviderCard').style.display = showCustom ? '' : 'none';
   document.getElementById('customBaseURL').value = c.custom.base_url || '';
   document.getElementById('customAPIKey').value = c.custom.api_key || '';
@@ -363,7 +750,7 @@ function renderAPIKey() {
 function maskKey(k) {
   if (!k) return '(not set)';
   if (k.length <= 8) return '****';
-  return k.slice(0,4) + '...' + k.slice(-4);
+  return k.slice(0,4) + '…' + k.slice(-4);
 }
 
 async function selectProvider(id) {
@@ -407,7 +794,7 @@ async function saveAPIKey() {
   loadConfig();
 }
 
-// --- Status ---
+// ── Status ──
 async function updateStatus() {
   try {
     const s = await api('/status');
@@ -418,7 +805,7 @@ async function updateStatus() {
   } catch(e) {}
 }
 
-// --- Model remapping ---
+// ── Model remapping ──
 async function loadModelConfig() {
   currentRemap = await api('/model-remap');
   renderModelConfig();
@@ -433,7 +820,12 @@ function renderModelConfig() {
 
 function renderKnownModels() {
   const tags = document.getElementById('knownModels');
-  tags.innerHTML = (currentRemap.known_models || []).map((m,i) => `
+  const models = currentRemap.known_models || [];
+  if (models.length === 0) {
+    tags.innerHTML = '<span style="color:var(--text-tertiary);font-size:13px;font-style:italic">No known models yet.</span>';
+    return;
+  }
+  tags.innerHTML = models.map((m,i) => `
     <span class="model-tag">${esc(m)}<span class="remove" onclick="removeKnownModel(${i})">×</span></span>
   `).join('');
 }
@@ -441,6 +833,10 @@ function renderKnownModels() {
 function renderAliases() {
   const container = document.getElementById('aliasRows');
   const aliases = Object.entries(currentRemap.aliases || {});
+  if (aliases.length === 0) {
+    container.innerHTML = '<span style="color:var(--text-tertiary);font-size:13px;font-style:italic">No aliases yet.</span>';
+    return;
+  }
   container.innerHTML = aliases.map(([k,v],i) => `
     <div class="alias-row">
       <input type="text" value="${esc(k)}" data-alias-from="${i}">
@@ -461,15 +857,44 @@ function addKnownModel() {
   }
   input.value = '';
   renderKnownModels();
+  autoSaveModelConfig();
 }
 
 function removeKnownModel(i) {
   currentRemap.known_models.splice(i, 1);
   renderKnownModels();
+  autoSaveModelConfig();
+}
+
+async function autoSaveModelConfig() {
+  try {
+    const remap = {
+      default_model: document.getElementById('defaultModel').value.trim() || 'glm-5.1:cloud',
+      known_models: [...(currentRemap.known_models || [])],
+      aliases: {}
+    };
+    document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
+      const from = row.querySelector('input:nth-child(1)').value.trim();
+      const to = row.querySelector('input:nth-child(3)').value.trim();
+      if (from && to) remap.aliases[from] = to;
+    });
+    await api('/model-remap', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(remap)
+    });
+    toast('Model config saved');
+    loadModelConfig();
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
 }
 
 function addAliasRow() {
   const container = document.getElementById('aliasRows');
+  // Remove the "no aliases yet" placeholder if present
+  if (container.querySelector('span[style*="italic"]')) container.innerHTML = '';
+
   const row = document.createElement('div');
   row.className = 'alias-row';
   row.innerHTML = `
@@ -482,27 +907,30 @@ function addAliasRow() {
 }
 
 async function saveModelConfig() {
-  const remap = {
-    default_model: document.getElementById('defaultModel').value.trim(),
-    known_models: [...(currentRemap.known_models || [])],
-    aliases: {}
-  };
-  // Gather existing alias rows
-  document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
-    const from = row.querySelector('input:nth-child(1)').value.trim();
-    const to = row.querySelector('input:nth-child(3)').value.trim();
-    if (from && to) remap.aliases[from] = to;
-  });
-  await api('/model-remap', {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(remap)
-  });
-  toast('Model config saved');
-  loadModelConfig();
+  try {
+    const remap = {
+      default_model: document.getElementById('defaultModel').value.trim() || 'glm-5.1:cloud',
+      known_models: [...(currentRemap.known_models || [])],
+      aliases: {}
+    };
+    document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
+      const from = row.querySelector('input:nth-child(1)').value.trim();
+      const to = row.querySelector('input:nth-child(3)').value.trim();
+      if (from && to) remap.aliases[from] = to;
+    });
+    await api('/model-remap', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(remap)
+    });
+    toast('Model config saved');
+    loadModelConfig();
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
 }
 
-// --- Proxy control ---
+// ── Proxy control ──
 async function startProxy() {
   await api('/proxy/start', { method: 'POST' });
   toast('Proxy starting...');
@@ -521,26 +949,27 @@ async function restartProxy() {
   setTimeout(updateStatus, 2000);
 }
 
-// --- Logs ---
+// ── Logs ──
 async function refreshLogs() {
   try {
     const data = await api('/logs');
-    document.getElementById('logView').textContent = data.logs || '(empty)';
     const el = document.getElementById('logView');
+    el.textContent = data.logs || '(empty)';
     el.scrollTop = el.scrollHeight;
   } catch(e) {
     document.getElementById('logView').textContent = 'Failed to load logs';
   }
 }
 
-// --- Helpers ---
+// ── Helpers ──
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
 
-// --- Init ---
+// ── Init ──
+initTheme();
 loadConfig();
 loadModelConfig();
 </script>

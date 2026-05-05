@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./docs/image 1.png" alt="Prism" width="120" />
+
 # Prism
 
 ### A featherweight LLM proxy that speaks every language
