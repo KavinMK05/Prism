@@ -61,11 +61,20 @@ func runProxyServer() {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)
 	}
 
+	adminPort := os.Getenv("PRISM_ADMIN_PORT")
+	if adminPort == "" {
+		adminPort = "8765"
+	}
+	// Start the admin UI server in the tray process
+	// (not in the --serve proxy process)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", loggingMiddleware(handleRoot))
 	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, proxy.HandleMessages)))
 	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(proxyAPIKey, handleCountTokens)))
 	mux.HandleFunc("/health", loggingMiddleware(handleHealth))
+	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleOpenAIChatCompletions)))
+	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleResponsesAPI)))
+	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleModels)))
 
 	addr := host + ":" + port
 
@@ -134,6 +143,26 @@ func authMiddleware(proxyAPIKey string, next http.HandlerFunc) http.HandlerFunc 
 			}
 			if clientKey != proxyAPIKey {
 				writeAnthropicError(w, 401, "authentication_error", "Invalid or missing API key")
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func openaiAuthMiddleware(proxyAPIKey string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+
+		if proxyAPIKey != "" {
+			clientKey := r.Header.Get("x-api-key")
+			if clientKey == "" {
+				clientKey = r.Header.Get("Authorization")
+				clientKey = strings.TrimPrefix(clientKey, "Bearer ")
+				clientKey = strings.TrimPrefix(clientKey, "bearer ")
+			}
+			if clientKey != proxyAPIKey {
+				writeOpenAIError(w, 401, "authentication_error", "Invalid or missing API key")
 				return
 			}
 		}

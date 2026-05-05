@@ -1,0 +1,71 @@
+<h2>RAM Consumption Comparison</h2>
+<p class="subtitle">Current proxy binary is ~10MB. The WebView2 runtime is the elephant in the room.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header" style="color:var(--text-primary);background:var(--bg-secondary);padding:12px 16px;font-weight:600">Memory Footprint by Approach</div>
+    <div class="mockup-body" style="padding:16px">
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:8px">Approach</th>
+          <th style="text-align:right;padding:8px">Go Runtime</th>
+          <th style="text-align:right;padding:8px">UI Engine</th>
+          <th style="text-align:right;padding:8px;color:var(--accent)">Total</th>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:8px;font-weight:600;color:var(--success)">Current (systray)</td>
+          <td style="text-align:right;padding:8px">8-15 MB</td>
+          <td style="text-align:right;padding:8px">2-5 MB</td>
+          <td style="text-align:right;padding:8px;font-weight:600;color:var(--success)">~15 MB</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:8px;font-weight:600;color:var(--success)">Option B (Pure Go + DWM)</td>
+          <td style="text-align:right;padding:8px">8-15 MB</td>
+          <td style="text-align:right;padding:8px">5-15 MB</td>
+          <td style="text-align:right;padding:8px;font-weight:600;color:var(--success)">~25 MB</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:8px;font-weight:600;color:#e6a817">Option C (Tauri)</td>
+          <td style="text-align:right;padding:8px">—</td>
+          <td style="text-align:right;padding:8px">Rust 2-5 MB + WebView2 60-120 MB</td>
+          <td style="text-align:right;padding:8px;font-weight:600;color:#e6a817">~80-130 MB</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;font-weight:600;color:var(--error)">Option A (Wails)</td>
+          <td style="text-align:right;padding:8px">8-15 MB</td>
+          <td style="text-align:right;padding:8px;color:var(--error)">WebView2 80-160 MB</td>
+          <td style="text-align:right;padding:8px;font-weight:600;color:var(--error)">~100-180 MB</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>The WebView2 Reality</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>Cold Start: 40-80 MB</h3>
+        <p>First launch with no cached Edge process. WebView2 spins up a full Chromium renderer. Comparable to opening a tab in Edge.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>Warm State: 15-30 MB extra</h3>
+        <p>After first launch, Edge keeps a shared GPU process. Subsequent launches share it — incremental cost is lower.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>UI Complexity Matters</h3>
+        <p>A simple settings page uses < 30 MB of the WebView2 budget. Heavy SPAs (React + charts + animations) push to 100+ MB.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Bottom Line</h3>
+  <p style="font-size:16px;line-height:1.6">Current proxy uses <strong>~15 MB</strong>. Any WebView2-based approach (Wails, Tauri) adds <strong>60-160 MB</strong> — <em>10x increase</em>. Pure Go stays light. The question is whether a 100MB settings window is worth it for a proxy that lives in the tray most of the time.</p>
+</div>

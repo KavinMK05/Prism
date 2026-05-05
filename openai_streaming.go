@@ -50,15 +50,11 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, canFlush := w.(http.Flusher)
-
 	msgID := fmt.Sprintf("msg_%s", anthroReq.Model)
-	contentBlockIndex := 0
-	textBlockOpen := false
-	toolUseBlocksOpen := map[int]bool{}
-	thinkingBlockOpen := false
-	hasContentBlock := false
 
-	writeSSE(w, flusher, canFlush, "message_start", map[string]interface{}{
+	state := newStreamState(w, flusher, canFlush, msgID)
+
+	state.writeSSE("message_start", map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
 			"id":         msgID,
@@ -78,6 +74,7 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	outputTokens := 0
+	prevChunkHasThinking := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -91,6 +88,7 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 
 		var chunk OpenAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("[WARN] Failed to parse OpenAI chunk: %v", err)
 			continue
 		}
 
@@ -101,140 +99,20 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		choice := chunk.Choices[0]
 
 		if chunk.Usage != nil {
-			if chunk.Usage.PromptTokens > 0 {
-				inputTokens := chunk.Usage.PromptTokens
-				_ = inputTokens
-			}
 			if chunk.Usage.CompletionTokens > 0 {
 				outputTokens = chunk.Usage.CompletionTokens
 			}
 		}
 
-		if choice.Delta.Role == "assistant" && len(choice.Delta.ToolCalls) > 0 {
-			for _, tc := range choice.Delta.ToolCalls {
-				if !toolUseBlocksOpen[contentBlockIndex] {
-					argsStr := ""
-					if tc.Function.Arguments != "" {
-						argsStr = tc.Function.Arguments
-					}
-					var args map[string]interface{}
-					if argsStr != "" {
-						json.Unmarshal([]byte(argsStr), &args)
-					}
-					if args == nil {
-						args = map[string]interface{}{}
-					}
-					writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-						"type":  "content_block_start",
-						"index": contentBlockIndex,
-						"content_block": map[string]interface{}{
-							"type":  "tool_use",
-							"id":    tc.ID,
-							"name":  tc.Function.Name,
-							"input": map[string]interface{}{},
-						},
-					})
-					toolUseBlocksOpen[contentBlockIndex] = true
-					hasContentBlock = true
+		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
 
-					if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
-						writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": contentBlockIndex,
-							"delta": map[string]interface{}{
-								"type":         "input_json_delta",
-								"partial_json": tc.Function.Arguments,
-							},
-						})
-					}
-				} else {
-					if tc.Function.Arguments != "" {
-						writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": contentBlockIndex,
-							"delta": map[string]interface{}{
-								"type":         "input_json_delta",
-								"partial_json": tc.Function.Arguments,
-							},
-						})
-					}
-				}
+		if currentChunkHasThinking {
+			if !state.thinkingBlockOpen {
+				state.openThinkingBlock()
 			}
-		} else if len(choice.Delta.ToolCalls) > 0 {
-			for _, tc := range choice.Delta.ToolCalls {
-				idx := contentBlockIndex
-				if tc.ID != "" {
-					if toolUseBlocksOpen[idx] {
-						writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-							"type":  "content_block_stop",
-							"index": idx,
-						})
-						delete(toolUseBlocksOpen, idx)
-						contentBlockIndex++
-						idx = contentBlockIndex
-					}
-
-					var args map[string]interface{}
-					if tc.Function.Arguments != "" {
-						json.Unmarshal([]byte(tc.Function.Arguments), &args)
-					}
-					if args == nil {
-						args = map[string]interface{}{}
-					}
-					writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-						"type":  "content_block_start",
-						"index": idx,
-						"content_block": map[string]interface{}{
-							"type":  "tool_use",
-							"id":    tc.ID,
-							"name":  tc.Function.Name,
-							"input": map[string]interface{}{},
-						},
-					})
-					toolUseBlocksOpen[idx] = true
-					hasContentBlock = true
-
-					if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
-						writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": idx,
-							"delta": map[string]interface{}{
-								"type":         "input_json_delta",
-								"partial_json": tc.Function.Arguments,
-							},
-						})
-					}
-				} else if tc.Function.Arguments != "" {
-					for openIdx := range toolUseBlocksOpen {
-						writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": openIdx,
-							"delta": map[string]interface{}{
-								"type":         "input_json_delta",
-								"partial_json": tc.Function.Arguments,
-							},
-						})
-					}
-				}
-			}
-		}
-
-		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
-			if !thinkingBlockOpen {
-				writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": contentBlockIndex,
-					"content_block": map[string]interface{}{
-						"type":     "thinking",
-						"thinking": "",
-					},
-				})
-				thinkingBlockOpen = true
-				hasContentBlock = true
-			}
-			writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
+			state.writeSSE("content_block_delta", map[string]interface{}{
 				"type":  "content_block_delta",
-				"index": contentBlockIndex,
+				"index": state.contentBlockIndex,
 				"delta": map[string]interface{}{
 					"type":     "thinking_delta",
 					"thinking": *choice.Delta.ReasoningContent,
@@ -242,32 +120,41 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 			})
 		}
 
-		if (choice.Delta.ReasoningContent == nil || *choice.Delta.ReasoningContent == "") && thinkingBlockOpen {
-			writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": contentBlockIndex,
-			})
-			contentBlockIndex++
-			thinkingBlockOpen = false
+		if prevChunkHasThinking && !currentChunkHasThinking && state.thinkingBlockOpen {
+			state.closeBlock("thinking")
+		}
+		prevChunkHasThinking = currentChunkHasThinking
+
+		if len(choice.Delta.ToolCalls) > 0 {
+			for _, tc := range choice.Delta.ToolCalls {
+				if tc.ID != "" {
+					if state.toolUseBlockOpen {
+						state.closeBlock("tool_use")
+					}
+					state.openToolUseBlock(tc.Function.Name)
+				}
+
+				if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
+					state.writeSSE("content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": state.contentBlockIndex,
+						"delta": map[string]interface{}{
+							"type":         "input_json_delta",
+							"partial_json": tc.Function.Arguments,
+						},
+					})
+				}
+			}
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			if !textBlockOpen && !thinkingBlockOpen && len(toolUseBlocksOpen) == 0 {
-				writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": contentBlockIndex,
-					"content_block": map[string]interface{}{
-						"type": "text",
-						"text": "",
-					},
-				})
-				textBlockOpen = true
-				hasContentBlock = true
+			if !state.textBlockOpen && !state.thinkingBlockOpen && !state.toolUseBlockOpen {
+				state.openTextBlock()
 			}
-			if textBlockOpen {
-				writeSSE(w, flusher, canFlush, "content_block_delta", map[string]interface{}{
+			if state.textBlockOpen {
+				state.writeSSE("content_block_delta", map[string]interface{}{
 					"type":  "content_block_delta",
-					"index": contentBlockIndex,
+					"index": state.contentBlockIndex,
 					"delta": map[string]interface{}{
 						"type": "text_delta",
 						"text": *choice.Delta.Content,
@@ -277,6 +164,8 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		}
 
 		if choice.FinishReason != nil {
+			state.closeAllBlocks()
+
 			stopReason := "end_turn"
 			switch *choice.FinishReason {
 			case "length":
@@ -285,97 +174,15 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 				stopReason = "tool_use"
 			}
 
-			if thinkingBlockOpen {
-				writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": contentBlockIndex,
-				})
-				contentBlockIndex++
-				thinkingBlockOpen = false
-			}
-
-			if textBlockOpen {
-				writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": contentBlockIndex,
-				})
-				contentBlockIndex++
-				textBlockOpen = false
-			}
-
-			for openIdx := range toolUseBlocksOpen {
-				writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": openIdx,
-				})
-				delete(toolUseBlocksOpen, openIdx)
-				contentBlockIndex++
-			}
-
-			if !hasContentBlock {
-				writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": contentBlockIndex,
-					"content_block": map[string]interface{}{
-						"type": "text",
-						"text": "",
-					},
-				})
-				writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": contentBlockIndex,
-				})
-				contentBlockIndex++
-				hasContentBlock = true
-			}
-
-			writeSSE(w, flusher, canFlush, "message_delta", map[string]interface{}{
-				"type": "message_delta",
-				"delta": map[string]interface{}{
-					"stop_reason":   stopReason,
-					"stop_sequence": nil,
-				},
-				"usage": map[string]interface{}{
-					"output_tokens": outputTokens,
-				},
-			})
-
-			writeSSE(w, flusher, canFlush, "message_stop", map[string]interface{}{
-				"type": "message_stop",
-			})
+			state.sendEmptyTextBlock()
+			state.sendStopReason(stopReason, outputTokens)
 		}
 	}
 
-	if thinkingBlockOpen {
-		writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": contentBlockIndex,
-		})
-		contentBlockIndex++
-		thinkingBlockOpen = false
+	if err := scanner.Err(); err != nil {
+		log.Printf("[ERR] Stream read error: %v", err)
 	}
 
-	if textBlockOpen {
-		writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": contentBlockIndex,
-		})
-		contentBlockIndex++
-		textBlockOpen = false
-	}
-
-	if !hasContentBlock {
-		writeSSE(w, flusher, canFlush, "content_block_start", map[string]interface{}{
-			"type":  "content_block_start",
-			"index": contentBlockIndex,
-			"content_block": map[string]interface{}{
-				"type": "text",
-				"text": "",
-			},
-		})
-		writeSSE(w, flusher, canFlush, "content_block_stop", map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": contentBlockIndex,
-		})
-	}
+	state.closeAllBlocks()
+	state.sendEmptyTextBlock()
 }

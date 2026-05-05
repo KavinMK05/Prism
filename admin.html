@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prism Settings</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3348;
+    --text: #e2e4ed;
+    --text-dim: #8b8fa3;
+    --accent: #6c8cff;
+    --accent-hover: #5a78f0;
+    --success: #4caf80;
+    --danger: #e05555;
+    --danger-hover: #c94444;
+    --radius: 8px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .badge {
+    font-size: 12px; padding: 2px 10px; border-radius: 12px;
+    background: rgba(108,140,255,0.15); color: var(--accent);
+    font-weight: 500;
+  }
+  .status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    display: inline-block;
+  }
+  .status-dot.running { background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .status-dot.stopped { background: var(--danger); }
+
+  .container { max-width: 720px; margin: 0 auto; padding: 32px 24px; }
+
+  .tabs {
+    display: flex; gap: 4px; background: var(--surface); border-radius: var(--radius);
+    padding: 4px; margin-bottom: 24px;
+  }
+  .tab {
+    flex: 1; padding: 10px 16px; border: none; border-radius: 6px;
+    background: transparent; color: var(--text-dim); cursor: pointer;
+    font-size: 14px; font-weight: 500; transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--accent); color: #fff; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+  }
+  .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+
+  .field { margin-bottom: 16px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    display: block; font-size: 13px; color: var(--text-dim);
+    margin-bottom: 6px; font-weight: 500;
+  }
+  .field input, .field select {
+    width: 100%; padding: 10px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); font-size: 14px; outline: none;
+    transition: border-color 0.15s;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .field input::placeholder { color: var(--text-dim); }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; }
+  .btn {
+    padding: 9px 20px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 500; transition: all 0.15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  .provider-cards { display: flex; flex-direction: column; gap: 8px; }
+  .provider-card {
+    display: flex; align-items: center; gap: 12px; padding: 14px 16px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer; transition: all 0.15s;
+  }
+  .provider-card:hover { border-color: var(--accent); }
+  .provider-card.active { border-color: var(--accent); background: rgba(108,140,255,0.06); }
+  .provider-card .radio {
+    width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: border-color 0.15s;
+  }
+  .provider-card.active .radio { border-color: var(--accent); }
+  .provider-card.active .radio::after {
+    content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+  }
+  .provider-card .info { flex: 1; }
+  .provider-card .info .name { font-size: 14px; font-weight: 500; }
+  .provider-card .info .url { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+  .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+  .toast {
+    padding: 12px 20px; border-radius: var(--radius); margin-bottom: 8px;
+    font-size: 14px; font-weight: 500; opacity: 0; transform: translateX(40px);
+    transition: all 0.3s; min-width: 200px;
+  }
+  .toast.show { opacity: 1; transform: translateX(0); }
+  .toast.success { background: rgba(76,175,128,0.15); color: var(--success); border: 1px solid rgba(76,175,128,0.3); }
+  .toast.error { background: rgba(224,85,85,0.15); color: var(--danger); border: 1px solid rgba(224,85,85,0.3); }
+
+  .alias-row {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .alias-row input { flex: 1; }
+  .alias-row .arrow { color: var(--text-dim); font-size: 16px; flex-shrink: 0; }
+  .alias-row .btn-remove {
+    width: 32px; height: 32px; border-radius: 6px; border: none;
+    background: transparent; color: var(--danger); cursor: pointer;
+    font-size: 18px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: background 0.15s;
+  }
+  .alias-row .btn-remove:hover { background: rgba(224,85,85,0.12); }
+
+  .model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .model-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 16px; font-size: 12px; color: var(--text);
+  }
+  .model-tag .remove {
+    cursor: pointer; color: var(--text-dim); font-size: 14px; line-height: 1;
+    transition: color 0.15s;
+  }
+  .model-tag .remove:hover { color: var(--danger); }
+
+  .add-model-row { display: flex; gap: 8px; }
+  .add-model-row input { flex: 1; }
+
+  .custom-fields { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+  .info-text { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+
+  .key-display {
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px; background: var(--surface2); padding: 8px 12px;
+    border-radius: 6px; border: 1px solid var(--border);
+  }
+
+  @media (max-width: 600px) {
+    .container { padding: 16px; }
+    .header { padding: 16px; }
+    .alias-row { flex-wrap: wrap; }
+    .alias-row input { min-width: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="status-dot" id="statusDot"></span>
+  <h1>Prism Settings</h1>
+  <span class="badge" id="statusBadge">—</span>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <button class="tab active" data-tab="provider">Provider</button>
+    <button class="tab" data-tab="models">Models</button>
+    <button class="tab" data-tab="proxy">Proxy</button>
+  </div>
+
+  <!-- Provider Tab -->
+  <div class="panel active" id="panel-provider">
+    <div class="card">
+      <h3>Active Provider</h3>
+      <div class="provider-cards" id="providerCards"></div>
+    </div>
+
+    <div class="card" id="customProviderCard" style="display:none">
+      <h3>Custom Provider</h3>
+      <div class="field">
+        <label>Base URL</label>
+        <input type="text" id="customBaseURL" placeholder="https://api.example.com">
+      </div>
+      <div class="field">
+        <label>API Key</label>
+        <input type="password" id="customAPIKey" placeholder="sk-...">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveCustomProvider()">Save Custom Provider</button>
+      </div>
+    </div>
+
+    <div class="card" id="apiKeyCard">
+      <h3 id="apiKeyTitle">API Key</h3>
+      <div class="field">
+        <label>Current Key</label>
+        <div class="key-display" id="currentKey">—</div>
+      </div>
+      <div class="field">
+        <label>Set New Key</label>
+        <input type="password" id="newAPIKey" placeholder="Enter new API key">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveAPIKey()">Update Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models Tab -->
+  <div class="panel" id="panel-models">
+    <div class="card">
+      <h3>Default Model</h3>
+      <div class="field">
+        <label>When an unknown model is requested, route to this model instead</label>
+        <input type="text" id="defaultModel" placeholder="e.g. glm-5.1:cloud">
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Known Models</h3>
+      <p class="info-text" style="margin-bottom:12px">Models in this list pass through without remapping.</p>
+      <div class="model-tags" id="knownModels"></div>
+      <div class="add-model-row">
+        <input type="text" id="addKnownModel" placeholder="Add model name..." onkeydown="if(event.key==='Enter')addKnownModel()">
+        <button class="btn btn-ghost" onclick="addKnownModel()">Add</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Model Aliases</h3>
+      <p class="info-text" style="margin-bottom:12px">Map incoming model names to different upstream models.</p>
+      <div id="aliasRows"></div>
+      <div class="add-model-row" style="margin-top:8px">
+        <button class="btn btn-ghost" onclick="addAliasRow()">+ Add Alias</button>
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn btn-primary" onclick="saveModelConfig()">Save Model Config</button>
+    </div>
+  </div>
+
+  <!-- Proxy Tab -->
+  <div class="panel" id="panel-proxy">
+    <div class="card">
+      <h3>Proxy Control</h3>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnStart" onclick="startProxy()">Start</button>
+        <button class="btn btn-danger" id="btnStop" onclick="stopProxy()">Stop</button>
+        <button class="btn btn-ghost" onclick="restartProxy()">Restart</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Logs</h3>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Cascadia Code','Consolas',monospace;font-size:12px;line-height:1.6" id="logView">Loading...</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+let currentConfig = null;
+let currentRemap = null;
+
+// --- Tabs ---
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'proxy') refreshLogs();
+  });
+});
+
+// --- Toast ---
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.getElementById('toastContainer').appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000);
+}
+
+// --- API helpers ---
+async function api(path, opts) {
+  const res = await fetch('/admin' + path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// --- Load config ---
+async function loadConfig() {
+  currentConfig = await api('/config');
+  renderProviderCards();
+  renderAPIKey();
+  updateStatus();
+}
+
+function renderProviderCards() {
+  const c = currentConfig;
+  const providers = [
+    { id: 'ollama_cloud', name: 'Ollama Cloud', url: c.ollama_cloud.base_url },
+    { id: 'opencode_go', name: 'OpenCode Go', url: c.opencode_go.base_url },
+    { id: 'custom', name: 'Custom', url: c.custom.base_url || '(not set)' },
+  ];
+  const container = document.getElementById('providerCards');
+  container.innerHTML = providers.map(p => `
+    <div class="provider-card ${c.active_provider === p.id ? 'active' : ''}" onclick="selectProvider('${p.id}')">
+      <div class="radio"></div>
+      <div class="info">
+        <div class="name">${p.name}</div>
+        <div class="url">${p.url}</div>
+      </div>
+    </div>
+  `).join('');
+
+  // Show custom fields if custom is active
+  const showCustom = c.active_provider === 'custom' || true; // always show for editing
+  document.getElementById('customProviderCard').style.display = showCustom ? '' : 'none';
+  document.getElementById('customBaseURL').value = c.custom.base_url || '';
+  document.getElementById('customAPIKey').value = c.custom.api_key || '';
+}
+
+function renderAPIKey() {
+  const c = currentConfig;
+  const p = c.active_provider;
+  let key = '';
+  if (p === 'ollama_cloud') key = c.ollama_cloud.api_key;
+  else if (p === 'opencode_go') key = c.opencode_go.api_key;
+  else if (p === 'custom') key = c.custom.api_key;
+
+  const providerName = p === 'ollama_cloud' ? 'Ollama Cloud' : p === 'opencode_go' ? 'OpenCode Go' : 'Custom';
+  document.getElementById('apiKeyTitle').textContent = 'API Key — ' + providerName;
+  document.getElementById('currentKey').textContent = maskKey(key);
+}
+
+function maskKey(k) {
+  if (!k) return '(not set)';
+  if (k.length <= 8) return '****';
+  return k.slice(0,4) + '...' + k.slice(-4);
+}
+
+async function selectProvider(id) {
+  currentConfig.active_provider = id;
+  await api('/config', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(currentConfig)
+  });
+  toast('Provider switched to ' + id);
+  loadConfig();
+}
+
+async function saveCustomProvider() {
+  currentConfig.custom.base_url = document.getElementById('customBaseURL').value.trim();
+  const newKey = document.getElementById('customAPIKey').value.trim();
+  if (newKey) currentConfig.custom.api_key = newKey;
+  await api('/config', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(currentConfig)
+  });
+  toast('Custom provider saved');
+  loadConfig();
+}
+
+async function saveAPIKey() {
+  const key = document.getElementById('newAPIKey').value.trim();
+  if (!key) { toast('Please enter a key', 'error'); return; }
+  const p = currentConfig.active_provider;
+  if (p === 'ollama_cloud') currentConfig.ollama_cloud.api_key = key;
+  else if (p === 'opencode_go') currentConfig.opencode_go.api_key = key;
+  else if (p === 'custom') currentConfig.custom.api_key = key;
+  await api('/config', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(currentConfig)
+  });
+  document.getElementById('newAPIKey').value = '';
+  toast('API key updated');
+  loadConfig();
+}
+
+// --- Status ---
+async function updateStatus() {
+  try {
+    const s = await api('/status');
+    const dot = document.getElementById('statusDot');
+    const badge = document.getElementById('statusBadge');
+    dot.className = 'status-dot ' + (s.running ? 'running' : 'stopped');
+    badge.textContent = s.running ? 'Running' : 'Stopped';
+  } catch(e) {}
+}
+
+// --- Model remapping ---
+async function loadModelConfig() {
+  currentRemap = await api('/model-remap');
+  renderModelConfig();
+}
+
+function renderModelConfig() {
+  if (!currentRemap) return;
+  document.getElementById('defaultModel').value = currentRemap.default_model || '';
+  renderKnownModels();
+  renderAliases();
+}
+
+function renderKnownModels() {
+  const tags = document.getElementById('knownModels');
+  tags.innerHTML = (currentRemap.known_models || []).map((m,i) => `
+    <span class="model-tag">${esc(m)}<span class="remove" onclick="removeKnownModel(${i})">×</span></span>
+  `).join('');
+}
+
+function renderAliases() {
+  const container = document.getElementById('aliasRows');
+  const aliases = Object.entries(currentRemap.aliases || {});
+  container.innerHTML = aliases.map(([k,v],i) => `
+    <div class="alias-row">
+      <input type="text" value="${esc(k)}" data-alias-from="${i}">
+      <span class="arrow">→</span>
+      <input type="text" value="${esc(v)}" data-alias-to="${i}">
+      <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
+    </div>
+  `).join('');
+}
+
+function addKnownModel() {
+  const input = document.getElementById('addKnownModel');
+  const val = input.value.trim();
+  if (!val) return;
+  if (!currentRemap.known_models) currentRemap.known_models = [];
+  if (!currentRemap.known_models.includes(val)) {
+    currentRemap.known_models.push(val);
+  }
+  input.value = '';
+  renderKnownModels();
+}
+
+function removeKnownModel(i) {
+  currentRemap.known_models.splice(i, 1);
+  renderKnownModels();
+}
+
+function addAliasRow() {
+  const container = document.getElementById('aliasRows');
+  const row = document.createElement('div');
+  row.className = 'alias-row';
+  row.innerHTML = `
+    <input type="text" placeholder="Incoming model" data-alias-new-from>
+    <span class="arrow">→</span>
+    <input type="text" placeholder="Upstream model" data-alias-new-to>
+    <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
+  `;
+  container.appendChild(row);
+}
+
+async function saveModelConfig() {
+  const remap = {
+    default_model: document.getElementById('defaultModel').value.trim(),
+    known_models: [...(currentRemap.known_models || [])],
+    aliases: {}
+  };
+  // Gather existing alias rows
+  document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
+    const from = row.querySelector('input:nth-child(1)').value.trim();
+    const to = row.querySelector('input:nth-child(3)').value.trim();
+    if (from && to) remap.aliases[from] = to;
+  });
+  await api('/model-remap', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(remap)
+  });
+  toast('Model config saved');
+  loadModelConfig();
+}
+
+// --- Proxy control ---
+async function startProxy() {
+  await api('/proxy/start', { method: 'POST' });
+  toast('Proxy starting...');
+  setTimeout(updateStatus, 1500);
+}
+
+async function stopProxy() {
+  await api('/proxy/stop', { method: 'POST' });
+  toast('Proxy stopping...');
+  setTimeout(updateStatus, 1000);
+}
+
+async function restartProxy() {
+  await api('/proxy/restart', { method: 'POST' });
+  toast('Proxy restarting...');
+  setTimeout(updateStatus, 2000);
+}
+
+// --- Logs ---
+async function refreshLogs() {
+  try {
+    const data = await api('/logs');
+    document.getElementById('logView').textContent = data.logs || '(empty)';
+    const el = document.getElementById('logView');
+    el.scrollTop = el.scrollHeight;
+  } catch(e) {
+    document.getElementById('logView').textContent = 'Failed to load logs';
+  }
+}
+
+// --- Helpers ---
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// --- Init ---
+loadConfig();
+loadModelConfig();
+</script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<h2>What Pure Go Can Actually Achieve</h2>
+<p class="subtitle">The Go native UI ecosystem for Windows is extremely limited. Here's the ceiling:</p>
+
+<div class="section">
+  <h3>Current vs. Best Possible Pure Go</h3>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Current (Systray)</div>
+      <div class="mockup-body" style="padding:16px">
+        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:13px">
+          <div style="background:var(--bg-secondary);padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text-primary)">Ollama Proxy</div>
+          <div style="padding:2px 0">
+            <div style="padding:4px 12px;color:var(--success)">● Running</div>
+            <div style="padding:4px 12px">─────────────</div>
+            <div style="padding:4px 12px">▶ Stop</div>
+            <div style="padding:4px 12px">▶ Restart</div>
+            <div style="padding:4px 12px">─────────────</div>
+            <div style="padding:4px 12px">Provider ▸</div>
+            <div style="padding:4px 12px">Set API Key…</div>
+            <div style="padding:4px 12px">Edit Config…</div>
+            <div style="padding:4px 12px">Open Folder</div>
+            <div style="padding:4px 12px">Show Logs</div>
+            <div style="padding:4px 12px">─────────────</div>
+            <div style="padding:4px 12px">Quit</div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary);margin-top:8px;text-align:center">All settings via popup menus & VBScript dialogs</p>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">Best Pure Go (Walk / Win32)</div>
+      <div class="mockup-body" style="padding:16px">
+        <div style="border:1px solid var(--border);border-radius:4px;overflow:hidden;font-size:13px">
+          <div style="background:var(--bg-secondary);padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text-primary)">Prism Settings</div>
+          <div style="padding:12px">
+            <div style="margin-bottom:10px">
+              <div style="margin-bottom:4px;font-weight:600;font-size:12px;color:var(--text-secondary)">STATUS</div>
+              <div style="padding:6px 8px;background:rgba(48,209,88,0.15);border-radius:4px;color:var(--success);font-size:12px">● Proxy running on 127.0.0.1:11434</div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="margin-bottom:4px;font-weight:600;font-size:12px;color:var(--text-secondary)">PROVIDER</div>
+              <div style="border:1px solid var(--border);border-radius:2px;overflow:hidden">
+                <div style="padding:4px 8px;background:var(--accent);color:white;font-size:12px">Ollama Cloud</div>
+                <div style="padding:4px 8px;font-size:12px">OpenCode Go</div>
+                <div style="padding:4px 8px;font-size:12px">Custom</div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="margin-bottom:4px;font-weight:600;font-size:12px;color:var(--text-secondary)">API KEY</div>
+              <div style="border:1px solid var(--border);border-radius:2px;padding:4px 8px;font-size:12px;background:var(--bg-primary)">••••••••••••••••</div>
+            </div>
+            <div style="border-top:1px solid var(--border);padding-top:10px;display:flex;gap:6px">
+              <div style="padding:4px 12px;border:1px solid var(--border);border-radius:2px;font-size:11px;cursor:default">Start</div>
+              <div style="padding:4px 12px;border:1px solid var(--border);border-radius:2px;font-size:11px;cursor:default">Stop</div>
+              <div style="padding:4px 12px;border:1px solid var(--border);border-radius:2px;font-size:11px;cursor:default">Logs</div>
+            </div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary);margin-top:8px;text-align:center">Proper window, but Windows 7-era controls. No acrylic, no dark mode.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>What You Get vs. What's Missing</h3>
+  <div class="pros-cons">
+    <div class="pros"><h4>Improved with Pure Go</h4>
+      <ul>
+        <li>Proper settings <strong>window</strong> instead of right-click menu</li>
+        <li>Real text inputs (no VBScript InputBox popups!)</li>
+        <li>Status bar showing URL/uptime</li>
+        <li>Dropdowns for provider selection</li>
+        <li>Better buttons for start/stop/logs</li>
+        <li>Stays at ~25 MB RAM</li>
+      </ul></div>
+    <div class="cons"><h4>Cannot Achieve in Pure Go</h4>
+      <ul>
+        <li><strong>Acrylic blur</strong> — technically possible on the window frame via DWM, but not inside</li>
+        <li><strong>Fluent Design controls</strong> — no NavigationView, no Card UI, no modern typography</li>
+        <li><strong>Dark mode</strong> — Go toolkits don't support it; you'd need custom draw everything</li>
+        <li><strong>Animations / transitions</strong> — no motion design infrastructure</li>
+        <li><strong>Reveal highlight</strong>, connected animations, parallax — none of the Fluent signature features</li>
+      </ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>The Core Tradeoff</h3>
+  <p style="font-size:16px;line-height:1.6">Pure Go improves <strong>usability</strong> (no more VBScript popups, actual window with fields). But it <strong>cannot deliver the WinUI 3 aesthetic</strong> — the ceiling is "clean Windows 7-era desktop app." To get acrylic, dark mode, and Fluent controls, you need WebView2.</p>
+</div>

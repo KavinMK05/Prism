@@ -103,11 +103,13 @@ type OllamaChatRequest struct {
 }
 
 type OllamaMessage struct {
-	Role      string                 `json:"role"`
-	Content   string                 `json:"content"`
-	Thinking  string                 `json:"thinking,omitempty"`
-	Images    []string               `json:"images,omitempty"`
-	ToolCalls []OllamaToolCall       `json:"tool_calls,omitempty"`
+	Role       string                 `json:"role"`
+	Content    string                 `json:"content"`
+	Thinking   string                 `json:"thinking,omitempty"`
+	Images     []string               `json:"images,omitempty"`
+	ToolCalls  []OllamaToolCall       `json:"tool_calls,omitempty"`
+	ToolName   string                 `json:"tool_name,omitempty"`
+	ToolCallID string                 `json:"tool_call_id,omitempty"`
 }
 
 type OllamaToolCall struct {
@@ -154,13 +156,15 @@ type SSEEvent struct {
 }
 
 type OpenAIChatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []OpenAIChatMessage `json:"messages"`
-	Stream      bool                `json:"stream"`
-	Temperature *float64            `json:"temperature,omitempty"`
-	TopP        *float64            `json:"top_p,omitempty"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Tools       []OpenAITool        `json:"tools,omitempty"`
+	Model          string              `json:"model"`
+	Messages       []OpenAIChatMessage `json:"messages"`
+	Stream         bool                `json:"stream"`
+	Temperature    *float64            `json:"temperature,omitempty"`
+	TopP           *float64            `json:"top_p,omitempty"`
+	MaxTokens      int                 `json:"max_tokens,omitempty"`
+	Tools          []OpenAITool        `json:"tools,omitempty"`
+	ResponseFormat interface{}         `json:"response_format,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
 }
 
 type OpenAIChatMessage struct {
@@ -169,11 +173,12 @@ type OpenAIChatMessage struct {
 	ToolCalls        []OpenAIToolCall       `json:"tool_calls,omitempty"`
 	ToolID           string                 `json:"tool_call_id,omitempty"`
 	Name             string                 `json:"name,omitempty"`
-	ReasoningContent string                 `json:"reasoning_content,omitempty"`
+	ReasoningContent *string                `json:"reasoning_content,omitempty"`
 }
 
 type OpenAIToolCall struct {
-	ID       string                `json:"id"`
+	ID       string                `json:"id,omitempty"`
+	Index    *int                  `json:"index,omitempty"`
 	Type     string                `json:"type"`
 	Function OpenAIToolCallFunc    `json:"function"`
 }
@@ -239,4 +244,14 @@ type OpenAIStreamDelta struct {
 	Content          *string          `json:"content,omitempty"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"`
 	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type OpenAIErrorResponse struct {
+	Error OpenAIErrorDetail `json:"error"`
+}
+
+type OpenAIErrorDetail struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    int    `json:"code"`
 }

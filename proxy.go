@@ -249,15 +249,19 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 	}
 
 	if len(toolResultBlocks) > 0 {
-		resultContent := ""
+		var messages []OllamaMessage
 		for _, tr := range toolResultBlocks {
 			b, _ := json.Marshal(tr.Content)
-			resultContent += string(b)
+			ollamaMsg := OllamaMessage{
+				Role:    "tool",
+				Content: string(b),
+			}
+			if tr.ToolUseID != "" {
+				ollamaMsg.ToolCallID = tr.ToolUseID
+			}
+			messages = append(messages, ollamaMsg)
 		}
-		return []OllamaMessage{{
-			Role:    "tool",
-			Content: resultContent,
-		}}
+		return messages
 	}
 
 	msg := OllamaMessage{Role: role}
@@ -296,10 +300,10 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 		content = append(content, AnthropicTextBlock{Type: "text", Text: ollama.Message.Content})
 	}
 
-	for _, tc := range ollama.Message.ToolCalls {
+	for i, tc := range ollama.Message.ToolCalls {
 		content = append(content, AnthropicToolUseBlock{
 			Type:  "tool_use",
-			ID:    fmt.Sprintf("toolu_%s", tc.Function.Name),
+			ID:    fmt.Sprintf("toolu_%s_%d", tc.Function.Name, i),
 			Name:  tc.Function.Name,
 			Input: tc.Function.Arguments,
 		})

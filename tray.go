@@ -35,6 +35,14 @@ var (
 
 const CREATE_NO_WINDOW = 0x08000000
 
+func getAdminPort() string {
+	port := os.Getenv("PRISM_ADMIN_PORT")
+	if port == "" {
+		port = "8765"
+	}
+	return port
+}
+
 func findPIDsOnPort(port string) []int {
 	out, err := exec.Command("netstat", "-ano").Output()
 	if err != nil {
@@ -92,6 +100,9 @@ func runHidden(cmd *exec.Cmd) *exec.Cmd {
 func runTray(iconData []byte) {
 	cfg = loadConfig()
 
+	// Start the admin UI server in the tray process
+	startAdminServer(cfg, getAdminPort())
+
 	systray.Run(func() {
 		systray.SetIcon(iconData)
 		systray.SetTooltip("Ollama Proxy")
@@ -116,6 +127,7 @@ func runTray(iconData []byte) {
 
 		systray.AddSeparator()
 
+		openSettingsItem := systray.AddMenuItem("Open Settings", "Open web-based settings panel")
 		openFolderItem := systray.AddMenuItem("Open Folder", "Open proxy directory")
 		editModelConfigItem := systray.AddMenuItem("Edit Model Config", "Open model remapping config in editor")
 		showLogsItem := systray.AddMenuItem("Show Logs", "Open a console window with live logs")
@@ -181,25 +193,10 @@ func runTray(iconData []byte) {
 						updateMenu(isProxyRunning())
 					}
 				case <-providerCustom.ClickedCh:
-					url, err := showInputDialog("Custom Provider", "Enter the base URL for the API (e.g. https://api.example.com):", cfg.Custom.BaseURL)
-					if err == nil && url != "" {
-						if err := validateBaseURL(url); err != nil {
-							log.Printf("Invalid custom provider URL: %v", err)
-							continue
-						}
-						cfg.Custom.BaseURL = url
-						cfg.ActiveProvider = "custom"
-						saveConfig(cfg)
-						updateProviderMenu()
-						updateAPIKeyDisplay()
-						if isProxyRunning() {
-							stopProxyProcess()
-							time.Sleep(500 * time.Millisecond)
-							startProxyProcess()
-							time.Sleep(500 * time.Millisecond)
-							updateMenu(isProxyRunning())
-						}
-					}
+					// Open the web settings UI instead of broken VBS dialog
+					openAdminUI(getAdminPort())
+				case <-openSettingsItem.ClickedCh:
+					openAdminUI(getAdminPort())
 				case <-openFolderItem.ClickedCh:
 					exec.Command("explorer", filepath.Dir(getExePath())).Start()
 				case <-editModelConfigItem.ClickedCh:
@@ -207,7 +204,8 @@ func runTray(iconData []byte) {
 				case <-showLogsItem.ClickedCh:
 					openLogsConsole()
 				case <-setKeyItem.ClickedCh:
-					setAPIKey()
+					// Open web settings for API key management
+					openAdminUI(getAdminPort())
 				case <-quitItem.ClickedCh:
 					stopProxyProcess()
 					closeLogFile()

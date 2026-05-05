@@ -66,9 +66,13 @@ func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
 
 func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIChatMessage {
 	textParts := []string{}
+	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
-	var toolResultID string
-	toolResultContent := ""
+	type toolResult struct {
+		id      string
+		content string
+	}
+	var toolResults []toolResult
 
 	for _, b := range blocks {
 		blockMap, ok := b.(map[string]interface{})
@@ -96,17 +100,21 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 				},
 			})
 		case "tool_result":
-			toolResultID, _ = blockMap["tool_use_id"].(string)
+			tr := toolResult{}
+			tr.id, _ = blockMap["tool_use_id"].(string)
 			if c, ok := blockMap["content"].(string); ok {
-				toolResultContent = c
+				tr.content = c
 			} else if c, ok := blockMap["content"].([]interface{}); ok {
 				for _, item := range c {
 					if m, ok := item.(map[string]interface{}); ok {
 						if t, ok := m["text"].(string); ok {
-							toolResultContent += t
+							tr.content += t
 						}
 					}
 				}
+			}
+			if tr.id != "" {
+				toolResults = append(toolResults, tr)
 			}
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
@@ -115,17 +123,12 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 					if mediaType == "" {
 						mediaType = "image/png"
 					}
-					return []OpenAIChatMessage{{
-						Role: role,
-						Content: []interface{}{
-							map[string]interface{}{
-								"type": "image_url",
-								"image_url": map[string]interface{}{
-									"url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
-								},
-							},
+					imageParts = append(imageParts, map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]interface{}{
+							"url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
 						},
-					}}
+					})
 				}
 			}
 		}
@@ -143,11 +146,31 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		}}
 	}
 
-	if toolResultID != "" {
+	if len(toolResults) > 0 {
+		var messages []OpenAIChatMessage
+		for _, tr := range toolResults {
+			messages = append(messages, OpenAIChatMessage{
+				Role:    "tool",
+				Content: tr.content,
+				ToolID:  tr.id,
+			})
+		}
+		return messages
+	}
+
+	// If we have images, use structured content array
+	if len(imageParts) > 0 {
+		var contentParts []interface{}
+		for _, t := range textParts {
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "text",
+				"text": t,
+			})
+		}
+		contentParts = append(contentParts, imageParts...)
 		return []OpenAIChatMessage{{
-			Role:    "tool",
-			Content: toolResultContent,
-			ToolID:  toolResultID,
+			Role:    role,
+			Content: contentParts,
 		}}
 	}
 
@@ -198,10 +221,10 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 
 	choice := resp.Choices[0]
 
-	if choice.Message.ReasoningContent != "" {
+	if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
 		content = append(content, AnthropicThinkingBlock{
 			Type:     "thinking",
-			Thinking: choice.Message.ReasoningContent,
+			Thinking: *choice.Message.ReasoningContent,
 		})
 	}
 

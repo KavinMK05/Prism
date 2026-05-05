@@ -1,0 +1,72 @@
+<h2>Bridging Go to WinUI 3 / Fluent Design</h2>
+<p class="subtitle">Prism is written in Go. WinUI 3 is .NET/C++/COM. Here are the realistic paths:</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Wails v3 + Fluent Web UI (Recommended)</h3>
+      <p>Keep Go backend. Add Wails v3, which embeds WebView2 (Edge Chromium). Build the UI using Fluent UI web components — same look as WinUI 3, rendered in WebView2. Single binary, tray + window, acrylic via CSS. <strong>Closest to WinUI 3 possible in Go.</strong></p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>DWM Acrylic Window + Custom UI (Pure Go)</h3>
+      <p>Stay in pure Go. Use DWM (Desktop Window Manager) APIs via syscall to create an acrylic-blurred window. Build settings UI with Walk or custom GDI+ rendering. Native Win32 feel, but a lot of manual UI work — controls must be hand-drawn.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Go + Tauri (Rust bridge)</h3>
+      <p>Similar to Wails — WebView2 frontend, but Tauri's backend is Rust. Go proxy would run as a sidecar, or rewrite backend in Rust. Adds Rust toolchain dependency. WebView2 frontend gives the same Fluent Design look as Option A.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Why Option A (Wails) is recommended</h3>
+  <div class="pros-cons">
+    <div class="pros"><h4>Pros</h4>
+      <ul>
+        <li>Single Go binary — no extra runtimes</li>
+        <li>Full Fluent Design via HTML/CSS (acrylic, shadows, typography)</li>
+        <li>WebView2 is built into Windows 10/11 — no install needed</li>
+        <li>System tray + desktop window from one codebase</li>
+        <li>React/Vue/Svelte for the UI — huge ecosystem</li>
+        <li>~12MB overhead on binary size</li>
+      </ul></div>
+    <div class="cons"><h4>Cons</h4>
+      <ul>
+        <li>WebView2 dependency (preinstalled on Win 10+, but might need Edge update channel)</li>
+        <li>Web-based UI is not "truly native" — but visually indistinguishable with Fluent components</li>
+        <li>Larger refactor — current tray.go UI gets replaced entirely</li>
+      </ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>What would the UI include?</h3>
+  <p>Replacing the current systray-only UX with:</p>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>Settings Window</h3>
+        <p>Provider selection, API keys, port config, model remapping — all in a proper window with tabs, not VBScript popups</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>Dashboard / Status</h3>
+        <p>Connection status, uptime, request count, active models — live at a glance</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>System Tray</h3>
+        <p>Kept minimal: quick start/stop, open dashboard, quit</p>
+      </div>
+    </div>
+  </div>
+</div>
