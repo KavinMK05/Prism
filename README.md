@@ -11,7 +11,6 @@ Translate between Anthropic, OpenAI, and Ollama API formats — in a single 5MB 
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 ![Prism screenshot](./docs/screenshot.png)
-*Screenshot coming soon*
 
 </div>
 
