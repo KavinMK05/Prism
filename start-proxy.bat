@@ -1,3 +1,3 @@
 @echo off
-start "" "C:\Users\Kavin\Documents\Personal Projects\Ollama proxy\ollama-proxy.exe" --tray
-echo ollama-proxy tray app started.
+start "" "C:\Users\Kavin\Documents\Personal Projects\Ollama proxy\prism.exe"
+echo Prism tray app started.

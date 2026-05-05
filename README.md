@@ -8,7 +8,7 @@
 
 Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama native APIs in real time. Native system tray, built-in web admin UI, model remapping, and full SSE streaming. Zero config.
 
-[![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/ollama-proxy)
+[![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/prism)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
@@ -76,7 +76,7 @@ Prism accepts requests in **Anthropic Messages** format (`/v1/messages`), **Open
 ### 1. Run Prism
 
 ```powershell
-.\ollama-proxy.exe
+./prism.exe
 ```
 
 That's it. Prism starts on `http://127.0.0.1:11434` and a system tray icon appears. A web admin UI is available at `http://127.0.0.1:8765/admin`.
@@ -89,7 +89,7 @@ Open the admin UI from the system tray (right-click → **Open Settings**) or na
 2. Enter your API key
 3. Prism auto-restarts with the new config
 
-You can also configure via `%APPDATA%\ollama-proxy\config.json` — see [Providers](#providers) below.
+You can also configure via `%APPDATA%\prism\config.json` — see [Providers](#providers) below.
 
 ### 3. Connect your tools
 
@@ -194,15 +194,15 @@ Changes are saved immediately and the proxy auto-restarts when needed.
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_PROXY_PORT` | `11434` | Port for the proxy server |
-| `OLLAMA_PROXY_HOST` | `127.0.0.1` | Host to bind (use `0.0.0.0` for network access) |
+| `PRISM_PORT` | `11434` | Port for the proxy server |
+| `PRISM_HOST` | `127.0.0.1` | Host to bind (use `0.0.0.0` for network access) |
 | `PRISM_ADMIN_PORT` | `8765` | Port for the admin web UI |
 | `OLLAMA_API_KEY` | — | API key for Ollama Cloud (fallback if not in config) |
 | `OPENCODE_GO_API_KEY` | — | API key for OpenCode Go (fallback if not in config) |
 
 ## Providers
 
-Prism supports three upstream providers, configured via the admin UI or `%APPDATA%\ollama-proxy\config.json`:
+Prism supports three upstream providers, configured via the admin UI or `%APPDATA%\prism\config.json`:
 
 | Provider | Config key | Upstream format | Endpoint |
 |---|---|---|---|
@@ -249,7 +249,7 @@ API keys in the config file take priority. If empty, Prism falls back to these e
 
 Prism can remap model names on the fly — useful when clients send model names that don't exist on your upstream provider.
 
-Configured via the admin UI (**Models** tab) or `%APPDATA%\ollama-proxy\model_remapping.json`:
+Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping.json`:
 
 | Feature | What it does |
 |---|---|
@@ -417,16 +417,9 @@ Thinking/reasoning blocks, tool calls, and images are fully supported in all str
 
 ## Auto-start on Windows
 
-Create a shortcut in the Startup folder to run Prism in the background:
+Prism can start automatically when you log in to Windows. Toggle this from the admin UI (**Proxy** tab → **Start at Login**) or manually:
 
-**File:** `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\ollama-proxy.bat`
-
-```bat
-@echo off
-start /B "" "C:\path\to\ollama-proxy.exe" >> "%APPDATA%\ollama-proxy\proxy.log" 2>&1
-```
-
-No admin rights required. Prism integrates with the Windows system tray for easy management.
+The auto-start feature uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required.
 
 ## Limitations
 
@@ -439,7 +432,7 @@ The following features are not supported by upstream providers and are handled g
 ## Building from source
 
 ```powershell
-go build -ldflags="-H windowsgui" -o ollama-proxy.exe .
+go-winres make --in resource.rc --out resource.syso; go build -ldflags="-H windowsgui" -o prism.exe .
 ```
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
@@ -447,15 +440,15 @@ The `-H windowsgui` flag hides the console window and enables system tray integr
 To run in console mode (for debugging), build without the flag:
 
 ```powershell
-go build -o ollama-proxy.exe .
-.\ollama-proxy.exe --serve
+go build -o prism.exe .
+./prism.exe --serve
 ```
 
 ## Verification
 
 ```powershell
 # 1. Start Prism
-.\ollama-proxy.exe
+./prism.exe
 
 # 2. Test Anthropic endpoint
 Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/messages" -Method POST `

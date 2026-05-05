@@ -1,20 +1,20 @@
 @echo off
-echo === ollama-proxy console log ===
+echo === Prism console log ===
 echo.
-if exist "%APPDATA%\ollama-proxy\proxy.log" (
+if exist "%APPDATA%\prism\proxy.log" (
     echo Showing last 50 lines of proxy log:
     echo.
-    powershell -Command "Get-Content '%APPDATA%\ollama-proxy\proxy.log' -Tail 50 -Wait"
+    powershell -Command "Get-Content '%APPDATA%\prism\proxy.log' -Tail 50 -Wait"
 ) else (
-    echo No log file found at %APPDATA%\ollama-proxy\proxy.log
+    echo No log file found at %APPDATA%\prism\proxy.log
     echo.
     echo Checking if proxy is running...
-    tasklist /FI "IMAGENAME eq ollama-proxy.exe" 2>NUL | find /I "ollama-proxy.exe" >NUL
+    tasklist /FI "IMAGENAME eq prism.exe" 2>NUL | find /I "prism.exe" >NUL
     if %ERRORLEVEL%==0 (
-        echo ollama-proxy IS running but logging to console (not file).
+        echo Prism IS running but logging to console (not file).
         echo Start proxy with start-proxy.bat to see console output.
     ) else (
-        echo ollama-proxy is NOT running.
+        echo Prism is NOT running.
     )
 )
 pause

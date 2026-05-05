@@ -33,7 +33,7 @@ type ModelRemapping struct {
 }
 
 func getConfigDir() string {
-	return filepath.Join(os.Getenv("APPDATA"), "ollama-proxy")
+	return filepath.Join(os.Getenv("APPDATA"), "prism")
 }
 
 func getConfigPath() string {
@@ -171,7 +171,7 @@ End If`,
 		escapeVBS(safeDefault),
 	)
 
-	tmpVBS := filepath.Join(os.TempDir(), "ollama-proxy-input.vbs")
+	tmpVBS := filepath.Join(os.TempDir(), "prism-input.vbs")
 	if err := os.WriteFile(tmpVBS, []byte(vbs), 0600); err != nil {
 		return "", err
 	}

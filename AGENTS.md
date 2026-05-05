@@ -1,1 +1,1 @@
-Build command: go build -ldflags="-H windowsgui" -o ollama-proxy.exe .
+Build command: go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .

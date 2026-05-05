@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 //go:embed admin.html
@@ -205,6 +207,8 @@ func startAdminServer(cfg *Config, port string) {
 	})
 
 	// API: Logs
+	mux.HandleFunc("/admin/autostart", handleAutoStart)
+
 	mux.HandleFunc("/admin/logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
@@ -240,6 +244,64 @@ func startAdminServer(cfg *Config, port string) {
 }
 
 // openAdminUI opens the admin UI in the default browser
+func handleAutoStart(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		enabled := isAutoStartEnabled()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"enabled": enabled})
+	case http.MethodPut:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
+		if req.Enabled {
+			if err := setAutoStart(true); err != nil {
+				http.Error(w, "failed to enable auto-start: "+err.Error(), 500)
+				return
+			}
+		} else {
+			if err := setAutoStart(false); err != nil {
+				http.Error(w, "failed to disable auto-start: "+err.Error(), 500)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"enabled": req.Enabled})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+func isAutoStartEnabled() bool {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.READ)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	_, _, err = k.GetStringValue("Prism")
+	return err == nil
+}
+
+func setAutoStart(enable bool) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if enable {
+		exePath, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return k.SetStringValue("Prism", exePath)
+	}
+	return k.DeleteValue("Prism")
+}
+
 func openAdminUI(port string) {
 	url := fmt.Sprintf("http://127.0.0.1:%s/admin", port)
 	cmd := exec.Command("cmd", "/c", "start", url)

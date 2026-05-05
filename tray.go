@@ -71,7 +71,7 @@ func findPIDsOnPort(port string) []int {
 }
 
 func killOrphanOnPort() {
-	port := os.Getenv("OLLAMA_PROXY_PORT")
+	port := os.Getenv("PRISM_PORT")
 	if port == "" {
 		port = "11434"
 	}
@@ -105,7 +105,7 @@ func runTray(iconData []byte) {
 
 	systray.Run(func() {
 		systray.SetIcon(iconData)
-		systray.SetTooltip("Ollama Proxy")
+		systray.SetTooltip("Prism")
 
 		running := isProxyRunning()
 
@@ -114,9 +114,9 @@ func runTray(iconData []byte) {
 
 		systray.AddSeparator()
 
-		startItem = systray.AddMenuItem("Start Proxy", "Start the ollama-proxy")
-		stopItem = systray.AddMenuItem("Stop Proxy", "Stop the ollama-proxy")
-		mRestart = systray.AddMenuItem("Restart Proxy", "Restart the ollama-proxy")
+		startItem = systray.AddMenuItem("Start Proxy", "Start Prism proxy")
+		stopItem = systray.AddMenuItem("Stop Proxy", "Stop Prism proxy")
+		mRestart = systray.AddMenuItem("Restart Proxy", "Restart Prism proxy")
 
 		systray.AddSeparator()
 
@@ -245,7 +245,7 @@ func updateProviderMenu() {
 	}
 
 	providerName := cfg.getActiveProvider().Name
-	systray.SetTooltip("Ollama Proxy · " + providerName)
+	systray.SetTooltip("Prism · " + providerName)
 }
 
 func updateAPIKeyDisplay() {
@@ -287,7 +287,7 @@ func startProxyProcess() {
 	logFileMu.Lock()
 	closeLogFileLocked()
 
-	logDir := filepath.Join(os.Getenv("APPDATA"), "ollama-proxy")
+	logDir := filepath.Join(os.Getenv("APPDATA"), "prism")
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "proxy.log")
 	var err error
@@ -364,7 +364,7 @@ func closeLogFileLocked() {
 func getExePath() string {
 	exe, err := os.Executable()
 	if err != nil {
-		return "ollama-proxy.exe"
+		return "prism.exe"
 	}
 	return exe
 }
@@ -393,7 +393,7 @@ func isProxyRunning() bool {
 }
 
 func getLogFilePath() string {
-	return filepath.Join(os.Getenv("APPDATA"), "ollama-proxy", "proxy.log")
+	return filepath.Join(os.Getenv("APPDATA"), "prism", "proxy.log")
 }
 
 func openLogsConsole() {

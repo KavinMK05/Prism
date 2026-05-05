@@ -392,7 +392,7 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 					"id":       m,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "ollama-proxy",
+					"owned_by": "prism",
 				})
 			}
 		}
@@ -403,7 +403,7 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 					"id":       target,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "ollama-proxy",
+					"owned_by": "prism",
 				})
 			}
 		}
@@ -414,7 +414,7 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 					"id":       alias,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "ollama-proxy",
+					"owned_by": "prism",
 				})
 			}
 		}

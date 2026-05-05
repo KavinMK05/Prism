@@ -5,3 +5,5 @@
 # IDE / agent artifacts
 .opencode/
 .superpowers/
+# Build artifacts
+*.syso

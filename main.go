@@ -29,7 +29,7 @@ func main() {
 
 func runProxyServer() {
 	// Open log file directly instead of relying on stderr redirection
-	logDir := filepath.Join(os.Getenv("APPDATA"), "ollama-proxy")
+	logDir := filepath.Join(os.Getenv("APPDATA"), "prism")
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "proxy.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -41,12 +41,12 @@ func runProxyServer() {
 	proxyAPIKey := "prism"
 	upstreamAPIKey := cfg.getActiveAPIKey()
 
-	port := os.Getenv("OLLAMA_PROXY_PORT")
+	port := os.Getenv("PRISM_PORT")
 	if port == "" {
 		port = "11434"
 	}
 
-	host := os.Getenv("OLLAMA_PROXY_HOST")
+	host := os.Getenv("PRISM_HOST")
 	if host == "" {
 		host = "127.0.0.1"
 	}
@@ -78,7 +78,7 @@ func runProxyServer() {
 
 	addr := host + ":" + port
 
-	log.Printf("ollama-proxy starting on %s -> %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
+	log.Printf("Prism starting on %s -> %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
 
 	server := &http.Server{
 		Addr:    addr,
@@ -91,7 +91,7 @@ func runProxyServer() {
 		}
 	}()
 
-	log.Printf("ollama-proxy listening on http://%s", addr)
+	log.Printf("Prism proxy listening on http://%s", addr)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -118,7 +118,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok","service":"ollama-proxy","version":"1.0.0"}`))
+	w.Write([]byte(`{"status":"ok","service":"prism","version":"1.0.0"}`))
 }
 
 func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
