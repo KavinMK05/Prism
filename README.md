@@ -4,9 +4,9 @@
 
 # Prism
 
-### A featherweight LLM proxy that speaks every language
+### One proxy. Every LLM API format. A 5 MB Windows binary with zero dependencies.
 
-Translate between Anthropic, OpenAI, and Ollama API formats — in a single 5MB binary with zero runtime dependencies.
+Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama native APIs in real time. Native system tray, built-in web admin UI, model remapping, and full SSE streaming. Zero config.
 
 [![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/ollama-proxy)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
