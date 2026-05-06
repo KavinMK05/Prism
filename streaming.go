@@ -312,7 +312,13 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 			switch chunk.DoneReason {
 			case "length":
 				stopReason = "max_tokens"
-			case "tool_call":
+			case "tool_call", "tool_calls":
+				stopReason = "tool_use"
+			}
+
+			// Fallback: Ollama typically returns done_reason "stop" even when tool calls
+			// are present, so check if we saw any tool use blocks during streaming.
+			if stopReason != "tool_use" && state.toolCallIndex > 0 {
 				stopReason = "tool_use"
 			}
 
@@ -325,8 +331,14 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 		log.Printf("[ERR] Stream read error: %v", err)
 	}
 
-	state.closeAllBlocks()
-	state.sendEmptyTextBlock()
+	// If the stream ended without a Done chunk, close any remaining blocks
+	// and send an empty text block as fallback.
+	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
+		state.closeAllBlocks()
+	}
+	if !state.hasContentBlock {
+		state.sendEmptyTextBlock()
+	}
 }
 
 func writeSSE(w io.Writer, flusher http.Flusher, canFlush bool, event string, data interface{}) {

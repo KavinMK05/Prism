@@ -22,7 +22,7 @@ type ollamaStreamState struct {
 	pendingContent   string
 	toolCallsActive  bool
 	toolCallIndex    int
-	toolCallsEmitted int
+	emittedToolCalls map[string]bool // track which tool calls have been emitted by name
 }
 
 func (s *ollamaStreamState) writeOpenAISSE(chunk OpenAIStreamChunk) {
@@ -84,6 +84,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		canFlush: canFlush,
 		respID: respID,
 		model:  openAIReq.Model,
+		emittedToolCalls: make(map[string]bool),
 	}
 
 	state.writeOpenAISSE(OpenAIStreamChunk{
@@ -168,20 +169,40 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		}
 
 		if len(chunk.Message.ToolCalls) > 0 {
-			for i, tc := range chunk.Message.ToolCalls {
+			for _, tc := range chunk.Message.ToolCalls {
 				toolName := tc.Function.Name
 				if toolName == "" {
 					continue
 				}
-				if i < state.toolCallsEmitted {
-					continue
+
+				// Use name as dedup key (supports both cumulative and non-cumulative streaming)
+				// For multiple calls to the same function, append the index
+				dedupKey := toolName
+				if state.emittedToolCalls[dedupKey] {
+					// If same name was already emitted, check with index suffix
+					// (handles multiple calls to the same function)
+					idx := 0
+					for {
+						dedupKey = fmt.Sprintf("%s_%d", toolName, idx)
+						if !state.emittedToolCalls[dedupKey] {
+							break
+						}
+						idx++
+					}
 				}
+
 				argsJSON, _ := json.Marshal(tc.Function.Arguments)
 				if !state.toolCallsActive {
 					state.toolCallsActive = true
 				}
 				idx := state.toolCallIndex
-				toolCallID := fmt.Sprintf("call_%s_%d", toolName, idx)
+
+				// Use Ollama's native ID if available, otherwise generate one
+				toolCallID := tc.ID
+				if toolCallID == "" {
+					toolCallID = fmt.Sprintf("call_%s_%d", toolName, idx)
+				}
+
 				state.writeOpenAISSE(OpenAIStreamChunk{
 					ID:     respID,
 					Object: "chat.completion.chunk",
@@ -206,7 +227,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 					},
 				})
 				state.toolCallIndex++
-				state.toolCallsEmitted++
+				state.emittedToolCalls[dedupKey] = true
 			}
 		}
 
@@ -258,7 +279,13 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 			switch chunk.DoneReason {
 			case "length":
 				finishReason = "length"
-			case "tool_call":
+			case "tool_call", "tool_calls":
+				finishReason = "tool_calls"
+			}
+
+			// Fallback: Ollama typically returns done_reason "stop" even when tool calls
+			// are present, so check if we saw any tool call blocks during streaming.
+			if finishReason != "tool_calls" && state.toolCallIndex > 0 {
 				finishReason = "tool_calls"
 			}
 

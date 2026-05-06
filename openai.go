@@ -68,6 +68,7 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 	textParts := []string{}
 	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
+	var thinkingContent string
 	type toolResult struct {
 		id      string
 		content string
@@ -85,6 +86,10 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		case "text":
 			if text, ok := blockMap["text"].(string); ok {
 				textParts = append(textParts, text)
+			}
+		case "thinking":
+			if thinking, ok := blockMap["thinking"].(string); ok {
+				thinkingContent += thinking
 			}
 		case "tool_use":
 			id, _ := blockMap["id"].(string)
@@ -139,11 +144,15 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		if len(textParts) > 0 {
 			content = joinStrings(textParts)
 		}
-		return []OpenAIChatMessage{{
+		msg := OpenAIChatMessage{
 			Role:      "assistant",
 			Content:   content,
 			ToolCalls: toolCalls,
-		}}
+		}
+		if thinkingContent != "" {
+			msg.ReasoningContent = &thinkingContent
+		}
+		return []OpenAIChatMessage{msg}
 	}
 
 	if len(toolResults) > 0 {
@@ -172,6 +181,15 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 			Role:    role,
 			Content: contentParts,
 		}}
+	}
+
+	if thinkingContent != "" {
+		msg := OpenAIChatMessage{
+			Role:    role,
+			Content: joinStrings(textParts),
+		}
+		msg.ReasoningContent = &thinkingContent
+		return []OpenAIChatMessage{msg}
 	}
 
 	return []OpenAIChatMessage{{

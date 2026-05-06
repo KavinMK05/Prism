@@ -1095,3 +1095,64 @@ func TestOllamaStreaming_MultipleToolCalls(t *testing.T) {
 		t.Errorf("expected 2 content_block_stops, got %d", toolUseStops)
 	}
 }
+
+// Test that stop_reason is "tool_use" when Ollama returns done_reason "stop" with tool calls
+// This is the realistic case - Ollama typically doesn't return done_reason "tool_call"
+func TestOllamaStreaming_ToolCallsWithStopDoneReason(t *testing.T) {
+	toolCallChunk := map[string]interface{}{
+		"model": "test-model",
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []map[string]interface{}{
+				{
+					"function": map[string]interface{}{
+						"name": "get_weather",
+						"arguments": map[string]interface{}{
+							"city": "London",
+						},
+					},
+				},
+			},
+		},
+		"done": false,
+	}
+
+	var upstreamBody string
+	b, _ := json.Marshal(toolCallChunk)
+	upstreamBody += string(b) + "\n"
+	// Ollama returns done_reason "stop" (not "tool_call") even when tool calls are present
+	upstreamBody += makeOllamaChunk("test-model", "", "", true, "stop")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
+
+	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+
+	events := parseSSEEvents(w.Body.String())
+
+	// Verify that the message_delta event contains stop_reason "tool_use"
+	for _, e := range events {
+		if e.Event == "message_delta" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if delta, ok := data["delta"].(map[string]interface{}); ok {
+				if stopReason, ok := delta["stop_reason"].(string); ok {
+					if stopReason != "tool_use" {
+							t.Errorf("expected stop_reason 'tool_use', got '%s'", stopReason)
+						}
+				}
+			}
+		}
+	}
+}

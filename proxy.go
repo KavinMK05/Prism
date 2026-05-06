@@ -25,7 +25,7 @@ func NewProxy(upstreamURL, apiKey, providerType string, modelRemap *ModelRemappi
 		apiKey:       apiKey,
 		providerType: providerType,
 		modelRemap:   modelRemap,
-		client:       &http.Client{Timeout: 300 * time.Second},
+		client:       &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -110,16 +110,47 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(anthroResp)
 }
 
+// buildToolIDToNameMap builds a mapping from tool_use IDs to function names
+// by scanning all assistant messages in the conversation for tool_use blocks.
+func buildToolIDToNameMap(messages []AnthropicMessage) map[string]string {
+	idToName := map[string]string{}
+	for _, msg := range messages {
+		blocks, ok := msg.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, b := range blocks {
+			blockMap, ok := b.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if blockType, _ := blockMap["type"].(string); blockType == "tool_use" {
+				id, _ := blockMap["id"].(string)
+				name, _ := blockMap["name"].(string)
+				if id != "" && name != "" {
+					idToName[id] = name
+				}
+			}
+		}
+	}
+	return idToName
+}
+
 func translateRequest(anthro *AnthropicRequest) (*OllamaChatRequest, error) {
 	messages := []OllamaMessage{}
 
 	if anthro.System != nil {
 		sysContent := systemToString(anthro.System)
-		messages = append(messages, OllamaMessage{Role: "system", Content: sysContent})
+		if sysContent != "" {
+			messages = append(messages, OllamaMessage{Role: "system", Content: sysContent})
+		}
 	}
 
+	// Build a mapping from tool_use IDs to function names for resolving tool_result references
+	toolIDToName := buildToolIDToNameMap(anthro.Messages)
+
 	for _, msg := range anthro.Messages {
-		ollamaMsgs := translateMessage(msg)
+		ollamaMsgs := translateMessageWithToolLookup(msg, toolIDToName)
 		messages = append(messages, ollamaMsgs...)
 	}
 
@@ -169,20 +200,25 @@ func translateRequest(anthro *AnthropicRequest) (*OllamaChatRequest, error) {
 }
 
 func translateMessage(msg AnthropicMessage) []OllamaMessage {
+	return translateMessageWithToolLookup(msg, nil)
+}
+
+func translateMessageWithToolLookup(msg AnthropicMessage, toolIDToName map[string]string) []OllamaMessage {
 	switch content := msg.Content.(type) {
 	case string:
 		if msg.Role == "tool" {
-			return []OllamaMessage{{
+			ollamaMsg := OllamaMessage{
 				Role:    "tool",
 				Content: content,
-			}}
+			}
+			return []OllamaMessage{ollamaMsg}
 		}
 		return []OllamaMessage{{
 			Role:    msg.Role,
 			Content: content,
 		}}
 	case []interface{}:
-		return translateContentBlocks(msg.Role, content)
+		return translateContentBlocksWithToolLookup(msg.Role, content, toolIDToName)
 	default:
 		return []OllamaMessage{{
 			Role:    msg.Role,
@@ -192,10 +228,20 @@ func translateMessage(msg AnthropicMessage) []OllamaMessage {
 }
 
 func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
+	return translateContentBlocksWithToolLookup(role, blocks, nil)
+}
+
+func translateContentBlocksWithToolLookup(role string, blocks []interface{}, toolIDToName map[string]string) []OllamaMessage {
 	textParts := []string{}
 	images := []string{}
+	var thinkingContent string
 	toolUseBlocks := []AnthropicToolUseBlock{}
-	toolResultBlocks := []AnthropicToolResultBlock{}
+	type toolResult struct {
+		toolUseID string
+		content   string
+		name     string
+	}
+	var toolResults []toolResult
 
 	for _, b := range blocks {
 		blockMap, ok := b.(map[string]interface{})
@@ -208,6 +254,10 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 		case "text":
 			if text, ok := blockMap["text"].(string); ok {
 				textParts = append(textParts, text)
+			}
+		case "thinking":
+			if thinking, ok := blockMap["thinking"].(string); ok {
+				thinkingContent += thinking
 			}
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
@@ -224,8 +274,21 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 			})
 		case "tool_result":
 			toolUseID, _ := blockMap["tool_use_id"].(string)
-			toolResultBlocks = append(toolResultBlocks, AnthropicToolResultBlock{
-				Type: "tool_result", ToolUseID: toolUseID, Content: blockMap["content"],
+			var contentStr string
+			if c, ok := blockMap["content"].(string); ok {
+				contentStr = c
+			} else if c, ok := blockMap["content"].([]interface{}); ok {
+				for _, item := range c {
+					if m, ok := item.(map[string]interface{}); ok {
+						if t, ok := m["text"].(string); ok {
+							contentStr += t
+						}
+					}
+				}
+			}
+			toolResults = append(toolResults, toolResult{
+				toolUseID: toolUseID,
+				content:   contentStr,
 			})
 		}
 	}
@@ -235,29 +298,46 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 		toolCalls := make([]OllamaToolCall, len(toolUseBlocks))
 		for i, tu := range toolUseBlocks {
 			toolCalls[i] = OllamaToolCall{
+				ID: tu.ID,
 				Function: OllamaToolCallFunction{
 					Name:      tu.Name,
 					Arguments: tu.Input,
 				},
 			}
 		}
-		return []OllamaMessage{{
+		msg := OllamaMessage{
 			Role:      "assistant",
 			Content:   content,
 			ToolCalls: toolCalls,
-		}}
+		}
+		if thinkingContent != "" {
+			msg.Thinking = thinkingContent
+		}
+		return []OllamaMessage{msg}
 	}
 
-	if len(toolResultBlocks) > 0 {
+	if len(toolResults) > 0 {
 		var messages []OllamaMessage
-		for _, tr := range toolResultBlocks {
-			b, _ := json.Marshal(tr.Content)
+		for _, tr := range toolResults {
 			ollamaMsg := OllamaMessage{
 				Role:    "tool",
-				Content: string(b),
+				Content: tr.content,
 			}
-			if tr.ToolUseID != "" {
-				ollamaMsg.ToolCallID = tr.ToolUseID
+			if tr.toolUseID != "" {
+				ollamaMsg.ToolCallID = tr.toolUseID
+			}
+			// Look up tool name from the tool_use blocks in the same message first,
+			// then fall back to the conversation-level tool ID -> name mapping
+			for _, tu := range toolUseBlocks {
+				if tu.ID == tr.toolUseID {
+					ollamaMsg.ToolName = tu.Name
+					break
+				}
+			}
+			if ollamaMsg.ToolName == "" && toolIDToName != nil {
+				if name, ok := toolIDToName[tr.toolUseID]; ok {
+					ollamaMsg.ToolName = name
+				}
 			}
 			messages = append(messages, ollamaMsg)
 		}
@@ -267,6 +347,9 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 	msg := OllamaMessage{Role: role}
 	msg.Content = strings.Join(textParts, "")
 	msg.Images = images
+	if thinkingContent != "" {
+		msg.Thinking = thinkingContent
+	}
 
 	return []OllamaMessage{msg}
 }
@@ -301,9 +384,13 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 	}
 
 	for i, tc := range ollama.Message.ToolCalls {
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%s_%d", tc.Function.Name, i)
+		}
 		content = append(content, AnthropicToolUseBlock{
 			Type:  "tool_use",
-			ID:    fmt.Sprintf("toolu_%s_%d", tc.Function.Name, i),
+			ID:    id,
 			Name:  tc.Function.Name,
 			Input: tc.Function.Arguments,
 		})
@@ -313,7 +400,7 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 	switch ollama.DoneReason {
 	case "length":
 		stopReason = "max_tokens"
-	case "tool_call":
+	case "tool_call", "tool_calls":
 		stopReason = "tool_use"
 	}
 	if len(ollama.Message.ToolCalls) > 0 {

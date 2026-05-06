@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
-//go:embed icon.ico
+//go:embed logo_icon.ico
 var iconFS embed.FS
 
 func main() {
@@ -20,7 +22,20 @@ func main() {
 		return
 	}
 
-	iconData, err := embed.FS.ReadFile(iconFS, "icon.ico")
+	// Single-instance guard for the tray process
+	mutexName, _ := windows.UTF16PtrFromString("PrismSingleInstance")
+	mutex, err := windows.CreateMutex(nil, false, mutexName)
+	if err != nil {
+		log.Fatalf("Failed to create mutex: %v", err)
+	}
+	defer windows.CloseHandle(mutex)
+
+	if windows.GetLastError() == windows.ERROR_ALREADY_EXISTS {
+		log.Println("Prism is already running")
+		return
+	}
+
+	iconData, err := embed.FS.ReadFile(iconFS, "logo_icon.ico")
 	if err != nil {
 		log.Fatalf("Failed to load icon: %v", err)
 	}

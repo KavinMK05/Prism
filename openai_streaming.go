@@ -183,6 +183,12 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		log.Printf("[ERR] Stream read error: %v", err)
 	}
 
-	state.closeAllBlocks()
-	state.sendEmptyTextBlock()
+	// If the stream ended without a FinishReason, close any remaining blocks
+	// and send an empty text block as fallback.
+	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
+		state.closeAllBlocks()
+	}
+	if !state.hasContentBlock {
+		state.sendEmptyTextBlock()
+	}
 }

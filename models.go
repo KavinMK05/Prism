@@ -113,6 +113,7 @@ type OllamaMessage struct {
 }
 
 type OllamaToolCall struct {
+	ID       string                 `json:"id,omitempty"`
 	Function OllamaToolCallFunction `json:"function"`
 }
 

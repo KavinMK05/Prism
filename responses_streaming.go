@@ -64,9 +64,12 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	var funcCallCallID string
 	var funcCallName string
 	var accumulatedText string
+	var accumulatedArgs string
 	var outputTokens int
 	var inputTokens int
 	var completedEmitted bool
+	var reasoningItemID string
+	var reasoningActive bool
 
 	// Emit response.created
 	emitResponsesEvent(w, flusher, canFlush, "response.created", map[string]interface{}{
@@ -117,6 +120,41 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 		choice := chunk.Choices[0]
 		delta := choice.Delta
 
+		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
+
+		// Handle reasoning content
+		if currentChunkHasThinking {
+			if !reasoningActive {
+				reasoningActive = true
+				outputIndex++
+				reasoningItemID = generateID("rs_")
+				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+					"type":         "response.output_item.added",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      reasoningItemID,
+						"type":    "reasoning",
+						"summary": []interface{}{},
+					},
+				})
+			}
+		}
+
+		if !currentChunkHasThinking && reasoningActive {
+			reasoningActive = false
+			// Close reasoning item
+			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				"type":         "response.output_item.done",
+				"output_index": outputIndex,
+				"item": map[string]interface{}{
+					"id":      reasoningItemID,
+					"type":    "reasoning",
+					"summary": []interface{}{},
+				},
+			})
+			reasoningItemID = ""
+		}
+
 		// Handle tool calls - if tool calls arrive, close current message first
 		if len(delta.ToolCalls) > 0 {
 			// Close text content part if active
@@ -162,7 +200,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 							"type":         "response.function_call_arguments.done",
 							"output_index": outputIndex,
 							"call_id":      funcCallCallID,
-							"arguments":    "{}",
+							"arguments":    accumulatedArgs,
 						})
 						emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 							"type":         "response.output_item.done",
@@ -172,7 +210,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 								"type":      "function_call",
 								"call_id":   funcCallCallID,
 								"name":      funcCallName,
-								"arguments": "{}",
+								"arguments": accumulatedArgs,
 								"status":    "completed",
 							},
 						})
@@ -182,27 +220,31 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 					funcCallItemID = generateID("fc_")
 					funcCallCallID = tc.ID
 					funcCallName = tc.Function.Name
+					accumulatedArgs = ""
 					emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
 						"type":         "response.output_item.added",
 						"output_index": outputIndex,
 						"item": map[string]interface{}{
 							"id":        funcCallItemID,
-							"type":      "function_call",
-							"call_id":   tc.ID,
-							"name":      tc.Function.Name,
-							"arguments": "",
-							"status":    "in_progress",
+						"type":      "function_call",
+						"call_id":   tc.ID,
+						"name":      tc.Function.Name,
+						"arguments": "",
+						"status":    "in_progress",
 						},
 					})
 				}
 
-				if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
-					emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
-						"type":         "response.function_call_arguments.delta",
-						"output_index": outputIndex,
-						"call_id":      funcCallCallID,
-						"delta":        tc.Function.Arguments,
-					})
+				if tc.Function.Arguments != "" {
+					accumulatedArgs += tc.Function.Arguments
+					if tc.Function.Arguments != "{}" {
+						emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
+							"type":         "response.function_call_arguments.delta",
+							"output_index": outputIndex,
+							"call_id":      funcCallCallID,
+							"delta":        tc.Function.Arguments,
+						})
+					}
 				}
 			}
 		}
@@ -273,6 +315,23 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 				textContentPartID = ""
 			}
 
+			// Close reasoning if active
+			if reasoningActive {
+				reasoningActive = false
+				if reasoningItemID != "" {
+					emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+						"type":         "response.output_item.done",
+						"output_index": outputIndex,
+						"item": map[string]interface{}{
+							"id":      reasoningItemID,
+							"type":    "reasoning",
+							"summary": []interface{}{},
+						},
+					})
+				}
+				reasoningItemID = ""
+			}
+
 			// Close message item if active
 			if messageItemID != "" {
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
@@ -294,7 +353,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 					"type":         "response.function_call_arguments.done",
 					"output_index": outputIndex,
 					"call_id":      funcCallCallID,
-					"arguments":    "{}",
+					"arguments":    accumulatedArgs,
 				})
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
@@ -304,7 +363,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 						"type":      "function_call",
 						"call_id":   funcCallCallID,
 						"name":      funcCallName,
-						"arguments": "{}",
+						"arguments": accumulatedArgs,
 						"status":    "completed",
 					},
 				})
@@ -379,10 +438,27 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 					"type":      "function_call",
 					"call_id":   funcCallCallID,
 					"name":      funcCallName,
-					"arguments": "{}",
+					"arguments": accumulatedArgs,
 					"status":    "completed",
 				},
 			})
+		}
+
+		// Close reasoning if still active
+		if reasoningActive {
+			reasoningActive = false
+			if reasoningItemID != "" {
+				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      reasoningItemID,
+						"type":    "reasoning",
+						"summary": []interface{}{},
+					},
+				})
+			}
+			reasoningItemID = ""
 		}
 
 		emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{

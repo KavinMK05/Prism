@@ -31,8 +31,10 @@ func translateResponsesAPIToChatCompletions(req *ResponsesAPIRequest) *OpenAICha
 				})
 			}
 		case []interface{}:
+			// Build a call_id -> name mapping from function_call items for tool name lookup
+			callIDToName := buildResponsesCallIDToNameMap(input)
 			for _, item := range input {
-				msgs := translateResponseInputItemToChatMessage(item)
+				msgs := translateResponseInputItemToChatMessage(item, callIDToName)
 				messages = append(messages, msgs...)
 			}
 		}
@@ -74,7 +76,28 @@ func translateResponsesAPIToChatCompletions(req *ResponsesAPIRequest) *OpenAICha
 	return chatReq
 }
 
-func translateResponseInputItemToChatMessage(item interface{}) []OpenAIChatMessage {
+// buildResponsesCallIDToNameMap builds a mapping from call_id to function name
+// by scanning function_call items in the input array.
+func buildResponsesCallIDToNameMap(items []interface{}) map[string]string {
+	idToName := map[string]string{}
+	for _, item := range items {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		itemType, _ := itemMap["type"].(string)
+		if itemType == "function_call" {
+			callID, _ := itemMap["call_id"].(string)
+			name, _ := itemMap["name"].(string)
+			if callID != "" && name != "" {
+				idToName[callID] = name
+			}
+		}
+	}
+	return idToName
+}
+
+func translateResponseInputItemToChatMessage(item interface{}, callIDToName map[string]string) []OpenAIChatMessage {
 	itemMap, ok := item.(map[string]interface{})
 	if !ok {
 		return nil
@@ -159,15 +182,39 @@ func translateResponseInputItemToChatMessage(item interface{}) []OpenAIChatMessa
 			b, _ := json.Marshal(o)
 			output = string(b)
 		}
-		return []OpenAIChatMessage{{
+		msg := OpenAIChatMessage{
 			Role:   "tool",
 			ToolID: callID,
 			Content: output,
-		}}
+		}
+		// Look up the function name from the corresponding function_call item
+		if callIDToName != nil {
+			if name, ok := callIDToName[callID]; ok {
+				msg.Name = name
+			}
+		}
+		return []OpenAIChatMessage{msg}
 
 	case "reasoning":
-		// Reasoning items are sent back as context; we can't directly represent them
-		// in Chat Completions messages, so we skip them for now.
+		// Reasoning items contain prior thinking content from the model.
+		// We translate them to an assistant message with reasoning_content.
+		var summaryText string
+		if summary, ok := itemMap["summary"].([]interface{}); ok {
+			for _, s := range summary {
+				if m, ok := s.(map[string]interface{}); ok {
+					if t, ok := m["text"].(string); ok {
+						summaryText += t
+					}
+				}
+			}
+		}
+		if summaryText != "" {
+			return []OpenAIChatMessage{{
+				Role:             "assistant",
+				Content:          "",
+				ReasoningContent: &summaryText,
+			}}
+		}
 		return nil
 
 	default:
@@ -271,8 +318,10 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 				})
 			}
 		case []interface{}:
+			// Build a call_id -> name mapping from function_call items for tool name lookup
+			callIDToName := buildResponsesCallIDToNameMap(input)
 			for _, item := range input {
-				msgs := translateResponseInputItemToOllama(item)
+				msgs := translateResponseInputItemToOllama(item, callIDToName)
 				messages = append(messages, msgs...)
 			}
 		}
@@ -326,7 +375,7 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 	return ollamaReq
 }
 
-func translateResponseInputItemToOllama(item interface{}) []OllamaMessage {
+func translateResponseInputItemToOllama(item interface{}, callIDToName map[string]string) []OllamaMessage {
 	itemMap, ok := item.(map[string]interface{})
 	if !ok {
 		return nil
@@ -404,10 +453,34 @@ func translateResponseInputItemToOllama(item interface{}) []OllamaMessage {
 		if callID != "" {
 			ollamaMsg.ToolCallID = callID
 		}
+		// Look up the function name from the corresponding function_call item
+		if callIDToName != nil {
+			if name, ok := callIDToName[callID]; ok {
+				ollamaMsg.ToolName = name
+			}
+		}
 		return []OllamaMessage{ollamaMsg}
 
 	case "reasoning":
-		// Skip reasoning items for Ollama
+		// Reasoning items contain prior thinking content.
+		// Translate to an assistant message with thinking field for Ollama.
+		var summaryText string
+		if summary, ok := itemMap["summary"].([]interface{}); ok {
+			for _, s := range summary {
+				if m, ok := s.(map[string]interface{}); ok {
+					if t, ok := m["text"].(string); ok {
+						summaryText += t
+					}
+				}
+			}
+		}
+		if summaryText != "" {
+			return []OllamaMessage{{
+				Role:     "assistant",
+				Content:  "",
+				Thinking: summaryText,
+			}}
+		}
 		return nil
 
 	default:

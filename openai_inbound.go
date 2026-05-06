@@ -147,11 +147,28 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 	w.Write(respBody)
 }
 
+// buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name
+// by scanning all assistant messages for tool_calls.
+func buildOpenAIToolIDToNameMap(messages []OpenAIChatMessage) map[string]string {
+	idToName := map[string]string{}
+	for _, msg := range messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" && tc.Function.Name != "" {
+				idToName[tc.ID] = tc.Function.Name
+			}
+		}
+	}
+	return idToName
+}
+
 func translateOpenAIToOllama(req *OpenAIChatRequest) *OllamaChatRequest {
 	messages := []OllamaMessage{}
 
+	// Build a mapping from tool_call_id to function name for resolving tool result references
+	toolIDToName := buildOpenAIToolIDToNameMap(req.Messages)
+
 	for _, msg := range req.Messages {
-		messages = append(messages, translateOpenAIMessageToOllama(msg)...)
+		messages = append(messages, translateOpenAIMessageToOllamaWithLookup(msg, toolIDToName)...)
 	}
 
 	ollamaReq := &OllamaChatRequest{
@@ -192,6 +209,10 @@ func translateOpenAIToOllama(req *OpenAIChatRequest) *OllamaChatRequest {
 }
 
 func translateOpenAIMessageToOllama(msg OpenAIChatMessage) []OllamaMessage {
+	return translateOpenAIMessageToOllamaWithLookup(msg, nil)
+}
+
+func translateOpenAIMessageToOllamaWithLookup(msg OpenAIChatMessage, toolIDToName map[string]string) []OllamaMessage {
 	if msg.Role == "tool" {
 		content := ""
 		if s, ok := msg.Content.(string); ok {
@@ -206,8 +227,12 @@ func translateOpenAIMessageToOllama(msg OpenAIChatMessage) []OllamaMessage {
 		}
 		if msg.ToolID != "" {
 			ollamaMsg.ToolCallID = msg.ToolID
-			if msg.Name != "" {
-				ollamaMsg.ToolName = msg.Name
+		}
+		if msg.Name != "" {
+			ollamaMsg.ToolName = msg.Name
+		} else if toolIDToName != nil {
+			if name, ok := toolIDToName[msg.ToolID]; ok {
+				ollamaMsg.ToolName = name
 			}
 		}
 		return []OllamaMessage{ollamaMsg}
@@ -224,6 +249,7 @@ func translateOpenAIMessageToOllama(msg OpenAIChatMessage) []OllamaMessage {
 				args = map[string]interface{}{}
 			}
 			toolCalls[i] = OllamaToolCall{
+				ID: tc.ID,
 				Function: OllamaToolCallFunction{
 					Name:      tc.Function.Name,
 					Arguments: args,
@@ -231,8 +257,19 @@ func translateOpenAIMessageToOllama(msg OpenAIChatMessage) []OllamaMessage {
 			}
 		}
 		content := ""
-		if s, ok := msg.Content.(string); ok {
-			content = s
+		switch c := msg.Content.(type) {
+		case string:
+			content = c
+		case []interface{}:
+			for _, item := range c {
+				if partMap, ok := item.(map[string]interface{}); ok {
+					if partType, ok := partMap["type"].(string); ok && partType == "text" {
+						if text, ok := partMap["text"].(string); ok {
+							content += text
+						}
+					}
+				}
+			}
 		}
 		ollamaMsg := OllamaMessage{
 			Role:      "assistant",
@@ -323,7 +360,13 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 		msg.ReasoningContent = &ollama.Message.Thinking
 	}
 
-	if ollama.Message.Content != "" {
+	if len(ollama.Message.ToolCalls) > 0 {
+		if ollama.Message.Content != "" {
+			msg.Content = ollama.Message.Content
+		} else {
+			msg.Content = nil
+		}
+	} else if ollama.Message.Content != "" {
 		msg.Content = ollama.Message.Content
 	} else {
 		msg.Content = ""
@@ -333,8 +376,12 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 		toolCalls := make([]OpenAIToolCall, len(ollama.Message.ToolCalls))
 		for i, tc := range ollama.Message.ToolCalls {
 			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			id := tc.ID
+			if id == "" {
+				id = fmt.Sprintf("call_%s_%d", tc.Function.Name, i)
+			}
 			toolCalls[i] = OpenAIToolCall{
-				ID:   fmt.Sprintf("call_%s_%d", tc.Function.Name, i),
+				ID:   id,
 				Type: "function",
 				Function: OpenAIToolCallFunc{
 					Name:      tc.Function.Name,
