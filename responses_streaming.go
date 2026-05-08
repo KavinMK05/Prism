@@ -70,6 +70,11 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	var completedEmitted bool
 	var reasoningItemID string
 	var reasoningActive bool
+	var reasoningSummaryIndex int
+	var reasoningSummaryPartAdded bool
+	var accumulatedReasoning string
+	var completedOutput []interface{} // accumulated output items for response.completed
+	var completedOutputText string   // accumulated output text for response.completed
 
 	// Emit response.created
 	emitResponsesEvent(w, flusher, canFlush, "response.created", map[string]interface{}{
@@ -128,6 +133,9 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 				reasoningActive = true
 				outputIndex++
 				reasoningItemID = generateID("rs_")
+				reasoningSummaryIndex = 0
+				reasoningSummaryPartAdded = false
+				accumulatedReasoning = ""
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
 					"type":         "response.output_item.added",
 					"output_index": outputIndex,
@@ -138,20 +146,60 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 					},
 				})
 			}
+
+			// Add summary part on first reasoning chunk
+			if !reasoningSummaryPartAdded {
+				reasoningSummaryPartAdded = true
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.added", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.added",
+					"output_index":  outputIndex,
+					"summary_index": reasoningSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": "",
+					},
+				})
+			}
+
+			// Stream the reasoning text as a summary delta
+			accumulatedReasoning += *choice.Delta.ReasoningContent
+			emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_text.delta", map[string]interface{}{
+				"type":          "response.reasoning_summary_text.delta",
+				"output_index":  outputIndex,
+				"summary_index": reasoningSummaryIndex,
+				"delta":         *choice.Delta.ReasoningContent,
+			})
 		}
 
 		if !currentChunkHasThinking && reasoningActive {
 			reasoningActive = false
+
+			// Close summary part if it was opened
+			if reasoningSummaryPartAdded {
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"output_index":  outputIndex,
+					"summary_index": reasoningSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": accumulatedReasoning,
+					},
+				})
+				reasoningSummaryPartAdded = false
+			}
+
 			// Close reasoning item
+			reasoningItem := map[string]interface{}{
+				"id":      reasoningItemID,
+				"type":    "reasoning",
+				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+			}
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":      reasoningItemID,
-					"type":    "reasoning",
-					"summary": []interface{}{},
-				},
+				"item":         reasoningItem,
 			})
+			completedOutput = append(completedOutput, reasoningItem)
 			reasoningItemID = ""
 		}
 
@@ -179,16 +227,19 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 
 			// Close message item if active
 			if messageItemID != "" {
+				msgItem := map[string]interface{}{
+					"id":      messageItemID,
+					"type":    "message",
+					"status":  "completed",
+					"role":    "assistant",
+					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": "completed",
-						"role":   "assistant",
-					},
+					"item":         msgItem,
 				})
+				completedOutput = append(completedOutput, msgItem)
 				messageItemID = ""
 			}
 
@@ -202,18 +253,20 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 							"call_id":      funcCallCallID,
 							"arguments":    accumulatedArgs,
 						})
+						fcItem := map[string]interface{}{
+							"id":        funcCallItemID,
+							"type":      "function_call",
+							"call_id":   funcCallCallID,
+							"name":      funcCallName,
+							"arguments": accumulatedArgs,
+							"status":    "completed",
+						}
 						emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 							"type":         "response.output_item.done",
 							"output_index": outputIndex,
-							"item": map[string]interface{}{
-								"id":        funcCallItemID,
-								"type":      "function_call",
-								"call_id":   funcCallCallID,
-								"name":      funcCallName,
-								"arguments": accumulatedArgs,
-								"status":    "completed",
-							},
+							"item":         fcItem,
 						})
+						completedOutput = append(completedOutput, fcItem)
 					}
 
 					outputIndex++
@@ -226,11 +279,11 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 						"output_index": outputIndex,
 						"item": map[string]interface{}{
 							"id":        funcCallItemID,
-						"type":      "function_call",
-						"call_id":   tc.ID,
-						"name":      tc.Function.Name,
-						"arguments": "",
-						"status":    "in_progress",
+							"type":      "function_call",
+							"call_id":   tc.ID,
+							"name":      tc.Function.Name,
+							"arguments": "",
+							"status":    "in_progress",
 						},
 					})
 				}
@@ -280,6 +333,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 			}
 
 			accumulatedText += *delta.Content
+			completedOutputText += *delta.Content
 			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,
@@ -318,32 +372,52 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 			// Close reasoning if active
 			if reasoningActive {
 				reasoningActive = false
+
+				// Close summary part if open
+				if reasoningSummaryPartAdded {
+					emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+						"type":          "response.reasoning_summary_part.done",
+						"output_index":  outputIndex,
+						"summary_index": reasoningSummaryIndex,
+						"part": map[string]interface{}{
+							"type": "summary_text",
+							"text": accumulatedReasoning,
+						},
+					})
+					reasoningSummaryPartAdded = false
+				}
+
 				if reasoningItemID != "" {
+					reasoningItem := map[string]interface{}{
+						"id":      reasoningItemID,
+						"type":    "reasoning",
+						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+					}
 					emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 						"type":         "response.output_item.done",
 						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":      reasoningItemID,
-							"type":    "reasoning",
-							"summary": []interface{}{},
-						},
+						"item":         reasoningItem,
 					})
+					completedOutput = append(completedOutput, reasoningItem)
 				}
 				reasoningItemID = ""
 			}
 
 			// Close message item if active
 			if messageItemID != "" {
+				msgItem := map[string]interface{}{
+					"id":      messageItemID,
+					"type":    "message",
+					"status":  status,
+					"role":    "assistant",
+					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": status,
-						"role":   "assistant",
-					},
+					"item":         msgItem,
 				})
+				completedOutput = append(completedOutput, msgItem)
 				messageItemID = ""
 			}
 
@@ -355,37 +429,41 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 					"call_id":      funcCallCallID,
 					"arguments":    accumulatedArgs,
 				})
+				fcItem := map[string]interface{}{
+					"id":        funcCallItemID,
+					"type":      "function_call",
+					"call_id":   funcCallCallID,
+					"name":      funcCallName,
+					"arguments": accumulatedArgs,
+					"status":    "completed",
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":        funcCallItemID,
-						"type":      "function_call",
-						"call_id":   funcCallCallID,
-						"name":      funcCallName,
-						"arguments": accumulatedArgs,
-						"status":    "completed",
-					},
+					"item":         fcItem,
 				})
+				completedOutput = append(completedOutput, fcItem)
 				funcCallItemID = ""
 			}
 
-			// Emit completed
-			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
-				"type": "response.completed",
-				"response": map[string]interface{}{
-					"id":         respID,
-					"object":     "response",
-					"created_at": createdAt,
-					"model":      respReq.Model,
-					"status":     status,
-					"output":     []interface{}{},
-					"usage": map[string]interface{}{
-						"input_tokens":  inputTokens,
-						"output_tokens": outputTokens,
-						"total_tokens":  inputTokens + outputTokens,
-					},
+			// Emit completed with accumulated output
+			completedResp := map[string]interface{}{
+				"id":          respID,
+				"object":      "response",
+				"created_at":  createdAt,
+				"model":       respReq.Model,
+				"status":      status,
+				"output":      completedOutput,
+				"output_text": completedOutputText,
+				"usage": map[string]interface{}{
+					"input_tokens":  inputTokens,
+					"output_tokens": outputTokens,
+					"total_tokens":  inputTokens + outputTokens,
 				},
+			}
+			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
+				"type":     "response.completed",
+				"response": completedResp,
 			})
 			completedEmitted = true
 		}
@@ -417,46 +495,68 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 		}
 
 		if messageItemID != "" {
+			msgItem := map[string]interface{}{
+				"id":      messageItemID,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+			}
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":     messageItemID,
-					"type":   "message",
-					"status": "completed",
-					"role":   "assistant",
-				},
+				"item":         msgItem,
 			})
+			completedOutput = append(completedOutput, msgItem)
 		}
 
 		if funcCallItemID != "" {
+			fcItem := map[string]interface{}{
+				"id":        funcCallItemID,
+				"type":      "function_call",
+				"call_id":   funcCallCallID,
+				"name":      funcCallName,
+				"arguments": accumulatedArgs,
+				"status":    "completed",
+			}
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":        funcCallItemID,
-					"type":      "function_call",
-					"call_id":   funcCallCallID,
-					"name":      funcCallName,
-					"arguments": accumulatedArgs,
-					"status":    "completed",
-				},
+				"item":         fcItem,
 			})
+			completedOutput = append(completedOutput, fcItem)
 		}
 
 		// Close reasoning if still active
 		if reasoningActive {
 			reasoningActive = false
+
+			// Close summary part if open
+			if reasoningSummaryPartAdded {
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"output_index":  outputIndex,
+					"summary_index": reasoningSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": accumulatedReasoning,
+					},
+				})
+				reasoningSummaryPartAdded = false
+			}
+
 			if reasoningItemID != "" {
+				reasoningItem := map[string]interface{}{
+					"id":      reasoningItemID,
+					"type":    "reasoning",
+					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":      reasoningItemID,
-						"type":    "reasoning",
-						"summary": []interface{}{},
-					},
+					"item":         reasoningItem,
 				})
+				completedOutput = append(completedOutput, reasoningItem)
 			}
 			reasoningItemID = ""
 		}
@@ -464,12 +564,13 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 		emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
 			"type": "response.completed",
 			"response": map[string]interface{}{
-				"id":         respID,
-				"object":     "response",
-				"created_at": createdAt,
-				"model":      respReq.Model,
-				"status":     "completed",
-				"output":     []interface{}{},
+				"id":          respID,
+				"object":      "response",
+				"created_at":  createdAt,
+				"model":       respReq.Model,
+				"status":      "completed",
+				"output":      completedOutput,
+				"output_text": completedOutputText,
 				"usage": map[string]interface{}{
 					"input_tokens":  inputTokens,
 					"output_tokens": outputTokens,
@@ -535,8 +636,14 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 	var inputTokens int
 	var accumulatedText string
 	var thinkingActive bool
+	var thinkingSummaryIndex int
+	var thinkingSummaryPartAdded bool
+	var accumulatedReasoning string
+	var reasoningItemID string
 	var completedEmitted bool
 	var toolCallsEmitted int
+	var completedOutput []interface{} // accumulated output items for response.completed
+	var completedOutputText string   // accumulated output text for response.completed
 
 	// Emit response.created
 	emitResponsesEvent(w, flusher, canFlush, "response.created", map[string]interface{}{
@@ -578,39 +685,80 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 		if chunk.Message.Thinking != "" {
 			if !thinkingActive {
 				thinkingActive = true
-				if messageItemID == "" {
-					outputIndex++
-					messageItemID = generateID("rs_")
-					emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
-						"type":         "response.output_item.added",
-						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":      messageItemID,
-							"type":    "reasoning",
-							"summary": []interface{}{},
-						},
-					})
-				}
+				outputIndex++
+				reasoningItemID = generateID("rs_")
+				thinkingSummaryIndex = 0
+				thinkingSummaryPartAdded = false
+				accumulatedReasoning = ""
+				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+					"type":         "response.output_item.added",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      reasoningItemID,
+						"type":    "reasoning",
+						"summary": []interface{}{},
+					},
+				})
 			}
+
+			// Add summary part on first thinking chunk
+			if !thinkingSummaryPartAdded {
+				thinkingSummaryPartAdded = true
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.added", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.added",
+					"output_index":  outputIndex,
+					"summary_index": thinkingSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": "",
+					},
+				})
+			}
+
+			// Stream the thinking text as a summary delta
+			accumulatedReasoning += chunk.Message.Thinking
+			emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_text.delta", map[string]interface{}{
+				"type":          "response.reasoning_summary_text.delta",
+				"output_index":  outputIndex,
+				"summary_index": thinkingSummaryIndex,
+				"delta":         chunk.Message.Thinking,
+			})
 		}
 
 		hasNonThinkingContent := chunk.Message.Content != "" || len(chunk.Message.ToolCalls) > 0
 
 		if hasNonThinkingContent && thinkingActive {
 			thinkingActive = false
+
+			// Close summary part if open
+			if thinkingSummaryPartAdded {
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"output_index":  outputIndex,
+					"summary_index": thinkingSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": accumulatedReasoning,
+					},
+				})
+				thinkingSummaryPartAdded = false
+			}
+
 			// Close reasoning item
-			if messageItemID != "" {
+			if reasoningItemID != "" {
+				reasoningItem := map[string]interface{}{
+					"id":      reasoningItemID,
+					"type":    "reasoning",
+					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":      messageItemID,
-						"type":    "reasoning",
-						"summary": []interface{}{},
-					},
+					"item":         reasoningItem,
 				})
+				completedOutput = append(completedOutput, reasoningItem)
 			}
-			messageItemID = ""
+			reasoningItemID = ""
 		}
 
 		// Handle tool calls
@@ -635,16 +783,19 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 					})
 					contentPartID = ""
 				}
+				msgItem := map[string]interface{}{
+					"id":      messageItemID,
+					"type":    "message",
+					"status":  "completed",
+					"role":    "assistant",
+					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": "completed",
-						"role":   "assistant",
-					},
+					"item":         msgItem,
 				})
+				completedOutput = append(completedOutput, msgItem)
 				messageItemID = ""
 			}
 
@@ -684,28 +835,26 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 					"arguments":    string(argsJSON),
 				})
 
+				fcItem := map[string]interface{}{
+					"id":        funcCallItemID,
+					"type":      "function_call",
+					"call_id":   funcCallCallID,
+					"name":      toolName,
+					"arguments": string(argsJSON),
+					"status":    "completed",
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":        funcCallItemID,
-						"type":      "function_call",
-						"call_id":   funcCallCallID,
-						"name":      toolName,
-						"arguments": string(argsJSON),
-						"status":    "completed",
-					},
+					"item":         fcItem,
 				})
+				completedOutput = append(completedOutput, fcItem)
 				toolCallsEmitted++
 			}
 		}
 
 		// Handle content
 		if chunk.Message.Content != "" {
-			if thinkingActive {
-				continue
-			}
-
 			if messageItemID == "" {
 				outputIndex++
 				messageItemID = generateID("msg_")
@@ -733,6 +882,7 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 			}
 
 			accumulatedText += chunk.Message.Content
+			completedOutputText += chunk.Message.Content
 			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,
@@ -746,18 +896,35 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 			// Close thinking if active
 			if thinkingActive {
 				thinkingActive = false
-				if messageItemID != "" {
+
+				// Close summary part if open
+				if thinkingSummaryPartAdded {
+					emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+						"type":          "response.reasoning_summary_part.done",
+						"output_index":  outputIndex,
+						"summary_index": thinkingSummaryIndex,
+						"part": map[string]interface{}{
+							"type": "summary_text",
+							"text": accumulatedReasoning,
+						},
+					})
+					thinkingSummaryPartAdded = false
+				}
+
+				if reasoningItemID != "" {
+					reasoningItem := map[string]interface{}{
+						"id":      reasoningItemID,
+						"type":    "reasoning",
+						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+					}
 					emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 						"type":         "response.output_item.done",
 						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":      messageItemID,
-							"type":    "reasoning",
-							"summary": []interface{}{},
-						},
+						"item":         reasoningItem,
 					})
+					completedOutput = append(completedOutput, reasoningItem)
 				}
-				messageItemID = ""
+				reasoningItemID = ""
 			}
 
 			// Close message item if active
@@ -786,57 +953,64 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 					status = "incomplete"
 				}
 
+				msgItem := map[string]interface{}{
+					"id":      messageItemID,
+					"type":    "message",
+					"status":  status,
+					"role":    "assistant",
+					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": status,
-						"role":   "assistant",
-					},
+					"item":         msgItem,
 				})
+				completedOutput = append(completedOutput, msgItem)
 				messageItemID = ""
 			}
 
 			// Close function call if active
 			if funcCallItemID != "" {
+				fcItem := map[string]interface{}{
+					"id":        funcCallItemID,
+					"type":      "function_call",
+					"call_id":   funcCallCallID,
+					"name":      funcCallName,
+					"arguments": "{}",
+					"status":    "completed",
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":        funcCallItemID,
-						"type":      "function_call",
-						"call_id":   funcCallCallID,
-						"name":      funcCallName,
-						"arguments": "{}",
-						"status":    "completed",
-					},
+					"item":         fcItem,
 				})
+				completedOutput = append(completedOutput, fcItem)
 				funcCallItemID = ""
 			}
 
-			// Emit completed
+			// Emit completed with accumulated output
 			status := "completed"
 			if chunk.DoneReason == "length" {
 				status = "incomplete"
 			}
 
-			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
-				"type": "response.completed",
-				"response": map[string]interface{}{
-					"id":         respID,
-					"object":     "response",
-					"created_at": createdAt,
-					"model":      respReq.Model,
-					"status":     status,
-					"output":     []interface{}{},
-					"usage": map[string]interface{}{
-						"input_tokens":  inputTokens,
-						"output_tokens": outputTokens,
-						"total_tokens":  inputTokens + outputTokens,
-					},
+			completedResp := map[string]interface{}{
+				"id":          respID,
+				"object":      "response",
+				"created_at":  createdAt,
+				"model":       respReq.Model,
+				"status":      status,
+				"output":      completedOutput,
+				"output_text": completedOutputText,
+				"usage": map[string]interface{}{
+					"input_tokens":  inputTokens,
+					"output_tokens": outputTokens,
+					"total_tokens":  inputTokens + outputTokens,
 				},
+			}
+			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
+				"type":     "response.completed",
+				"response": completedResp,
 			})
 			completedEmitted = true
 		}
@@ -850,18 +1024,35 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 	if !completedEmitted {
 		if thinkingActive {
 			thinkingActive = false
-			if messageItemID != "" {
+
+			// Close summary part if open
+			if thinkingSummaryPartAdded {
+				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"output_index":  outputIndex,
+					"summary_index": thinkingSummaryIndex,
+					"part": map[string]interface{}{
+						"type": "summary_text",
+						"text": accumulatedReasoning,
+					},
+				})
+				thinkingSummaryPartAdded = false
+			}
+
+			if reasoningItemID != "" {
+				reasoningItem := map[string]interface{}{
+					"id":      reasoningItemID,
+					"type":    "reasoning",
+					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
+				}
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":      messageItemID,
-						"type":    "reasoning",
-						"summary": []interface{}{},
-					},
+					"item":         reasoningItem,
 				})
+				completedOutput = append(completedOutput, reasoningItem)
 			}
-			messageItemID = ""
+			reasoningItemID = ""
 		}
 
 		if messageItemID != "" {
@@ -883,42 +1074,48 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 				})
 			}
 
+			msgItem := map[string]interface{}{
+				"id":      messageItemID,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+			}
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":     messageItemID,
-					"type":   "message",
-					"status": "completed",
-					"role":   "assistant",
-				},
+				"item":         msgItem,
 			})
+			completedOutput = append(completedOutput, msgItem)
 		}
 
 		if funcCallItemID != "" {
+			fcItem := map[string]interface{}{
+				"id":        funcCallItemID,
+				"type":      "function_call",
+				"call_id":   funcCallCallID,
+				"name":      funcCallName,
+				"arguments": "{}",
+				"status":    "completed",
+			}
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":        funcCallItemID,
-					"type":      "function_call",
-					"call_id":   funcCallCallID,
-					"name":      funcCallName,
-					"arguments": "{}",
-					"status":    "completed",
-				},
+				"item":         fcItem,
 			})
+			completedOutput = append(completedOutput, fcItem)
 		}
 
 		emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
 			"type": "response.completed",
 			"response": map[string]interface{}{
-				"id":         respID,
-				"object":     "response",
-				"created_at": createdAt,
-				"model":      respReq.Model,
-				"status":     "completed",
-				"output":     []interface{}{},
+				"id":          respID,
+				"object":      "response",
+				"created_at":  createdAt,
+				"model":       respReq.Model,
+				"status":      "completed",
+				"output":      completedOutput,
+				"output_text": completedOutputText,
 				"usage": map[string]interface{}{
 					"input_tokens":  inputTokens,
 					"output_tokens": outputTokens,
