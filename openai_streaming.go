@@ -16,8 +16,9 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 	reqStart := time.Now()
 	outputTokens := 0
 	liveOutputTokens := 0
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(anthroReq.Model, p.providerType, 0, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, 0, outputTokens, time.Since(reqStart))
 	}()
 
 	body, err := json.Marshal(openAIReq)

@@ -69,7 +69,8 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	anthroReq.Model = getEffectiveModel(p.modelRemap, anthroReq.Model)
 
-	globalStats.StartRequest(anthroReq.Model, p.providerType)
+	client := detectClient(r)
+	globalStats.StartRequest(anthroReq.Model, p.providerType, client)
 	defer globalStats.EndRequest()
 	reqStart := time.Now()
 
@@ -125,7 +126,7 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	anthroResp := translateResponse(&ollamaResp, &anthroReq)
 
-	globalStats.RecordRequest(anthroReq.Model, p.providerType, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(anthroReq.Model, p.providerType, client, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

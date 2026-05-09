@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS requests (
 	timestamp INTEGER NOT NULL,
 	model TEXT NOT NULL,
 	provider TEXT NOT NULL,
+	client TEXT,
 	input_tokens INTEGER NOT NULL,
 	output_tokens INTEGER NOT NULL,
 	duration_ms INTEGER NOT NULL,
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_time ON requests(timestamp);
 CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
 CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);
+CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client);
 
 CREATE TABLE IF NOT EXISTS tps_snapshots (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +59,8 @@ CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
+	// Migration: add client column if it doesn't exist (safe to ignore error)
+	_, _ = db.Exec("ALTER TABLE requests ADD COLUMN client TEXT")
 	return nil
 }
 
@@ -72,9 +76,9 @@ func dbRecordRequest(req RequestStats) error {
 		return nil
 	}
 	_, err := db.Exec(
-		`INSERT INTO requests (timestamp, model, provider, input_tokens, output_tokens, duration_ms, tokens_per_sec)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		req.Timestamp.Unix(), req.Model, req.Provider, req.InputTokens, req.OutputTokens, req.DurationMs, req.TokensPerSec,
+		`INSERT INTO requests (timestamp, model, provider, client, input_tokens, output_tokens, duration_ms, tokens_per_sec)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Timestamp.Unix(), req.Model, req.Provider, req.Client, req.InputTokens, req.OutputTokens, req.DurationMs, req.TokensPerSec,
 	)
 	if err != nil {
 		log.Printf("[DB] failed to record request: %v", err)
@@ -103,7 +107,7 @@ type DailyTokens struct {
 	Total  int64  `json:"total"`
 }
 
-func getDailyTokens(from, to int64, provider, model string) ([]DailyTokens, error) {
+func getDailyTokens(from, to int64, provider, model, client string) ([]DailyTokens, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -118,6 +122,10 @@ func getDailyTokens(from, to int64, provider, model string) ([]DailyTokens, erro
 	if model != "" {
 		q += " AND model = ?"
 		args = append(args, model)
+	}
+	if client != "" {
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
 	}
 	q += " GROUP BY day ORDER BY day"
 
@@ -146,17 +154,20 @@ type MonthlyTokens struct {
 	Total  int64  `json:"total"`
 }
 
-func getMonthlyTokens() ([]MonthlyTokens, error) {
+func getMonthlyTokens(client string) ([]MonthlyTokens, error) {
 	if db == nil {
 		return nil, nil
 	}
-	rows, err := db.Query(`
-		SELECT strftime('%Y-%m', timestamp, 'unixepoch') as month,
+	q := `SELECT strftime('%Y-%m', timestamp, 'unixepoch') as month,
 		       SUM(input_tokens), SUM(output_tokens)
-		FROM requests
-		GROUP BY month
-		ORDER BY month
-	`)
+		FROM requests`
+	args := []interface{}{}
+	if client != "" {
+		q += " WHERE COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
+	}
+	q += " GROUP BY month ORDER BY month"
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +191,7 @@ type TPSHistory struct {
 	AvgTPS    float64 `json:"avg_tps"`
 }
 
-func getTPSHistory(from, to int64, provider, model string) ([]TPSHistory, error) {
+func getTPSHistory(from, to int64, provider, model, client string) ([]TPSHistory, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -195,6 +206,10 @@ func getTPSHistory(from, to int64, provider, model string) ([]TPSHistory, error)
 	if model != "" {
 		q += " AND model = ?"
 		args = append(args, model)
+	}
+	if client != "" {
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
 	}
 	q += " GROUP BY bucket, model ORDER BY bucket"
 
@@ -225,7 +240,7 @@ type ModelHistory struct {
 	TotalOutput  int64   `json:"total_output"`
 }
 
-func getModelHistory(from, to int64, provider, model string) ([]ModelHistory, error) {
+func getModelHistory(from, to int64, provider, model, client string) ([]ModelHistory, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -241,6 +256,10 @@ func getModelHistory(from, to int64, provider, model string) ([]ModelHistory, er
 	if model != "" {
 		q += " AND model = ?"
 		args = append(args, model)
+	}
+	if client != "" {
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
 	}
 	q += " GROUP BY model, provider ORDER BY COUNT(*) DESC"
 
@@ -313,6 +332,74 @@ func getDistinctProviders() ([]string, error) {
 			continue
 		}
 		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+type ClientHistory struct {
+	Client      string `json:"client"`
+	Requests    int    `json:"requests"`
+	TotalInput  int64  `json:"total_input"`
+	TotalOutput int64  `json:"total_output"`
+	TotalTokens int64  `json:"total_tokens"`
+}
+
+func getClientHistory(from, to int64, provider, model, client string) ([]ClientHistory, error) {
+	if db == nil {
+		return nil, nil
+	}
+	q := `SELECT COALESCE(NULLIF(client, ''), 'Unknown'), COUNT(*), SUM(input_tokens), SUM(output_tokens)
+		  FROM requests
+		  WHERE timestamp >= ? AND timestamp <= ?`
+	args := []interface{}{from, to}
+	if provider != "" {
+		q += " AND provider = ?"
+		args = append(args, provider)
+	}
+	if model != "" {
+		q += " AND model = ?"
+		args = append(args, model)
+	}
+	if client != "" {
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
+	}
+	q += " GROUP BY COALESCE(NULLIF(client, ''), 'Unknown') ORDER BY SUM(input_tokens + output_tokens) DESC"
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ClientHistory
+	for rows.Next() {
+		var c ClientHistory
+		if err := rows.Scan(&c.Client, &c.Requests, &c.TotalInput, &c.TotalOutput); err != nil {
+			continue
+		}
+		c.TotalTokens = c.TotalInput + c.TotalOutput
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+func getDistinctClients() ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT DISTINCT COALESCE(NULLIF(client, ''), 'Unknown') FROM requests ORDER BY client`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			continue
+		}
+		result = append(result, c)
 	}
 	return result, rows.Err()
 }

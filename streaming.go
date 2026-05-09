@@ -207,8 +207,9 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 
 	state := newStreamState(w, flusher, canFlush, msgID)
 
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(anthroReq.Model, p.providerType, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
 	}()
 
 	state.writeSSE("message_start", map[string]interface{}{

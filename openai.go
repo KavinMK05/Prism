@@ -314,7 +314,8 @@ func (p *Proxy) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request) {
 
 	anthroReq.Model = getEffectiveModel(p.modelRemap, anthroReq.Model)
 
-	globalStats.StartRequest(anthroReq.Model, p.providerType)
+	client := detectClient(r)
+	globalStats.StartRequest(anthroReq.Model, p.providerType, client)
 	defer globalStats.EndRequest()
 
 	openAIReq := translateToOpenAI(&anthroReq)
@@ -371,7 +372,7 @@ func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request,
 
 	anthroResp := translateFromOpenAI(&openAIResp, anthroReq)
 
-	globalStats.RecordRequest(anthroReq.Model, p.providerType, openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	globalStats.RecordRequest(anthroReq.Model, p.providerType, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

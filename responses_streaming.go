@@ -70,8 +70,9 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	var outputTokens int
 	var inputTokens int
 	var liveOutputTokens int
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(respReq.Model, p.providerType, inputTokens, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(respReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 	var completedEmitted bool
 	var reasoningItemID string
@@ -648,8 +649,9 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 	var funcCallName string
 	var outputTokens int
 	var inputTokens int
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(respReq.Model, p.providerType, inputTokens, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(respReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 	var accumulatedText string
 	var thinkingActive bool

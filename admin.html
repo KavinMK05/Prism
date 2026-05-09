@@ -955,9 +955,122 @@
     to { transform: rotate(360deg); }
   }
 
+  .client-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .client-card-header-left {}
+  .client-card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.2px;
+    margin: 0;
+  }
+  .client-card-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .client-time-select {
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+  }
+  .client-summary-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .client-summary-item {
+    text-align: left;
+  }
+  .client-summary-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .client-summary-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.5px;
+  }
+  .client-list-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 12px;
+    padding: 8px 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .client-list-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+  .client-list-row:last-child { border-bottom: none; }
+  .client-info-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .client-info-id {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+  .client-metric {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .client-bar-bg {
+    width: 100%;
+    height: 4px;
+    background: var(--surface-hover);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .client-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: #8b5cf6;
+    transition: width 0.4s ease;
+  }
+  .client-bar-fill-alt {
+    background: #3b82f6;
+  }
+  .client-bar-fill-alt2 {
+    background: #22c55e;
+  }
+
   @media (max-width: 600px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .stats-hero-value { font-size: 36px; }
+    .client-list-header { display: none; }
+    .client-list-row { grid-template-columns: 1fr; gap: 6px; }
+    .client-summary-row { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .client-summary-value { font-size: 18px; }
   }
 </style>
   <link rel="icon" type="image/png" href="/admin/icon.png" />
@@ -1136,6 +1249,8 @@
       <select id="statsFilterProvider" onchange="loadStatsHistory()"><option value="">All Providers</option></select>
       <div class="stats-filter-label">Model</div>
       <select id="statsFilterModel" onchange="loadStatsHistory()"><option value="">All Models</option></select>
+      <div class="stats-filter-label">Client</div>
+      <select id="statsFilterClient" onchange="loadStatsHistory()"><option value="">All Clients</option></select>
       <div class="stats-filter-label">From</div>
       <input type="date" id="statsFilterFrom" onchange="loadStatsHistory()" />
       <div class="stats-filter-label">To</div>
@@ -1196,6 +1311,45 @@
             <div class="stats-item-value" id="statsAvgTps">--</div>
             <div class="stats-item-label">Avg tok/sec</div>
           </div>
+        </div>
+      </div>
+
+      <!-- Usage by Client -->
+      <div class="card" id="clientUsageCard">
+        <div class="client-card-header">
+          <div class="client-card-header-left">
+            <div class="client-card-title">Usage by Client</div>
+            <div class="client-card-subtitle">Track API usage across your clients and tools.</div>
+          </div>
+          <select class="client-time-select" id="clientTimeRange" onchange="onClientTimeRangeChange()">
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+            <option value="90">Last 90 Days</option>
+            <option value="all">All Time</option>
+          </select>
+        </div>
+        <div class="client-summary-row">
+          <div class="client-summary-item">
+            <div class="client-summary-label">Total Clients</div>
+            <div class="client-summary-value" id="clientTotalClients">0</div>
+          </div>
+          <div class="client-summary-item">
+            <div class="client-summary-label">Total Tokens</div>
+            <div class="client-summary-value" id="clientTotalTokens">0</div>
+          </div>
+          <div class="client-summary-item">
+            <div class="client-summary-label">Total Requests</div>
+            <div class="client-summary-value" id="clientTotalRequests">0</div>
+          </div>
+        </div>
+        <div class="client-list-header">
+          <div>Client</div>
+          <div>Tokens</div>
+          <div>Requests</div>
+          <div>% of Total</div>
+        </div>
+        <div id="clientListBody">
+          <div style="color:var(--text-secondary);font-size:13px;font-style:italic;padding:8px 0;">No data yet.</div>
         </div>
       </div>
 
@@ -2144,12 +2298,16 @@ function renderStats(data) {
     byModelEl.style.fontStyle = 'italic';
   }
 
+  // By client (live)
+  renderClientStats(data.by_client || null, true);
+
   // Recent requests
   const recentEl = document.getElementById('statsRecent');
   if (data.recent_requests && data.recent_requests.length > 0) {
     const lines = data.recent_requests.slice().reverse().map(r => {
       const t = new Date(r.timestamp).toLocaleTimeString();
-      return `${t}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${r.tokens_per_sec.toFixed(1)}tok/s  ${r.duration_ms}ms`;
+      const client = r.client || 'Unknown';
+      return `${t}  ${esc(client)}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${r.tokens_per_sec.toFixed(1)}tok/s  ${r.duration_ms}ms`;
     });
     recentEl.textContent = lines.join('\n');
   } else {
@@ -2212,10 +2370,13 @@ async function loadStatsFilters() {
     const data = await api('/stats/filters');
     const provSel = document.getElementById('statsFilterProvider');
     const modelSel = document.getElementById('statsFilterModel');
+    const clientSel = document.getElementById('statsFilterClient');
     const prevProv = provSel.value;
     const prevModel = modelSel.value;
+    const prevClient = clientSel.value;
     provSel.innerHTML = '<option value="">All Providers</option>';
     modelSel.innerHTML = '<option value="">All Models</option>';
+    clientSel.innerHTML = '<option value="">All Clients</option>';
     if (data.providers) {
       data.providers.forEach(p => {
         provSel.innerHTML += `<option value="${esc(p)}">${esc(p)}</option>`;
@@ -2226,8 +2387,14 @@ async function loadStatsFilters() {
         modelSel.innerHTML += `<option value="${esc(m)}">${esc(m)}</option>`;
       });
     }
+    if (data.clients) {
+      data.clients.forEach(c => {
+        clientSel.innerHTML += `<option value="${esc(c)}">${esc(c)}</option>`;
+      });
+    }
     provSel.value = prevProv || '';
     modelSel.value = prevModel || '';
+    clientSel.value = prevClient || '';
   } catch(e) {
     console.error('Failed to load stats filters:', e);
   }
@@ -2239,11 +2406,13 @@ async function loadStatsHistory() {
     const to = document.getElementById('statsFilterTo').value;
     const provider = document.getElementById('statsFilterProvider').value;
     const model = document.getElementById('statsFilterModel').value;
-    const qs = new URLSearchParams({ from, to, provider, model });
+    const client = document.getElementById('statsFilterClient').value;
+    const qs = new URLSearchParams({ from, to, provider, model, client });
     const data = await api('/stats/history?' + qs.toString());
     renderDailyChart(data.daily_tokens || []);
     renderMonthlyChart(data.monthly_tokens || []);
     renderTPSHistory(data.tps_history || [], data.by_model || []);
+    renderClientStats(data.by_client || null, false);
   } catch(e) {
     console.error('Failed to load stats history:', e);
   }
@@ -2448,6 +2617,94 @@ async function confirmClearStats() {
   } catch(e) {
     toast('Failed to clear stats: ' + e.message, 'error');
   }
+}
+
+// ── Client Stats ──
+
+function onClientTimeRangeChange() {
+  const range = document.getElementById('clientTimeRange').value;
+  const now = new Date();
+  let fromDate;
+  if (range === 'all') {
+    fromDate = new Date(0);
+  } else {
+    const days = parseInt(range, 10);
+    fromDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  }
+  document.getElementById('statsFilterFrom').value = fromDate.toISOString().split('T')[0];
+  document.getElementById('statsFilterTo').value = now.toISOString().split('T')[0];
+  loadStatsHistory();
+}
+
+function renderClientStats(data, isLive) {
+  const listBody = document.getElementById('clientListBody');
+  const totalClientsEl = document.getElementById('clientTotalClients');
+  const totalTokensEl = document.getElementById('clientTotalTokens');
+  const totalRequestsEl = document.getElementById('clientTotalRequests');
+
+  let arr = [];
+  if (Array.isArray(data)) {
+    arr = data;
+  } else if (data && typeof data === 'object') {
+    // live stats format: object with client names as keys
+    for (const [client, stats] of Object.entries(data)) {
+      arr.push({
+        client: client,
+        requests: stats.requests || 0,
+        total_input: stats.input_tokens || 0,
+        total_output: stats.output_tokens || 0,
+        total_tokens: (stats.input_tokens || 0) + (stats.output_tokens || 0)
+      });
+    }
+    arr.sort((a, b) => b.total_tokens - a.total_tokens);
+  }
+
+  if (arr.length === 0) {
+    listBody.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;font-style:italic;padding:8px 0;">No data yet.</div>';
+    totalClientsEl.textContent = '0';
+    totalTokensEl.textContent = '0';
+    totalRequestsEl.textContent = '0';
+    return;
+  }
+
+  const grandTotalTokens = arr.reduce((s, c) => s + c.total_tokens, 0);
+  const grandTotalRequests = arr.reduce((s, c) => s + c.requests, 0);
+
+  totalClientsEl.textContent = arr.length;
+  totalTokensEl.textContent = formatNumber(grandTotalTokens);
+  totalRequestsEl.textContent = formatNumber(grandTotalRequests);
+
+  const top3 = arr.slice(0, 3);
+  const maxTokens = top3[0].total_tokens || 1;
+  const maxRequests = Math.max(...top3.map(c => c.requests), 1);
+
+  let html = '';
+  top3.forEach((c, i) => {
+    const tokenPct = ((c.total_tokens / grandTotalTokens) * 100).toFixed(1);
+    const tokenBarWidth = ((c.total_tokens / maxTokens) * 100).toFixed(1);
+    const reqBarWidth = ((c.requests / maxRequests) * 100).toFixed(1);
+    const pctBarWidth = ((c.total_tokens / grandTotalTokens) * 100).toFixed(1);
+    const barColorClass = i === 0 ? 'client-bar-fill' : (i === 1 ? 'client-bar-fill client-bar-fill-alt' : 'client-bar-fill client-bar-fill-alt2');
+    html += `<div class="client-list-row">
+      <div>
+        <div class="client-info-name">${esc(c.client)}</div>
+        <div class="client-info-id">${esc(c.client.toLowerCase().replace(/\s+/g, '-'))}</div>
+      </div>
+      <div>
+        <div class="client-metric">${formatNumber(c.total_tokens)}</div>
+        <div class="client-bar-bg"><div class="${barColorClass}" style="width:${tokenBarWidth}%"></div></div>
+      </div>
+      <div>
+        <div class="client-metric">${formatNumber(c.requests)}</div>
+        <div class="client-bar-bg"><div class="${barColorClass}" style="width:${reqBarWidth}%"></div></div>
+      </div>
+      <div>
+        <div class="client-metric">${tokenPct}%</div>
+        <div class="client-bar-bg"><div class="${barColorClass}" style="width:${pctBarWidth}%"></div></div>
+      </div>
+    </div>`;
+  });
+  listBody.innerHTML = html;
 }
 
 // ── Init ──

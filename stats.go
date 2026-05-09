@@ -10,6 +10,7 @@ import (
 type RequestStats struct {
 	Model        string    `json:"model"`
 	Provider     string    `json:"provider"`
+	Client       string    `json:"client"`
 	InputTokens  int       `json:"input_tokens"`
 	OutputTokens int       `json:"output_tokens"`
 	DurationMs   int64     `json:"duration_ms"`
@@ -21,6 +22,7 @@ type RequestStats struct {
 type LiveStats struct {
 	CurrentModel       string                 `json:"current_model"`
 	CurrentProvider    string                 `json:"current_provider"`
+	CurrentClient      string                 `json:"current_client"`
 	RequestActive      bool                   `json:"request_active"`
 	RequestStart       int64                  `json:"request_start,omitempty"`
 	LiveTokensReceived int                    `json:"live_tokens_received"`
@@ -29,8 +31,9 @@ type LiveStats struct {
 	TotalInputTokens   int64                  `json:"total_input_tokens"`
 	TotalOutputTokens  int64                  `json:"total_output_tokens"`
 	AvgTokensPerSec    float64                `json:"avg_tokens_per_sec"`
-	RecentRequests     []RequestStats        `json:"recent_requests"`
+	RecentRequests     []RequestStats         `json:"recent_requests"`
 	ByModel            map[string]*ModelStats `json:"by_model"`
+	ByClient           map[string]*ModelStats `json:"by_client"`
 }
 
 // ModelStats holds per-model aggregated stats
@@ -50,8 +53,10 @@ type StatsTracker struct {
 	totalInputTokens     int64
 	totalOutputTokens    int64
 	byModel              map[string]*ModelStats
+	byClient             map[string]*ModelStats
 	currentModel         string
 	currentProvider      string
+	currentClient        string
 	requestActive        bool
 	requestStart         time.Time
 	liveTokensReceived   int
@@ -65,11 +70,12 @@ func NewStatsTracker(maxRecent int) *StatsTracker {
 		recentRequests: make([]RequestStats, 0, maxRecent),
 		maxRecent:      maxRecent,
 		byModel:        make(map[string]*ModelStats),
+		byClient:       make(map[string]*ModelStats),
 	}
 }
 
 // RecordRequest records a completed request's stats
-func (st *StatsTracker) RecordRequest(model, provider string, inputTokens, outputTokens int, duration time.Duration) {
+func (st *StatsTracker) RecordRequest(model, provider, client string, inputTokens, outputTokens int, duration time.Duration) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -82,6 +88,7 @@ func (st *StatsTracker) RecordRequest(model, provider string, inputTokens, outpu
 	stats := RequestStats{
 		Model:        model,
 		Provider:     provider,
+		Client:       client,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		DurationMs:   durationMs,
@@ -110,14 +117,25 @@ func (st *StatsTracker) RecordRequest(model, provider string, inputTokens, outpu
 	ms.InputTokens += int64(inputTokens)
 	ms.OutputTokens += int64(outputTokens)
 	ms.AvgTokensPerSec = (ms.AvgTokensPerSec*float64(ms.Requests-1) + tokensPerSec) / float64(ms.Requests)
+
+	cs, ok := st.byClient[client]
+	if !ok {
+		cs = &ModelStats{}
+		st.byClient[client] = cs
+	}
+	cs.Requests++
+	cs.InputTokens += int64(inputTokens)
+	cs.OutputTokens += int64(outputTokens)
+	cs.AvgTokensPerSec = (cs.AvgTokensPerSec*float64(cs.Requests-1) + tokensPerSec) / float64(cs.Requests)
 }
 
 // StartRequest marks the beginning of a request for live tracking
-func (st *StatsTracker) StartRequest(model, provider string) {
+func (st *StatsTracker) StartRequest(model, provider, client string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.currentModel = model
 	st.currentProvider = provider
+	st.currentClient = client
 	st.requestActive = true
 	st.requestStart = time.Now()
 	st.liveTokensReceived = 0
@@ -165,9 +183,16 @@ func (st *StatsTracker) GetSnapshot() LiveStats {
 		byModel[k] = &vc
 	}
 
+	byClient := make(map[string]*ModelStats)
+	for k, v := range st.byClient {
+		vc := *v
+		byClient[k] = &vc
+	}
+
 	result := LiveStats{
 		CurrentModel:       st.currentModel,
 		CurrentProvider:    st.currentProvider,
+		CurrentClient:      st.currentClient,
 		RequestActive:      st.requestActive,
 		TotalRequests:      st.totalRequests,
 		TotalInputTokens:   st.totalInputTokens,
@@ -175,6 +200,7 @@ func (st *StatsTracker) GetSnapshot() LiveStats {
 		AvgTokensPerSec:    avgTps,
 		RecentRequests:     recent,
 		ByModel:            byModel,
+		ByClient:           byClient,
 		LiveTokensReceived: st.liveTokensReceived,
 	}
 

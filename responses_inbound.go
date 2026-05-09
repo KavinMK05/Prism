@@ -25,7 +25,8 @@ func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 
 	respReq.Model = getEffectiveModel(p.modelRemap, respReq.Model)
 
-	globalStats.StartRequest(respReq.Model, p.providerType)
+	client := detectClient(r)
+	globalStats.StartRequest(respReq.Model, p.providerType, client)
 	defer globalStats.EndRequest()
 
 	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
@@ -101,7 +102,7 @@ func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Reques
 
 	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq)
 
-	globalStats.RecordRequest(respReq.Model, p.providerType, openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	globalStats.RecordRequest(respReq.Model, p.providerType, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -154,7 +155,7 @@ func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Reques
 
 	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq)
 
-	globalStats.RecordRequest(respReq.Model, p.providerType, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(respReq.Model, p.providerType, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

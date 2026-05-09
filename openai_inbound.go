@@ -38,7 +38,8 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	openAIReq.Model = getEffectiveModel(p.modelRemap, openAIReq.Model)
 
-	globalStats.StartRequest(openAIReq.Model, p.providerType)
+	client := detectClient(r)
+	globalStats.StartRequest(openAIReq.Model, p.providerType, client)
 	defer globalStats.EndRequest()
 
 	if openAIReq.Stream {
@@ -103,7 +104,7 @@ func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Reque
 
 	openAIResp := translateOllamaToOpenAI(&ollamaResp, openAIReq)
 
-	globalStats.RecordRequest(openAIReq.Model, p.providerType, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -156,7 +157,7 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
 
-	globalStats.RecordRequest(openAIReq.Model, p.providerType, 0, 0, time.Since(reqStart))
+	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), 0, 0, time.Since(reqStart))
 }
 
 // buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name

@@ -285,6 +285,7 @@ func startAdminServer(cfg *Config, port string) {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"current_model":        "",
 				"current_provider":     "",
+				"current_client":       "",
 				"request_active":       false,
 				"live_tokens_received": 0,
 				"live_tokens_per_sec":  0,
@@ -294,6 +295,7 @@ func startAdminServer(cfg *Config, port string) {
 				"avg_tokens_per_sec":   0,
 				"recent_requests":      []interface{}{},
 				"by_model":             map[string]interface{}{},
+				"by_client":            map[string]interface{}{},
 			})
 			return
 		}
@@ -314,6 +316,7 @@ func startAdminServer(cfg *Config, port string) {
 		toStr := r.URL.Query().Get("to")
 		provider := r.URL.Query().Get("provider")
 		model := r.URL.Query().Get("model")
+		client := r.URL.Query().Get("client")
 
 		var fromTime, toTime time.Time
 		if fromStr != "" {
@@ -331,10 +334,11 @@ func startAdminServer(cfg *Config, port string) {
 		fromUnix := fromTime.Unix()
 		toUnix := toTime.Add(24 * time.Hour).Unix()
 
-		daily, _ := getDailyTokens(fromUnix, toUnix, provider, model)
-		monthly, _ := getMonthlyTokens()
-		tpsHist, _ := getTPSHistory(fromUnix, toUnix, provider, model)
-		byModel, _ := getModelHistory(fromUnix, toUnix, provider, model)
+		daily, _ := getDailyTokens(fromUnix, toUnix, provider, model, client)
+		monthly, _ := getMonthlyTokens(client)
+		tpsHist, _ := getTPSHistory(fromUnix, toUnix, provider, model, client)
+		byModel, _ := getModelHistory(fromUnix, toUnix, provider, model, client)
+		byClient, _ := getClientHistory(fromUnix, toUnix, provider, model, client)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -342,6 +346,7 @@ func startAdminServer(cfg *Config, port string) {
 			"monthly_tokens": monthly,
 			"tps_history":    tpsHist,
 			"by_model":       byModel,
+			"by_client":      byClient,
 		})
 	})
 
@@ -367,10 +372,12 @@ func startAdminServer(cfg *Config, port string) {
 		}
 		models, _ := getDistinctModels()
 		providers, _ := getDistinctProviders()
+		clients, _ := getDistinctClients()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"models":    models,
 			"providers": providers,
+			"clients":   clients,
 		})
 	})
 

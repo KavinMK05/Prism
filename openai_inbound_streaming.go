@@ -91,8 +91,9 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		emittedToolCalls: make(map[string]bool),
 	}
 
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(openAIReq.Model, p.providerType, state.inputTokens, state.outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, state.inputTokens, state.outputTokens, time.Since(reqStart))
 	}()
 
 	state.writeOpenAISSE(OpenAIStreamChunk{
@@ -332,8 +333,9 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
 	reqStart := time.Now()
 	var liveTokens int
+	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(openAIReq.Model, p.providerType, 0, liveTokens, time.Since(reqStart))
+		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, 0, liveTokens, time.Since(reqStart))
 	}()
 
 	body, err := json.Marshal(openAIReq)
