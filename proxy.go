@@ -12,11 +12,12 @@ import (
 )
 
 type Proxy struct {
-	upstreamURL   string
-	apiKey        string
-	providerType  string
-	modelRemap    *ModelRemapping
-	client        *http.Client
+	upstreamURL    string
+	apiKey         string
+	providerType   string
+	modelRemap     *ModelRemapping
+	client         *http.Client
+	oauthAccountID string // ID of the active OAuth account, if any
 }
 
 func NewProxy(upstreamURL, apiKey, providerType string, modelRemap *ModelRemapping) *Proxy {
@@ -29,13 +30,32 @@ func NewProxy(upstreamURL, apiKey, providerType string, modelRemap *ModelRemappi
 	}
 }
 
+// NewProxyWithOAuth creates a proxy that uses an OAuth account for authentication
+func NewProxyWithOAuth(upstreamURL, providerType string, modelRemap *ModelRemapping, account *OAuthAccount) *Proxy {
+	// Get a valid access token (refresh if needed)
+	token, err := getValidAccessToken(account)
+	if err != nil {
+		log.Printf("[OAuth] Failed to get valid token for %s: %v, using stored token", account.Email, err)
+		token = account.AccessToken
+	}
+
+	return &Proxy{
+		upstreamURL:    strings.TrimRight(upstreamURL, "/"),
+		apiKey:         token,
+		providerType:   providerType,
+		modelRemap:     modelRemap,
+		client:         &http.Client{Timeout: 10 * time.Minute},
+		oauthAccountID: account.ID,
+	}
+}
+
 func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, 405, "method_not_allowed", "Only POST is supported")
 		return
 	}
 
-	if p.providerType == "openai" {
+	if p.providerType == "openai" || p.providerType == "codex" {
 		p.HandleOpenAIMessages(w, r)
 		return
 	}

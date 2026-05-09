@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -121,19 +122,88 @@ func translateResponseInputItemToChatMessage(item interface{}, callIDToName map[
 		}
 	case "message":
 		role, _ := itemMap["role"].(string)
-		content := ""
-		if c, ok := itemMap["content"].(string); ok {
-			content = c
-		} else if c, ok := itemMap["content"]; ok && c != nil {
-			// Handle content as array
+		// Handle content
+		if c, ok := itemMap["content"]; ok && c != nil {
+			if contentStr, ok := c.(string); ok {
+				return []OpenAIChatMessage{{Role: role, Content: contentStr}}
+			}
 			if contentArray, ok := c.([]interface{}); ok {
-				// Check if it's an array of content parts
-				if len(contentArray) > 0 {
-					if _, hasType := contentArray[0].(map[string]interface{})["type"]; hasType {
-						return []OpenAIChatMessage{{Role: role, Content: contentArray}}
+				// Scan for image/file content parts to decide between string and structured content
+				hasMedia := false
+				for _, part := range contentArray {
+					if pMap, ok := part.(map[string]interface{}); ok {
+						pType, _ := pMap["type"].(string)
+						if pType == "input_image" || pType == "input_file" || pType == "image_url" {
+							hasMedia = true
+							break
+						}
 					}
 				}
-				// Otherwise treat as simple array
+
+				if hasMedia {
+					// Build structured content array with text + image/file parts
+					contentParts := []interface{}{}
+					for _, part := range contentArray {
+						if s, ok := part.(string); ok {
+							contentParts = append(contentParts, map[string]interface{}{
+								"type": "text",
+								"text": s,
+							})
+							continue
+						}
+						pMap, ok := part.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						pType, _ := pMap["type"].(string)
+						switch pType {
+						case "text", "input_text":
+							if t, ok := pMap["text"].(string); ok {
+								contentParts = append(contentParts, map[string]interface{}{
+									"type": "text",
+									"text": t,
+								})
+							}
+						case "input_image":
+							imageURL, _ := pMap["image_url"].(string)
+							if imageURL != "" {
+								imageURLObj := map[string]interface{}{
+									"url": imageURL,
+								}
+								if detail, ok := pMap["detail"].(string); ok && detail != "" {
+									imageURLObj["detail"] = detail
+								}
+								contentParts = append(contentParts, map[string]interface{}{
+									"type":      "image_url",
+									"image_url": imageURLObj,
+								})
+							}
+						case "input_file":
+							// input_file can have file_data (data URI) or file_url
+							if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
+								contentParts = append(contentParts, map[string]interface{}{
+									"type": "image_url",
+									"image_url": map[string]interface{}{
+										"url": fileData,
+									},
+								})
+							} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
+								contentParts = append(contentParts, map[string]interface{}{
+									"type": "image_url",
+									"image_url": map[string]interface{}{
+										"url": fileURL,
+									},
+								})
+							}
+						case "image_url":
+							// Already in OpenAI Chat Completions format, pass through
+							contentParts = append(contentParts, pMap)
+						}
+					}
+					return []OpenAIChatMessage{{Role: role, Content: contentParts}}
+				}
+
+				// No media — flatten to string
 				parts := []string{}
 				for _, part := range contentArray {
 					if s, ok := part.(string); ok {
@@ -146,13 +216,13 @@ func translateResponseInputItemToChatMessage(item interface{}, callIDToName map[
 						}
 					}
 				}
-				content = strings.Join(parts, "")
-			} else {
-				b, _ := json.Marshal(c)
-				content = string(b)
+				return []OpenAIChatMessage{{Role: role, Content: strings.Join(parts, "")}}
 			}
+			// Fallback for non-array content
+			b, _ := json.Marshal(c)
+			return []OpenAIChatMessage{{Role: role, Content: string(b)}}
 		}
-		return []OpenAIChatMessage{{Role: role, Content: content}}
+		return []OpenAIChatMessage{{Role: role, Content: ""}}
 
 	case "function_call":
 		callID, _ := itemMap["call_id"].(string)
@@ -389,30 +459,69 @@ func translateResponseInputItemToOllama(item interface{}, callIDToName map[strin
 		if role == "" {
 			role = "user"
 		}
-		content := ""
-		if c, ok := itemMap["content"].(string); ok {
-			content = c
-		} else if c, ok := itemMap["content"]; ok && c != nil {
+
+		if c, ok := itemMap["content"]; ok && c != nil {
+			if contentStr, ok := c.(string); ok {
+				return []OllamaMessage{{Role: role, Content: contentStr}}
+			}
 			if contentArray, ok := c.([]interface{}); ok {
-				parts := []string{}
+				textParts := []string{}
+				images := []string{}
 				for _, part := range contentArray {
 					if s, ok := part.(string); ok {
-						parts = append(parts, s)
-					} else if pMap, ok := part.(map[string]interface{}); ok {
-						if pType, ok := pMap["type"].(string); ok && (pType == "text" || pType == "input_text") {
-							if t, ok := pMap["text"].(string); ok {
-								parts = append(parts, t)
+						textParts = append(textParts, s)
+						continue
+					}
+					pMap, ok := part.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					pType, _ := pMap["type"].(string)
+					switch pType {
+					case "text", "input_text":
+						if t, ok := pMap["text"].(string); ok {
+							textParts = append(textParts, t)
+						}
+					case "input_image":
+						if imageURL, ok := pMap["image_url"].(string); ok && imageURL != "" {
+							if strings.HasPrefix(imageURL, "data:") {
+								parts := strings.SplitN(imageURL, ",", 2)
+								if len(parts) == 2 {
+									images = append(images, parts[1])
+								}
+							} else {
+								log.Printf("[WARN] input_image with HTTP URL not supported for Ollama provider, skipping: %s", imageURL)
 							}
+						}
+					case "input_file":
+						if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
+							if strings.HasPrefix(fileData, "data:") {
+								parts := strings.SplitN(fileData, ",", 2)
+								if len(parts) == 2 {
+									images = append(images, parts[1])
+								}
+							} else {
+								images = append(images, fileData)
+							}
+						} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
+							log.Printf("[WARN] input_file with file_url not supported for Ollama provider, skipping: %s", fileURL)
 						}
 					}
 				}
-				content = strings.Join(parts, "")
-			} else {
-				b, _ := json.Marshal(c)
-				content = string(b)
+				msg := OllamaMessage{
+					Role:    role,
+					Content: strings.Join(textParts, ""),
+				}
+				if len(images) > 0 {
+					msg.Images = images
+				}
+				return []OllamaMessage{msg}
 			}
+			// Fallback for non-array content
+			b, _ := json.Marshal(c)
+			return []OllamaMessage{{Role: role, Content: string(b)}}
 		}
-		return []OllamaMessage{{Role: role, Content: content}}
+		return []OllamaMessage{{Role: role, Content: ""}}
 
 	case "function_call":
 		name, _ := itemMap["name"].(string)

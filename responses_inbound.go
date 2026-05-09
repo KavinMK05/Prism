@@ -24,6 +24,17 @@ func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 
 	respReq.Model = getEffectiveModel(p.modelRemap, respReq.Model)
 
+	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
+	// don't have api.responses.write scope, so /v1/responses returns 401)
+	if p.providerType == "codex" {
+		if respReq.Stream {
+			p.handleResponsesAPIOpenAIStreaming(w, r, &respReq)
+		} else {
+			p.handleResponsesAPIToOpenAI(w, r, &respReq)
+		}
+		return
+	}
+
 	if respReq.Stream {
 		if p.providerType == "openai" {
 			p.handleResponsesAPIOpenAIStreaming(w, r, &respReq)

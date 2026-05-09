@@ -351,6 +351,93 @@
     color: var(--text-secondary);
     margin-top: 2px;
   }
+  .provider-card.custom-provider .info .name::after {
+    content: 'Custom';
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 1px 6px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .provider-card.custom-provider .delete-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+    flex-shrink: 0;
+    margin-left: 4px;
+  }
+  .provider-card.custom-provider:hover .delete-icon {
+    opacity: 1;
+  }
+  .provider-card.custom-provider .delete-icon:hover {
+    color: var(--danger);
+    background: rgba(239,68,68,0.08);
+  }
+  .provider-card.custom-provider .delete-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ── Modal / Dialog ── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .modal-overlay.show {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .modal-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    max-width: 420px;
+    width: calc(100% - 48px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+    transform: translateY(10px) scale(0.98);
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .modal-overlay.show .modal-card {
+    transform: translateY(0) scale(1);
+  }
+  .modal-card h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: -0.2px;
+  }
+  .modal-card p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+  .modal-card .btn-row {
+    margin-top: 0;
+    justify-content: flex-end;
+  }
 
   /* ── Model Tags ── */
   .model-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
@@ -556,6 +643,35 @@
     .alias-row input { min-width: 0; width: 100%; }
     .alias-row input:first-child { margin-bottom: 0; }
   }
+
+  /* OAuth Account Cards */
+  .oauth-account {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 10px;
+    transition: border-color 0.15s, background 0.15s;
+    cursor: default;
+  }
+  .oauth-account:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+  .oauth-account.active { border-color: var(--success); background: rgba(34,197,94,0.06); }
+  .oauth-account-info { flex: 1; min-width: 0; }
+  .oauth-account-email { font-size: 14px; font-weight: 500; }
+  .oauth-account-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .oauth-account-actions { display: flex; gap: 8px; align-items: center; }
+  .oauth-account-actions .btn { padding: 4px 10px; font-size: 12px; }
+  .usage-bar-container { margin-top: 8px; }
+  .usage-bar-bg { width: 100%; height: 20px; background: var(--surface-hover); border-radius: var(--radius-sm); overflow: hidden; position: relative; cursor: pointer; }
+  .usage-bar-bg:hover { opacity: 0.9; }
+  .usage-bar-fill { height: 100%; border-radius: var(--radius-sm); transition: width 0.4s ease; }
+  .usage-bar-fill.low { background: var(--success); }
+  .usage-bar-fill.medium { background: #f59e0b; }
+  .usage-bar-fill.high { background: var(--danger); }
+  .usage-bar-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 11px; font-weight: 600; color: var(--text); text-shadow: 0 0 4px var(--surface); }
+  .usage-detail { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 </style>
   <link rel="icon" type="image/png" href="/admin/icon.png" />
 </head>
@@ -583,6 +699,7 @@
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" data-tab="provider">Provider</button>
+    <button class="tab" data-tab="oauth">OAuth</button>
     <button class="tab" data-tab="models">Models</button>
     <button class="tab" data-tab="proxy">Proxy</button>
   </div>
@@ -594,23 +711,52 @@
       <div class="provider-cards" id="providerCards"></div>
     </div>
 
-    <div class="card" id="customProviderCard" style="display:none">
-      <h3>Custom Provider</h3>
+    <div class="card" id="customProviderEditCard" style="display:none">
+      <h3 id="customEditTitle">Edit Provider</h3>
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="customEditName" placeholder="My Provider">
+      </div>
       <div class="field">
         <label>Base URL</label>
-        <input type="text" id="customBaseURL" placeholder="https://api.example.com">
+        <input type="text" id="customEditBaseURL" placeholder="https://api.example.com">
       </div>
       <div class="field">
         <label>API Key</label>
         <div class="input-with-icon">
-          <input type="password" id="customAPIKey" placeholder="sk-...">
-          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('customAPIKey', this)">
+          <input type="password" id="customEditAPIKey" placeholder="sk-...">
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('customEditAPIKey', this)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn-primary" onclick="saveCustomProvider()">Save Changes</button>
+        <button class="btn btn-primary" onclick="saveEditCustomProvider()">Save Changes</button>
+        <button class="btn btn-danger" onclick="deleteCustomProvider()">Delete Provider</button>
+      </div>
+    </div>
+
+    <div class="card" id="addCustomProviderCard">
+      <h3>Add Custom Provider</h3>
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="addProviderName" placeholder="e.g. My OpenAI Endpoint">
+      </div>
+      <div class="field">
+        <label>Base URL</label>
+        <input type="text" id="addProviderBaseURL" placeholder="https://api.example.com">
+      </div>
+      <div class="field">
+        <label>API Key</label>
+        <div class="input-with-icon">
+          <input type="password" id="addProviderAPIKey" placeholder="sk-...">
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('addProviderAPIKey', this)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="addCustomProvider()">Add Provider</button>
       </div>
     </div>
 
@@ -631,6 +777,27 @@
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="saveAPIKey()">Update Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- OAuth Tab -->
+  <div class="panel" id="panel-oauth">
+    <div class="card">
+      <h3>Connected Accounts</h3>
+      <p class="card-description">Manage your OAuth-connected accounts for subscription-based access.</p>
+      <div id="oauthAccountsList"></div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn btn-primary" onclick="startCodexOAuth()">+ Add Codex Account</button>
+      </div>
+    </div>
+
+    <div class="card" id="oauthUsageCard" style="display:none">
+      <h3>Usage</h3>
+      <p class="card-description" id="oauthUsageDescription"></p>
+      <div id="oauthUsageBar" style="margin-top:12px"></div>
+      <div id="oauthUsageRefreshBtn" class="btn-row" style="margin-top:12px">
+        <button class="btn btn-secondary" onclick="refreshOAuthUsage()">↻ Refresh Usage</button>
       </div>
     </div>
   </div>
@@ -700,6 +867,17 @@
       <div class="btn-row">
         <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="deleteModal" onclick="if(event.target===this)closeDeleteModal()">
+  <div class="modal-card">
+    <h3>Delete Provider</h3>
+    <p id="deleteModalText">Are you sure you want to delete this provider? This action cannot be undone.</p>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmDeleteCustomProvider()">Delete</button>
     </div>
   </div>
 </div>
@@ -782,36 +960,71 @@ function renderProviderCards() {
   const providers = [
     { id: 'ollama_cloud', name: 'Ollama Cloud', url: c.ollama_cloud.base_url },
     { id: 'opencode_go', name: 'OpenCode Go', url: c.opencode_go.base_url },
-    { id: 'custom', name: 'Custom', url: c.custom.base_url || 'Not configured' },
   ];
+  // Add custom providers
+  if (c.custom_providers) {
+    for (const p of c.custom_providers) {
+      providers.push({ id: p.id, name: p.name, url: p.base_url || 'Not configured', isCustom: true });
+    }
+  }
+
   const container = document.getElementById('providerCards');
-  container.innerHTML = providers.map(p => `
-    <div class="provider-card ${c.active_provider === p.id ? 'active' : ''}" onclick="selectProvider('${p.id}')">
+  container.innerHTML = providers.map(p => {
+    const deleteBtn = p.isCustom ? `
+      <button type="button" class="delete-icon" onclick="event.stopPropagation(); promptDeleteProvider('${p.id}')" title="Delete provider">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    ` : '';
+    return `
+    <div class="provider-card ${c.active_provider === p.id ? 'active' : ''} ${p.isCustom ? 'custom-provider' : ''}" onclick="selectProvider('${p.id}')">
       <div class="radio"></div>
       <div class="info">
         <div class="name">${esc(p.name)}</div>
         <div class="url">${esc(p.url)}</div>
       </div>
+      ${deleteBtn}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
-  const showCustom = c.active_provider === 'custom' || true;
-  document.getElementById('customProviderCard').style.display = showCustom ? '' : 'none';
-  document.getElementById('customBaseURL').value = c.custom.base_url || '';
-  document.getElementById('customAPIKey').value = c.custom.api_key || '';
+  // Show edit card if a custom provider is active
+  const activeCustom = (c.custom_providers || []).find(p => p.id === c.active_provider);
+  const editCard = document.getElementById('customProviderEditCard');
+  if (activeCustom) {
+    editCard.style.display = '';
+    document.getElementById('customEditTitle').textContent = 'Edit: ' + activeCustom.name;
+    document.getElementById('customEditName').value = activeCustom.name;
+    document.getElementById('customEditBaseURL').value = activeCustom.base_url || '';
+    document.getElementById('customEditAPIKey').value = '';
+    document.getElementById('customEditAPIKey').placeholder = activeCustom.api_key ? 'Leave blank to keep current key' : 'Enter API key';
+  } else {
+    editCard.style.display = 'none';
+  }
 }
 
 function renderAPIKey() {
   const c = currentConfig;
   const p = c.active_provider;
+  const activeProv = getProviderById(p);
+  const providerName = activeProv ? activeProv.name : p;
   let key = '';
-  if (p === 'ollama_cloud') key = c.ollama_cloud.api_key;
-  else if (p === 'opencode_go') key = c.opencode_go.api_key;
-  else if (p === 'custom') key = c.custom.api_key;
+  if (activeProv) key = activeProv.api_key || '';
 
-  const providerName = p === 'ollama_cloud' ? 'Ollama Cloud' : p === 'opencode_go' ? 'OpenCode Go' : 'Custom';
   document.getElementById('apiKeyTitle').textContent = 'API Key — ' + providerName;
   document.getElementById('currentKey').textContent = maskKey(key);
+}
+
+function getProviderById(id) {
+  const c = currentConfig;
+  if (id === 'ollama_cloud') return c.ollama_cloud;
+  if (id === 'opencode_go') return c.opencode_go;
+  return (c.custom_providers || []).find(p => p.id === id) || null;
+}
+
+function isCustomProvider(id) {
+  return id !== 'ollama_cloud' && id !== 'opencode_go';
 }
 
 function maskKey(k) {
@@ -822,26 +1035,159 @@ function maskKey(k) {
 
 async function selectProvider(id) {
   currentConfig.active_provider = id;
-  await api('/config', {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(currentConfig)
-  });
-  toast('Provider switched to ' + id);
+  try {
+    await api('/config', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(currentConfig)
+    });
+    toast('Provider switched');
+  } catch(e) {
+    toast('Failed to switch provider: ' + e.message, 'error');
+  }
   loadConfig();
 }
 
-async function saveCustomProvider() {
-  currentConfig.custom.base_url = document.getElementById('customBaseURL').value.trim();
-  const newKey = document.getElementById('customAPIKey').value.trim();
-  if (newKey) currentConfig.custom.api_key = newKey;
-  await api('/config', {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(currentConfig)
+function normalizeURL(url) {
+  url = url.trim();
+  if (!url) return url;
+  if (!/^https?:\/\//i.test(url)) {
+    url = 'https://' + url;
+  }
+  return url;
+}
+
+async function addCustomProvider() {
+  const name = document.getElementById('addProviderName').value.trim();
+  const baseURL = normalizeURL(document.getElementById('addProviderBaseURL').value.trim());
+  const apiKey = document.getElementById('addProviderAPIKey').value.trim();
+
+  if (!name) { toast('Provider name is required', 'error'); return; }
+  if (!baseURL) { toast('Base URL is required', 'error'); return; }
+
+  const id = 'custom_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') + '_' + Math.random().toString(36).substr(2, 6);
+
+  if (!currentConfig.custom_providers) currentConfig.custom_providers = [];
+  currentConfig.custom_providers.push({
+    id: id,
+    name: name,
+    base_url: baseURL,
+    api_key: apiKey
   });
-  toast('Custom provider saved');
+
+  // Switch to the new provider
+  currentConfig.active_provider = id;
+
+  try {
+    await api('/config', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(currentConfig)
+    });
+    toast('Provider "' + name + '" added');
+    document.getElementById('addProviderName').value = '';
+    document.getElementById('addProviderBaseURL').value = '';
+    document.getElementById('addProviderAPIKey').value = '';
+  } catch(e) {
+    toast('Failed to add provider: ' + e.message, 'error');
+    // Revert the local change
+    currentConfig.custom_providers = currentConfig.custom_providers.filter(p => p.id !== id);
+    currentConfig.active_provider = 'ollama_cloud';
+  }
   loadConfig();
+}
+
+async function saveEditCustomProvider() {
+  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.active_provider);
+  if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
+
+  const newName = document.getElementById('customEditName').value.trim();
+  const newBaseURL = normalizeURL(document.getElementById('customEditBaseURL').value.trim());
+  const newAPIKey = document.getElementById('customEditAPIKey').value.trim();
+
+  if (!newName) { toast('Provider name is required', 'error'); return; }
+
+  // Save original values for revert
+  const origName = activeCustom.name;
+  const origBaseURL = activeCustom.base_url;
+
+  activeCustom.name = newName;
+  activeCustom.base_url = newBaseURL;
+  if (newAPIKey) activeCustom.api_key = newAPIKey;
+
+  try {
+    await api('/config', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(currentConfig)
+    });
+    toast('Provider updated');
+  } catch(e) {
+    toast('Failed to update provider: ' + e.message, 'error');
+    // Revert
+    activeCustom.name = origName;
+    activeCustom.base_url = origBaseURL;
+  }
+  loadConfig();
+}
+
+let pendingDeleteProviderId = null;
+
+function promptDeleteProvider(id) {
+  const provider = getProviderById(id);
+  if (!provider) return;
+  pendingDeleteProviderId = id;
+  openDeleteModal(provider.name);
+}
+
+function openDeleteModal(providerName) {
+  document.getElementById('deleteModalText').textContent = 'Are you sure you want to delete "' + providerName + '"? This action cannot be undone.';
+  document.getElementById('deleteModal').classList.add('show');
+}
+
+function closeDeleteModal() {
+  document.getElementById('deleteModal').classList.remove('show');
+  pendingDeleteProviderId = null;
+}
+
+async function confirmDeleteCustomProvider() {
+  const id = pendingDeleteProviderId;
+  closeDeleteModal();
+  if (!id) { toast('No provider selected', 'error'); return; }
+
+  const provider = getProviderById(id);
+  if (!provider) { toast('Provider not found', 'error'); return; }
+
+  const originalProviders = currentConfig.custom_providers.slice();
+  const originalActive = currentConfig.active_provider;
+
+  currentConfig.custom_providers = currentConfig.custom_providers.filter(p => p.id !== id);
+
+  // Fall back to ollama_cloud if the deleted provider was active
+  if (currentConfig.active_provider === id) {
+    currentConfig.active_provider = 'ollama_cloud';
+  }
+
+  try {
+    await api('/config', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(currentConfig)
+    });
+    toast('Provider "' + provider.name + '" deleted');
+  } catch(e) {
+    toast('Failed to delete provider: ' + e.message, 'error');
+    // Revert
+    currentConfig.custom_providers = originalProviders;
+    currentConfig.active_provider = originalActive;
+  }
+  loadConfig();
+}
+
+async function deleteCustomProvider() {
+  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.active_provider);
+  if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
+  promptDeleteProvider(activeCustom.id);
 }
 
 async function saveAPIKey() {
@@ -850,14 +1196,22 @@ async function saveAPIKey() {
   const p = currentConfig.active_provider;
   if (p === 'ollama_cloud') currentConfig.ollama_cloud.api_key = key;
   else if (p === 'opencode_go') currentConfig.opencode_go.api_key = key;
-  else if (p === 'custom') currentConfig.custom.api_key = key;
-  await api('/config', {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(currentConfig)
-  });
-  document.getElementById('newAPIKey').value = '';
-  toast('API key updated');
+  else {
+    const custom = (currentConfig.custom_providers || []).find(pr => pr.id === p);
+    if (custom) custom.api_key = key;
+    else { toast('Unknown provider', 'error'); return; }
+  }
+  try {
+    await api('/config', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(currentConfig)
+    });
+    document.getElementById('newAPIKey').value = '';
+    toast('API key updated');
+  } catch(e) {
+    toast('Failed to update key: ' + e.message, 'error');
+  }
   loadConfig();
 }
 
@@ -1067,12 +1421,225 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ── OAuth Tab ──
+function loadOAuthAccounts() {
+  fetch('/admin/oauth/accounts')
+    .then(r => r.json())
+    .then(accounts => {
+      const container = document.getElementById('oauthAccountsList');
+      if (!accounts || accounts.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:14px;padding:16px 0;text-align:center;">No OAuth accounts connected yet. Click "Add Codex Account" to get started.</div>';
+        document.getElementById('oauthUsageCard').style.display = 'none';
+        return;
+      }
+      let html = '';
+      accounts.forEach(a => {
+        const activeClass = a.active ? ' active' : '';
+        const tokenStatus = a.token_valid ? '<span style="color:var(--success)">Valid</span>' : '<span style="color:var(--danger)">Expired</span>';
+        let planLabel = a.plan_tier ? esc(a.plan_tier.charAt(0).toUpperCase() + a.plan_tier.slice(1)) : '';
+        if (!planLabel || planLabel === 'Unknown') planLabel = 'Codex';
+        html += `<div class="oauth-account${activeClass}">
+          <div class="oauth-account-info">
+            <div class="oauth-account-email">${esc(a.email || a.label || a.id)}</div>
+            <div class="oauth-account-meta">${planLabel} · Token: ${tokenStatus}${a.token_expiry ? ' · Expires: ' + esc(a.token_expiry) : ''}</div>
+          </div>
+          <div class="oauth-account-actions">
+            <button class="btn btn-secondary" onclick="activateOAuthAccount('${esc(a.id)}')" ${a.active ? 'disabled' : ''}>${a.active ? 'Active' : 'Activate'}</button>
+            <button class="btn btn-danger" onclick="removeOAuthAccount('${esc(a.id)}')">Remove</button>
+          </div>
+        </div>`;
+      });
+      container.innerHTML = html;
+      renderOAuthUsage(accounts);
+    })
+    .catch(err => {
+      console.error('Failed to load OAuth accounts:', err);
+    });
+}
+
+function renderOAuthUsage(accounts) {
+  const activeAccount = accounts.find(a => a.active);
+  const card = document.getElementById('oauthUsageCard');
+  if (!activeAccount) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+
+  const desc = document.getElementById('oauthUsageDescription');
+  desc.textContent = `Usage for ${activeAccount.email || activeAccount.label || activeAccount.id}`;
+
+  const barContainer = document.getElementById('oauthUsageBar');
+
+  if (activeAccount.usage_unavailable) {
+    barContainer.innerHTML = `
+      <div style="padding:8px 0; color:var(--text-secondary); font-size:13px;">
+        Usage data is not available for this account type.
+      </div>
+    `;
+    const refreshBtn = document.getElementById('oauthUsageRefreshBtn');
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const refreshBtn = document.getElementById('oauthUsageRefreshBtn');
+  if (refreshBtn) refreshBtn.style.display = '';
+
+  const pctUsed = activeAccount.percent_used || 0;
+  let fillClass = 'low';
+  if (pctUsed > 80) fillClass = 'high';
+  else if (pctUsed > 50) fillClass = 'medium';
+
+  const creditsUsed = activeAccount.credits_used ? activeAccount.credits_used.toFixed(1) : '?';
+  const creditsTotal = activeAccount.credits_total ? activeAccount.credits_total.toFixed(1) : '?';
+
+  barContainer.innerHTML = `
+    <div class="usage-bar-bg" onclick="refreshOAuthUsage()" title="Click to refresh usage">
+      <div class="usage-bar-fill ${fillClass}" style="width:${pctUsed}%"></div>
+      <div class="usage-bar-label">${pctUsed.toFixed(1)}% used</div>
+    </div>
+    <div class="usage-detail">Credits: ${creditsUsed} / ${creditsTotal}${activeAccount.weekly_reset_at ? ' · Resets: ' + new Date(activeAccount.weekly_reset_at * 1000).toLocaleDateString() : ''}</div>
+  `;
+}
+
+function startCodexOAuth() {
+  fetch('/admin/oauth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'codex' })
+  })
+  .then(r => {
+    if (!r.ok) {
+      // Server returned an error - try to read as text first, fall back to status
+      return r.text().then(text => {
+        let errMsg = text;
+        // Try to parse as JSON in case server returned a JSON error
+        try { errMsg = JSON.parse(text).error || text; } catch(e) {}
+        throw new Error(errMsg);
+      });
+    }
+    return r.json();
+  })
+  .then(data => {
+    if (data.error) {
+      alert('Failed to start OAuth: ' + data.error);
+      return;
+    }
+    // The browser will be opened by the server; just show a message
+    alert('Your browser has been opened for Codex login. Please complete the sign-in and return here.');
+    // Poll for account changes
+    let attempts = 0;
+    const poll = setInterval(() => {
+      attempts++;
+      if (attempts > 60) { clearInterval(poll); return; }
+      fetch('/admin/oauth/accounts')
+        .then(r => r.json())
+        .then(accounts => {
+          if (accounts.length > 0) {
+            clearInterval(poll);
+            loadOAuthAccounts();
+          }
+        });
+    }, 2000);
+  })
+  .catch(err => {
+    alert('Failed to start OAuth: ' + err.message);
+  });
+}
+
+function removeOAuthAccount(id) {
+  if (!confirm('Remove this OAuth account?')) return;
+  fetch('/admin/oauth/accounts/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  })
+  .then(r => {
+    if (!r.ok) {
+      return r.text().then(text => {
+        let errMsg = text;
+        try { errMsg = JSON.parse(text).error || text; } catch(e) {}
+        throw new Error(errMsg);
+      });
+    }
+    return r.json();
+  })
+  .then(() => {
+    loadOAuthAccounts();
+    loadConfig();
+  })
+  .catch(err => {
+    alert('Failed to remove account: ' + err.message);
+  });
+}
+
+function activateOAuthAccount(id) {
+  fetch('/admin/oauth/accounts/activate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  })
+  .then(r => {
+    if (!r.ok) {
+      return r.text().then(text => {
+        let errMsg = text;
+        try { errMsg = JSON.parse(text).error || text; } catch(e) {}
+        throw new Error(errMsg);
+      });
+    }
+    return r.json();
+  })
+  .then(() => {
+    loadOAuthAccounts();
+    loadConfig();
+  })
+  .catch(err => {
+    alert('Failed to activate account: ' + err.message);
+  });
+}
+
+function refreshOAuthUsage() {
+  const accounts = document.querySelectorAll('.oauth-account');
+  let activeId = null;
+  fetch('/admin/oauth/accounts')
+    .then(r => r.json())
+    .then(accs => {
+      const active = accs.find(a => a.active);
+      if (!active) return;
+      activeId = active.id;
+      return fetch('/admin/oauth/usage/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: active.id })
+      });
+    })
+    .then(r => {
+      if (!r.ok) {
+        return r.text().then(text => {
+          let errMsg = text;
+          try { errMsg = JSON.parse(text).error || text; } catch(e) {}
+          throw new Error(errMsg);
+        });
+      }
+      return r ? r.json() : null;
+    })
+    .then(data => {
+      if (data) {
+        loadOAuthAccounts();
+      }
+    })
+    .catch(err => {
+      console.error('Failed to refresh usage:', err);
+    });
+}
+
 // ── Init ──
 initTheme();
 loadConfig();
 loadModelConfig();
 loadAutoStart();
 updateStatus();
+loadOAuthAccounts();
 </script>
 </body>
 </html>

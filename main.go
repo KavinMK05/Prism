@@ -70,7 +70,15 @@ func runProxyServer() {
 	providerType := cfg.getProviderType()
 	modelRemap := loadModelRemapping()
 
-	proxy := NewProxy(upstreamURL, upstreamAPIKey, providerType, modelRemap)
+	var proxy *Proxy
+
+	// Check if active provider is an OAuth account
+	activeOAuth := getActiveOAuthAccountForConfig(cfg)
+	if activeOAuth != nil {
+		proxy = NewProxyWithOAuth(upstreamURL, providerType, modelRemap, activeOAuth)
+	} else {
+		proxy = NewProxy(upstreamURL, upstreamAPIKey, providerType, modelRemap)
+	}
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)

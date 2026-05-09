@@ -75,19 +75,36 @@ func startAdminServer(cfg *Config, port string) {
 				newCfg.ActiveProvider = "ollama_cloud"
 			}
 			if newCfg.OllamaCloud == nil {
-				newCfg.OllamaCloud = &ProviderConfig{Name: "Ollama Cloud", BaseURL: "https://ollama.com"}
+				newCfg.OllamaCloud = &ProviderConfig{ID: "ollama_cloud", Name: "Ollama Cloud", BaseURL: "https://ollama.com"}
 			}
 			if newCfg.OpenCodeGo == nil {
-				newCfg.OpenCodeGo = &ProviderConfig{Name: "OpenCode Go", BaseURL: "https://opencode.ai/zen/go"}
+				newCfg.OpenCodeGo = &ProviderConfig{ID: "opencode_go", Name: "OpenCode Go", BaseURL: "https://opencode.ai/zen/go"}
 			}
-			if newCfg.Custom == nil {
-				newCfg.Custom = &ProviderConfig{Name: "Custom", BaseURL: ""}
+			if newCfg.CustomProviders == nil {
+				newCfg.CustomProviders = []*ProviderConfig{}
 			}
-			// Validate custom URL if switching to custom
-			if newCfg.ActiveProvider == "custom" && newCfg.Custom.BaseURL != "" {
-				if err := validateBaseURL(newCfg.Custom.BaseURL); err != nil {
-					http.Error(w, "invalid custom base URL: "+err.Error(), 400)
-					return
+			// Ensure built-in IDs
+			newCfg.OllamaCloud.ID = "ollama_cloud"
+			newCfg.OpenCodeGo.ID = "opencode_go"
+			// Ensure custom providers have IDs
+			for _, p := range newCfg.CustomProviders {
+				if p.ID == "" {
+					p.ID = generateProviderID(p.Name)
+				}
+			}
+			// Keep OAuth account Active flags in sync with ActiveProvider
+			for _, a := range newCfg.OAuthAccounts {
+				a.Active = (a.ID == newCfg.ActiveProvider)
+			}
+			// Validate custom provider URL if active
+			if newCfg.ActiveProvider != "ollama_cloud" && newCfg.ActiveProvider != "opencode_go" {
+				for _, p := range newCfg.CustomProviders {
+					if p.ID == newCfg.ActiveProvider && p.BaseURL != "" {
+						if err := validateBaseURL(p.BaseURL); err != nil {
+							http.Error(w, "invalid custom base URL: "+err.Error(), 400)
+							return
+						}
+					}
 				}
 			}
 
@@ -99,8 +116,16 @@ func startAdminServer(cfg *Config, port string) {
 			if newCfg.OpenCodeGo.APIKey == "" && adminConfig.OpenCodeGo.APIKey != "" {
 				newCfg.OpenCodeGo.APIKey = adminConfig.OpenCodeGo.APIKey
 			}
-			if newCfg.Custom.APIKey == "" && adminConfig.Custom.APIKey != "" {
-				newCfg.Custom.APIKey = adminConfig.Custom.APIKey
+			// Preserve API keys for custom providers that already exist
+			for i, newP := range newCfg.CustomProviders {
+				if newP.APIKey == "" {
+					for _, oldP := range adminConfig.CustomProviders {
+						if oldP != nil && newP.ID == oldP.ID && oldP.APIKey != "" {
+							newCfg.CustomProviders[i].APIKey = oldP.APIKey
+							break
+						}
+					}
+				}
 			}
 			adminConfig = &newCfg
 			adminMu.Unlock()
@@ -209,6 +234,14 @@ func startAdminServer(cfg *Config, port string) {
 	// API: Logs
 	mux.HandleFunc("/admin/autostart", handleAutoStart)
 
+	// OAuth API endpoints
+	mux.HandleFunc("/admin/oauth/login", handleOAuthLogin)
+	mux.HandleFunc("/admin/oauth/accounts", handleOAuthAccounts)
+	mux.HandleFunc("/admin/oauth/accounts/remove", handleOAuthAccountRemove)
+	mux.HandleFunc("/admin/oauth/accounts/activate", handleOAuthAccountActivate)
+	mux.HandleFunc("/admin/oauth/usage", handleOAuthUsage)
+	mux.HandleFunc("/admin/oauth/usage/refresh", handleOAuthUsageRefresh)
+
 	mux.HandleFunc("/admin/logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
@@ -304,7 +337,7 @@ func setAutoStart(enable bool) error {
 
 func openAdminUI(port string) {
 	url := fmt.Sprintf("http://127.0.0.1:%s/admin", port)
-	cmd := exec.Command("cmd", "/c", "start", url)
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	cmd.Start()
 }
 
@@ -320,6 +353,15 @@ func notifyTrayConfigChanged() {
 	cfg = newCfg
 	updateProviderMenu()
 	updateAPIKeyDisplay()
+
+	// Restart the proxy so it picks up config changes (e.g. active provider, API keys)
+	if isProxyRunning() {
+		stopProxyProcess()
+		time.Sleep(500 * time.Millisecond)
+		startProxyProcess()
+		time.Sleep(500 * time.Millisecond)
+		updateMenu(isProxyRunning())
+	}
 }
 
 // reloadProxyModelRemap reloads the model remapping into the running proxy
@@ -334,6 +376,13 @@ func reloadProxyModelRemap() {
 	}
 }
 
+// writeJSONError writes a JSON error response
+func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 func isPortAvailable(port string) bool {
 	addr := "127.0.0.1:" + port
 	ln, err := net.Listen("tcp", addr)
@@ -342,4 +391,235 @@ func isPortAvailable(port string) bool {
 	}
 	ln.Close()
 	return true
+}
+
+func handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid JSON", 400)
+		return
+	}
+
+	if req.Provider != "codex" {
+		writeJSONError(w, "unsupported provider: "+req.Provider, 400)
+		return
+	}
+
+	state, err := startCodexOAuth()
+	if err != nil {
+		writeJSONError(w, "failed to start OAuth: "+err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"state":  state,
+	})
+}
+
+func handleOAuthAccounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	adminMu.Lock()
+	cfg := adminConfig
+	adminMu.Unlock()
+
+	// Return accounts with masked tokens
+	type safeAccount struct {
+		ID                 string  `json:"id"`
+		Provider           string  `json:"provider"`
+		Label              string  `json:"label"`
+		Email              string  `json:"email"`
+		PlanTier           string  `json:"plan_tier"`
+		Active             bool    `json:"active"`
+		TokenExpiry        string  `json:"token_expiry"`
+		TokenValid         bool    `json:"token_valid"`
+		CreditsUsed        float64 `json:"credits_used"`
+		CreditsTotal       float64 `json:"credits_total"`
+		CreditsRemaining   float64 `json:"credits_remaining"`
+		PercentUsed        float64 `json:"percent_used"`
+		WeeklyResetAt      int64   `json:"weekly_reset_at"`
+		LastUsageCheck     int64   `json:"last_usage_check"`
+		UsageUnavailable   bool    `json:"usage_unavailable"`
+	}
+
+	accounts := make([]safeAccount, 0, len(cfg.OAuthAccounts))
+	for _, a := range cfg.OAuthAccounts {
+		tokenValid := !a.IsTokenExpired()
+		tokenExpiry := ""
+		if a.ExpiresAt > 0 {
+			tokenExpiry = time.Unix(a.ExpiresAt, 0).Format("2006-01-02 15:04:05")
+		}
+
+		// Get cached usage
+		usage := getCachedUsage(a.ID)
+		creditsUsed := a.CreditsUsed
+		creditsTotal := a.CreditsTotal
+		creditsRemaining := a.CreditsRemaining
+		percentUsed := float64(0)
+		usageUnavailable := false
+		if creditsTotal > 0 {
+			percentUsed = (creditsUsed / creditsTotal) * 100
+		}
+
+		if usage != nil && usage.LastUpdated > a.LastUsageCheck {
+			creditsUsed = usage.CreditsUsed
+			creditsTotal = usage.CreditsTotal
+			creditsRemaining = usage.CreditsRemaining
+			percentUsed = usage.PercentUsed
+			if usage.Error == "usage_unavailable" {
+				usageUnavailable = true
+			}
+		}
+
+		// Default plan tier to provider name if empty, try JWT fallback
+		planTier := a.PlanTier
+		if planTier == "" && a.AccessToken != "" {
+			planTier = parseJWTPlanTier(a.AccessToken)
+		}
+		if planTier == "" {
+			planTier = a.Provider
+		}
+
+		accounts = append(accounts, safeAccount{
+			ID:               a.ID,
+			Provider:         a.Provider,
+			Label:            a.Label,
+			Email:            a.Email,
+			PlanTier:         planTier,
+			Active:           a.Active,
+			TokenExpiry:      tokenExpiry,
+			TokenValid:       tokenValid,
+			CreditsUsed:      creditsUsed,
+			CreditsTotal:     creditsTotal,
+			CreditsRemaining: creditsRemaining,
+			PercentUsed:      percentUsed,
+			WeeklyResetAt:    a.WeeklyResetAt,
+			LastUsageCheck:   a.LastUsageCheck,
+			UsageUnavailable: usageUnavailable,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accounts)
+}
+
+func handleOAuthAccountRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid JSON", 400)
+		return
+	}
+
+	if err := removeOAuthAccount(req.ID); err != nil {
+		writeJSONError(w, err.Error(), 404)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleOAuthAccountActivate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid JSON", 400)
+		return
+	}
+
+	if err := setActiveOAuthAccount(req.ID); err != nil {
+		writeJSONError(w, err.Error(), 404)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleOAuthUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", 405)
+		return
+	}
+
+	accountID := r.URL.Query().Get("account")
+	if accountID == "" {
+		writeJSONError(w, "missing account parameter", 400)
+		return
+	}
+
+	usage := getCachedUsage(accountID)
+	if usage == nil {
+		writeJSONError(w, "no usage data available", 404)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usage)
+}
+
+func handleOAuthUsageRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		AccountID string `json:"account_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid JSON", 400)
+		return
+	}
+
+	adminMu.Lock()
+	cfg := adminConfig
+	adminMu.Unlock()
+
+	var account *OAuthAccount
+	for _, a := range cfg.OAuthAccounts {
+		if a.ID == req.AccountID {
+			account = a
+			break
+		}
+	}
+
+	if account == nil {
+		writeJSONError(w, "account not found", 404)
+		return
+	}
+
+	usage, err := refreshUsageForAccount(account)
+	if err != nil {
+		writeJSONError(w, "usage refresh failed: "+err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usage)
 }

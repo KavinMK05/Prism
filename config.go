@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -11,19 +12,22 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type ProviderConfig struct {
+	ID      string `json:"id"`
 	Name    string `json:"name"`
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
 }
 
 type Config struct {
-	ActiveProvider string          `json:"active_provider"`
-	OllamaCloud    *ProviderConfig `json:"ollama_cloud"`
-	OpenCodeGo     *ProviderConfig `json:"opencode_go"`
-	Custom         *ProviderConfig `json:"custom"`
+	ActiveProvider  string            `json:"active_provider"`
+	OllamaCloud     *ProviderConfig   `json:"ollama_cloud"`
+	OpenCodeGo      *ProviderConfig   `json:"opencode_go"`
+	CustomProviders []*ProviderConfig `json:"custom_providers"`
+	OAuthAccounts   []*OAuthAccount   `json:"oauth_accounts"`
 }
 
 type ModelRemapping struct {
@@ -40,23 +44,64 @@ func getConfigPath() string {
 	return filepath.Join(getConfigDir(), "config.json")
 }
 
+// rawConfig is used for migration from the old single-Custom format
+type rawConfig struct {
+	ActiveProvider  string            `json:"active_provider"`
+	OllamaCloud     *ProviderConfig   `json:"ollama_cloud"`
+	OpenCodeGo      *ProviderConfig   `json:"opencode_go"`
+	Custom          *ProviderConfig   `json:"custom"`
+	CustomProviders []*ProviderConfig `json:"custom_providers"`
+}
+
 func loadConfig() *Config {
 	cfg := defaultConfig()
 	data, err := os.ReadFile(getConfigPath())
 	if err != nil {
 		return cfg
 	}
+
+	// First try to unmarshal into the new format
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return defaultConfig()
 	}
+
+	// Migration: if old "custom" field exists and custom_providers is empty, migrate it
+	var raw rawConfig
+	if json.Unmarshal(data, &raw) == nil {
+		if raw.Custom != nil && (raw.Custom.BaseURL != "" || raw.Custom.APIKey != "") && len(raw.CustomProviders) == 0 {
+			raw.Custom.ID = "custom"
+			cfg.CustomProviders = []*ProviderConfig{raw.Custom}
+			cfg.ActiveProvider = "custom"
+			saveConfig(cfg)
+		} else if raw.Custom != nil && len(raw.CustomProviders) == 0 {
+			// Old custom field was empty, just remove it
+			cfg.CustomProviders = []*ProviderConfig{}
+			if cfg.ActiveProvider == "custom" {
+				cfg.ActiveProvider = "ollama_cloud"
+			}
+			saveConfig(cfg)
+		}
+	}
+
+	// Ensure IDs on built-in providers
+	if cfg.OllamaCloud != nil {
+		cfg.OllamaCloud.ID = "ollama_cloud"
+	}
+	if cfg.OpenCodeGo != nil {
+		cfg.OpenCodeGo.ID = "opencode_go"
+	}
+
 	if cfg.OllamaCloud == nil {
-		cfg.OllamaCloud = &ProviderConfig{Name: "Ollama Cloud", BaseURL: "https://ollama.com"}
+		cfg.OllamaCloud = &ProviderConfig{ID: "ollama_cloud", Name: "Ollama Cloud", BaseURL: "https://ollama.com"}
 	}
 	if cfg.OpenCodeGo == nil {
-		cfg.OpenCodeGo = &ProviderConfig{Name: "OpenCode Go", BaseURL: "https://opencode.ai/zen/go"}
+		cfg.OpenCodeGo = &ProviderConfig{ID: "opencode_go", Name: "OpenCode Go", BaseURL: "https://opencode.ai/zen/go"}
 	}
-	if cfg.Custom == nil {
-		cfg.Custom = &ProviderConfig{Name: "Custom", BaseURL: ""}
+	if cfg.CustomProviders == nil {
+		cfg.CustomProviders = []*ProviderConfig{}
+	}
+	if cfg.OAuthAccounts == nil {
+		cfg.OAuthAccounts = []*OAuthAccount{}
 	}
 	if cfg.ActiveProvider == "" {
 		cfg.ActiveProvider = "ollama_cloud"
@@ -80,17 +125,17 @@ func defaultConfig() *Config {
 	return &Config{
 		ActiveProvider: "ollama_cloud",
 		OllamaCloud: &ProviderConfig{
+			ID:      "ollama_cloud",
 			Name:    "Ollama Cloud",
 			BaseURL: "https://ollama.com",
 		},
 		OpenCodeGo: &ProviderConfig{
+			ID:      "opencode_go",
 			Name:    "OpenCode Go",
 			BaseURL: "https://opencode.ai/zen/go",
 		},
-		Custom: &ProviderConfig{
-			Name:    "Custom",
-			BaseURL: "",
-		},
+		CustomProviders: []*ProviderConfig{},
+		OAuthAccounts:   []*OAuthAccount{},
 	}
 }
 
@@ -100,14 +145,35 @@ func (c *Config) getActiveProvider() *ProviderConfig {
 		return c.OllamaCloud
 	case "opencode_go":
 		return c.OpenCodeGo
-	case "custom":
-		return c.Custom
 	default:
+		// Check OAuth accounts first
+		for _, a := range c.OAuthAccounts {
+			if a.ID == c.ActiveProvider {
+				return &ProviderConfig{
+					ID:      a.ID,
+					Name:    a.Label + " (" + a.Email + ")",
+					BaseURL: codexAPIBase,
+					APIKey:  a.AccessToken,
+				}
+			}
+		}
+		for _, p := range c.CustomProviders {
+			if p.ID == c.ActiveProvider {
+				return p
+			}
+		}
 		return c.OllamaCloud
 	}
 }
 
 func (c *Config) getActiveAPIKey() string {
+	// Check OAuth accounts first
+	for _, a := range c.OAuthAccounts {
+		if a.ID == c.ActiveProvider {
+			return a.AccessToken
+		}
+	}
+
 	p := c.getActiveProvider()
 	if p.APIKey != "" {
 		return p.APIKey
@@ -126,19 +192,61 @@ func (c *Config) getActiveAPIKey() string {
 }
 
 func (c *Config) getActiveBaseURL() string {
+	// Check OAuth accounts
+	for _, a := range c.OAuthAccounts {
+		if a.ID == c.ActiveProvider {
+			return codexAPIBase
+		}
+	}
 	p := c.getActiveProvider()
 	return p.BaseURL
 }
 
 func (c *Config) getProviderType() string {
+	// Check OAuth accounts
+	for _, a := range c.OAuthAccounts {
+		if a.ID == c.ActiveProvider {
+			return "codex" // OAuth accounts use the OpenAI Responses API
+		}
+	}
 	switch c.ActiveProvider {
 	case "ollama_cloud":
 		return "ollama"
-	case "opencode_go", "custom":
-		return "openai"
 	default:
-		return "ollama"
+		return "openai"
 	}
+}
+
+func generateProviderID(name string) string {
+	slug := strings.ToLower(name)
+	slug = strings.ReplaceAll(slug, " ", "_")
+	slug = regexpReplace(slug, "[^a-z0-9_]+", "")
+	slug = strings.Trim(slug, "_")
+	if slug == "" {
+		slug = "provider"
+	}
+	return "custom_" + slug + "_" + randStr(6)
+}
+
+func randStr(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[r.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+func regexpReplace(s, pattern, repl string) string {
+	// Simple replacement without importing regexp
+	result := ""
+	for _, ch := range s {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			result += string(ch)
+		}
+	}
+	return result
 }
 
 func maskKey(key string) string {

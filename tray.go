@@ -26,12 +26,22 @@ var (
 	providerOllama   *systray.MenuItem
 	providerOpenCode *systray.MenuItem
 	providerCustom   *systray.MenuItem
+	oauthMenu        *systray.MenuItem
+	providerCustomSlots []*systray.MenuItem
+	providerCustomIDs   []string
+	providerCustomIDsMu sync.RWMutex
+	oauthSlots          []*systray.MenuItem
+	oauthIDs            []string
+	oauthIDsMu          sync.RWMutex
 	logFile          *os.File
 	logFileMu        sync.Mutex
 	proxyPID         int
 	proxyCmd         *exec.Cmd
 	proxyRunningMu   sync.Mutex
 )
+
+const maxCustomProviders = 10
+const maxOAuthAccounts = 10
 
 const CREATE_NO_WINDOW = 0x08000000
 
@@ -123,7 +133,29 @@ func runTray(iconData []byte) {
 		providerMenu := systray.AddMenuItem("Provider", "Select provider")
 		providerOllama = providerMenu.AddSubMenuItem("Ollama Cloud", "Use Ollama Cloud")
 		providerOpenCode = providerMenu.AddSubMenuItem("OpenCode Go", "Use OpenCode Go")
-		providerCustom = providerMenu.AddSubMenuItem("Custom...", "Use custom provider")
+
+		// Pre-allocate slots for custom providers (hidden until needed)
+		providerCustomSlots = make([]*systray.MenuItem, maxCustomProviders)
+		providerCustomIDs = make([]string, maxCustomProviders)
+		for i := 0; i < maxCustomProviders; i++ {
+			item := providerMenu.AddSubMenuItem("", "")
+			item.Hide()
+			providerCustomSlots[i] = item
+		}
+
+		providerCustom = providerMenu.AddSubMenuItem("Manage Custom...", "Open settings to manage custom providers")
+
+		// OAuth accounts submenu
+		oauthMenu = providerMenu.AddSubMenuItem("OAuth Accounts", "Manage OAuth accounts")
+		oauthSlots = make([]*systray.MenuItem, maxOAuthAccounts)
+		oauthIDs = make([]string, maxOAuthAccounts)
+		for i := 0; i < maxOAuthAccounts; i++ {
+			item := oauthMenu.AddSubMenuItem("", "")
+			item.Hide()
+			oauthSlots[i] = item
+		}
+		addCodexItem := oauthMenu.AddSubMenuItem("+ Add Codex Account...", "Connect a ChatGPT/Codex account")
+		refreshUsageItem := oauthMenu.AddSubMenuItem("↻ Refresh Usage", "Refresh usage data for all accounts")
 
 		systray.AddSeparator()
 
@@ -151,6 +183,9 @@ func runTray(iconData []byte) {
 			updateMenu(isProxyRunning())
 		}
 
+		// Start background usage refresh for OAuth accounts
+		startUsageRefreshLoop()
+
 		go func() {
 			for {
 				select {
@@ -170,6 +205,10 @@ func runTray(iconData []byte) {
 					updateMenu(isProxyRunning())
 				case <-providerOllama.ClickedCh:
 					cfg.ActiveProvider = "ollama_cloud"
+					// Clear Active flags on all OAuth accounts since we switched away
+					for _, a := range cfg.OAuthAccounts {
+						a.Active = false
+					}
 					saveConfig(cfg)
 					updateProviderMenu()
 					updateAPIKeyDisplay()
@@ -182,6 +221,10 @@ func runTray(iconData []byte) {
 					}
 				case <-providerOpenCode.ClickedCh:
 					cfg.ActiveProvider = "opencode_go"
+					// Clear Active flags on all OAuth accounts since we switched away
+					for _, a := range cfg.OAuthAccounts {
+						a.Active = false
+					}
 					saveConfig(cfg)
 					updateProviderMenu()
 					updateAPIKeyDisplay()
@@ -193,8 +236,31 @@ func runTray(iconData []byte) {
 						updateMenu(isProxyRunning())
 					}
 				case <-providerCustom.ClickedCh:
-					// Open the web settings UI instead of broken VBS dialog
+					// Open the web settings UI to manage custom providers
 					openAdminUI(getAdminPort())
+				case <-addCodexItem.ClickedCh:
+					// Start Codex OAuth flow
+					go func() {
+						_, err := startCodexOAuth()
+						if err != nil {
+							log.Printf("[Tray] Failed to start Codex OAuth: %v", err)
+						}
+					}()
+				case <-refreshUsageItem.ClickedCh:
+					// Refresh usage for all accounts
+					go func() {
+						adminMu.Lock()
+						cfgCopy := adminConfig
+						adminMu.Unlock()
+						for _, a := range cfgCopy.OAuthAccounts {
+							if a.Provider == "codex" && a.AccessToken != "" {
+								if _, err := refreshUsageForAccount(a); err != nil {
+									log.Printf("[Tray] Usage refresh failed for %s: %v", a.Email, err)
+								}
+							}
+						}
+						notifyTrayConfigChanged()
+					}()
 				case <-openSettingsItem.ClickedCh:
 					openAdminUI(getAdminPort())
 				case <-openFolderItem.ClickedCh:
@@ -213,6 +279,66 @@ func runTray(iconData []byte) {
 				}
 			}
 		}()
+
+		// Click handlers for custom provider slots
+		for i := 0; i < maxCustomProviders; i++ {
+			slotIdx := i
+			go func() {
+				for range providerCustomSlots[slotIdx].ClickedCh {
+					providerCustomIDsMu.RLock()
+					id := providerCustomIDs[slotIdx]
+					providerCustomIDsMu.RUnlock()
+					if id == "" {
+						continue
+					}
+					cfg.ActiveProvider = id
+					// Clear Active flags on all OAuth accounts since we switched away
+					for _, a := range cfg.OAuthAccounts {
+						a.Active = false
+					}
+					saveConfig(cfg)
+					updateProviderMenu()
+					updateAPIKeyDisplay()
+					if isProxyRunning() {
+						stopProxyProcess()
+						time.Sleep(500 * time.Millisecond)
+						startProxyProcess()
+						time.Sleep(500 * time.Millisecond)
+						updateMenu(isProxyRunning())
+					}
+				}
+			}()
+		}
+
+		// Click handlers for OAuth account slots
+		for i := 0; i < maxOAuthAccounts; i++ {
+			slotIdx := i
+			go func() {
+				for range oauthSlots[slotIdx].ClickedCh {
+					oauthIDsMu.RLock()
+					id := oauthIDs[slotIdx]
+					oauthIDsMu.RUnlock()
+					if id == "" {
+						continue
+					}
+					cfg.ActiveProvider = id
+					// Set Active flag on the selected account and clear others
+					for _, a := range cfg.OAuthAccounts {
+						a.Active = (a.ID == id)
+					}
+					saveConfig(cfg)
+					updateProviderMenu()
+					updateAPIKeyDisplay()
+					if isProxyRunning() {
+						stopProxyProcess()
+						time.Sleep(500 * time.Millisecond)
+						startProxyProcess()
+						time.Sleep(500 * time.Millisecond)
+						updateMenu(isProxyRunning())
+					}
+				}
+			}()
+		}
 	}, func() {})
 }
 
@@ -235,13 +361,73 @@ func updateProviderMenu() {
 	providerOpenCode.Uncheck()
 	providerCustom.Uncheck()
 
+	// Update custom provider slots
+	providerCustomIDsMu.Lock()
+	for i := 0; i < maxCustomProviders; i++ {
+		if i < len(cfg.CustomProviders) {
+			p := cfg.CustomProviders[i]
+			providerCustomIDs[i] = p.ID
+			providerCustomSlots[i].SetTitle(p.Name)
+			providerCustomSlots[i].SetTooltip("Use " + p.Name)
+			providerCustomSlots[i].Show()
+			if cfg.ActiveProvider == p.ID {
+				providerCustomSlots[i].Check()
+			} else {
+				providerCustomSlots[i].Uncheck()
+			}
+		} else {
+			providerCustomIDs[i] = ""
+			providerCustomSlots[i].Hide()
+		}
+	}
+	providerCustomIDsMu.Unlock()
+
+	// Update OAuth account slots
+	oauthIDsMu.Lock()
+	for i := 0; i < maxOAuthAccounts; i++ {
+		if i < len(cfg.OAuthAccounts) {
+			a := cfg.OAuthAccounts[i]
+			oauthIDs[i] = a.ID
+			label := a.Email
+			if label == "" {
+				label = a.ID
+			}
+			if a.PlanTier != "" {
+				label += " (" + a.PlanTier + ")"
+			}
+			// Add usage percentage if available
+			if a.CreditsTotal > 0 {
+				pct := (a.CreditsUsed / a.CreditsTotal) * 100
+				label += fmt.Sprintf(" [%.0f%% used]", pct)
+			}
+			oauthSlots[i].SetTitle(label)
+			oauthSlots[i].SetTooltip("Switch to " + a.Email)
+			oauthSlots[i].Show()
+			if cfg.ActiveProvider == a.ID {
+				oauthSlots[i].Check()
+			} else {
+				oauthSlots[i].Uncheck()
+			}
+		} else {
+			oauthIDs[i] = ""
+			oauthSlots[i].Hide()
+		}
+	}
+	oauthIDsMu.Unlock()
+
 	switch cfg.ActiveProvider {
 	case "ollama_cloud":
 		providerOllama.Check()
 	case "opencode_go":
 		providerOpenCode.Check()
-	case "custom":
-		providerCustom.Check()
+	default:
+		// Check if active is an OAuth account
+		for _, a := range cfg.OAuthAccounts {
+			if cfg.ActiveProvider == a.ID {
+				// Already checked in the slot loop above
+			}
+		}
+		// Check if active is a custom provider — already checked in the slot loop above
 	}
 
 	providerName := cfg.getActiveProvider().Name
@@ -301,7 +487,14 @@ func startProxyProcess() {
 
 	exe := getExePath()
 	cmd := runHidden(exec.Command(exe, "--serve"))
-	cmd.Env = append(os.Environ(), "OLLAMA_API_KEY="+cfg.getActiveAPIKey())
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "OLLAMA_API_KEY=") && !strings.HasPrefix(e, "OPENCODE_GO_API_KEY=") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = append(filtered, "OLLAMA_API_KEY="+cfg.getActiveAPIKey())
 	cmd.Dir = filepath.Dir(exe)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

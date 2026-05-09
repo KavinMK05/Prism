@@ -38,7 +38,7 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	openAIReq.Model = getEffectiveModel(p.modelRemap, openAIReq.Model)
 
 	if openAIReq.Stream {
-		if p.providerType == "openai" {
+		if p.providerType == "openai" || p.providerType == "codex" {
 			p.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq)
 		} else {
 			p.handleOpenAIInboundOllamaStreaming(w, r, &openAIReq)
@@ -46,7 +46,7 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if p.providerType == "openai" {
+	if p.providerType == "openai" || p.providerType == "codex" {
 		p.handleOpenAIInboundToOpenAI(w, r, &openAIReq)
 	} else {
 		p.handleOpenAIInboundToOllama(w, r, &openAIReq)
@@ -473,3 +473,4 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 		"data":   models,
 	})
 }
+
