@@ -9,9 +9,17 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest) {
+	reqStart := time.Now()
+	outputTokens := 0
+	liveOutputTokens := 0
+	defer func() {
+		globalStats.RecordRequest(anthroReq.Model, p.providerType, 0, outputTokens, time.Since(reqStart))
+	}()
+
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to marshal OpenAI request")
@@ -73,7 +81,6 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	outputTokens := 0
 	prevChunkHasThinking := false
 
 	for scanner.Scan() {
@@ -107,6 +114,8 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
 
 		if currentChunkHasThinking {
+			liveOutputTokens++
+			globalStats.AddTokens(1)
 			if !state.thinkingBlockOpen {
 				state.openThinkingBlock()
 			}
@@ -135,6 +144,8 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 				}
 
 				if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
+					liveOutputTokens++
+					globalStats.AddTokens(1)
 					state.writeSSE("content_block_delta", map[string]interface{}{
 						"type":  "content_block_delta",
 						"index": state.contentBlockIndex,
@@ -148,6 +159,8 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+			liveOutputTokens++
+			globalStats.AddTokens(1)
 			if !state.textBlockOpen && !state.thinkingBlockOpen && !state.toolUseBlockOpen {
 				state.openTextBlock()
 			}

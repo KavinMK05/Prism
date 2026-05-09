@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 type streamState struct {
@@ -162,6 +163,8 @@ func (s *streamState) sendStopReason(stopReason string, outputTokens int) {
 }
 
 func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaReq *OllamaChatRequest, anthroReq *AnthropicRequest) {
+	reqStart := time.Now()
+
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to marshal Ollama request")
@@ -204,6 +207,10 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 
 	state := newStreamState(w, flusher, canFlush, msgID)
 
+	defer func() {
+		globalStats.RecordRequest(anthroReq.Model, p.providerType, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
+	}()
+
 	state.writeSSE("message_start", map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
@@ -238,7 +245,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 		if chunk.PromptEvalCount > 0 {
 			state.totalPromptTokens = chunk.PromptEvalCount
 		}
-		if chunk.Done {
+		if chunk.EvalCount > state.totalOutputTokens {
 			state.totalOutputTokens = chunk.EvalCount
 		}
 
@@ -246,6 +253,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 			if !state.thinkingBlockOpen {
 				state.openThinkingBlock()
 			}
+			globalStats.AddTokens(1)
 			state.writeSSE("content_block_delta", map[string]interface{}{
 				"type":  "content_block_delta",
 				"index": state.contentBlockIndex,
@@ -274,6 +282,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 				state.openToolUseBlock(toolName)
 				if tc.Function.Arguments != nil {
 					argsJSON, _ := json.Marshal(tc.Function.Arguments)
+					globalStats.AddTokens(1)
 					state.writeSSE("content_block_delta", map[string]interface{}{
 						"type":  "content_block_delta",
 						"index": state.contentBlockIndex,
@@ -294,6 +303,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 				state.openTextBlock()
 			}
 			if state.textBlockOpen {
+				globalStats.AddTokens(1)
 				state.writeSSE("content_block_delta", map[string]interface{}{
 					"type":  "content_block_delta",
 					"index": state.contentBlockIndex,

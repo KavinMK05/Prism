@@ -105,6 +105,12 @@
   }
   .status-dot.stopped { background: var(--danger); }
 
+  #headerTps {
+    color: var(--success);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Theme Toggle */
   .theme-toggle {
     width: 36px;
@@ -672,8 +678,290 @@
   .usage-bar-fill.high { background: var(--danger); }
   .usage-bar-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 11px; font-weight: 600; color: var(--text); text-shadow: 0 0 4px var(--surface); }
   .usage-detail { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+
+  /* Stats */
+  .stats-live {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .stats-hero {
+    flex: 1;
+    text-align: center;
+    padding: 20px 0;
+  }
+  .stats-hero-value {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -2px;
+    line-height: 1;
+    color: var(--text);
+    transition: color 0.3s;
+  }
+  .stats-hero-value.active {
+    color: var(--success);
+  }
+  .stats-hero-unit {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+  .stats-hero-label {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 6px;
+  }
+  .stats-live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--success);
+    background: rgba(34,197,94,0.08);
+    border: 1px solid rgba(34,197,94,0.2);
+    border-radius: var(--radius-pill);
+    padding: 4px 10px;
+    white-space: nowrap;
+  }
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    display: inline-block;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
+  }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .stats-item {
+    text-align: center;
+    padding: 12px 8px;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+  .stats-item-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.5px;
+  }
+  .stats-item-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+  .model-stats-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .model-stats-row:last-child { border-bottom: none; }
+  .model-stats-name { font-weight: 500; color: var(--text); }
+  .model-stats-detail { color: var(--text-secondary); }
+
+  /* ── Dashboard ── */
+  .stats-filter-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .stats-filter-bar select,
+  .stats-filter-bar input[type="date"] {
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    min-width: 140px;
+  }
+  .stats-filter-bar select:focus,
+  .stats-filter-bar input[type="date"]:focus {
+    border-color: var(--text-tertiary);
+    box-shadow: 0 0 0 3px rgba(128,128,128,0.08);
+  }
+  .stats-filter-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .stats-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+    letter-spacing: -0.2px;
+  }
+  .stats-section-title .badge {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 2px 8px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) {
+    .chart-row { grid-template-columns: 1fr; }
+  }
+  .stats-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .stats-layout > .card {
+    grid-column: 1 / -1;
+    margin-bottom: 0;
+  }
+  .stats-layout > .chart-card {
+    grid-column: auto;
+  }
+  @media (max-width: 800px) {
+    .stats-layout { grid-template-columns: 1fr; }
+    .stats-layout > .chart-card { grid-column: 1 / -1; }
+  }
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    position: relative;
+  }
+  .chart-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .chart-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .chart-card-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+  }
+  .chart-card-value .unit {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+  .chart-container {
+    position: relative;
+    height: 180px;
+    width: 100%;
+  }
+  .tps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .tps-table th {
+    text-align: left;
+    padding: 8px 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .tps-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  .tps-table tr:last-child td { border-bottom: none; }
+  .tps-table .model-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+  }
+  .live-badge-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--success);
+    background: rgba(34,197,94,0.08);
+    border: 1px solid rgba(34,197,94,0.2);
+    border-radius: var(--radius-pill);
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .clear-stats-btn {
+    margin-top: 8px;
+  }
+  .stats-refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-left: auto;
+    transition: all 0.15s;
+  }
+  .stats-refresh-btn:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+  .stats-refresh-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  .stats-refresh-btn.spinning svg {
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  @media (max-width: 600px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .stats-hero-value { font-size: 36px; }
+  }
 </style>
   <link rel="icon" type="image/png" href="/admin/icon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -686,6 +974,9 @@
       <span class="status-pill">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusBadge">—</span>
+      </span>
+      <span class="status-pill" id="headerTps" style="display:none">
+        <span id="headerTpsValue"></span> tok/s
       </span>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
@@ -701,6 +992,7 @@
     <button class="tab active" data-tab="provider">Provider</button>
     <button class="tab" data-tab="oauth">OAuth</button>
     <button class="tab" data-tab="models">Models</button>
+    <button class="tab" data-tab="stats">Stats</button>
     <button class="tab" data-tab="proxy">Proxy</button>
   </div>
 
@@ -836,6 +1128,121 @@
     </div>
   </div>
 
+  <!-- Stats Tab -->
+  <div class="panel" id="panel-stats">
+    <!-- Filters -->
+    <div class="stats-filter-bar" id="statsFilterBar">
+      <div class="stats-filter-label">Provider</div>
+      <select id="statsFilterProvider" onchange="loadStatsHistory()"><option value="">All Providers</option></select>
+      <div class="stats-filter-label">Model</div>
+      <select id="statsFilterModel" onchange="loadStatsHistory()"><option value="">All Models</option></select>
+      <div class="stats-filter-label">From</div>
+      <input type="date" id="statsFilterFrom" onchange="loadStatsHistory()" />
+      <div class="stats-filter-label">To</div>
+      <input type="date" id="statsFilterTo" onchange="loadStatsHistory()" />
+      <button class="stats-refresh-btn" id="statsRefreshBtn" onclick="refreshAllStats()" title="Refresh stats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+      </button>
+    </div>
+
+    <div class="stats-layout">
+      <!-- Token Usage -->
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Tokens Per Day</span>
+        </div>
+        <div class="chart-card-value" id="dailyTotal">0<span class="unit">Total</span></div>
+        <div class="chart-container"><canvas id="dailyChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Tokens Per Month</span>
+        </div>
+        <div class="chart-card-value" id="monthlyTotal">0<span class="unit">Total</span></div>
+        <div class="chart-container"><canvas id="monthlyChart"></canvas></div>
+      </div>
+
+      <!-- Live TPS -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <h3 style="margin:0">Live TPS</h3>
+          <span class="live-badge-inline" id="statsLiveBadge" style="display:none"><span class="pulse-dot"></span> Updated just now</span>
+        </div>
+        <div class="stats-live">
+          <div class="stats-hero" style="flex:0.3;min-width:160px">
+            <div class="stats-hero-value" id="statsTps">--</div>
+            <div class="stats-hero-unit">tokens/sec</div>
+            <div class="stats-hero-label" id="statsModel">No active request</div>
+          </div>
+          <div style="flex:1;position:relative;height:120px;">
+            <canvas id="liveTpsSparkline"></canvas>
+          </div>
+        </div>
+        <!-- Session totals grid -->
+        <div class="stats-grid" style="margin-top:16px">
+          <div class="stats-item">
+            <div class="stats-item-value" id="statsTotalRequests">0</div>
+            <div class="stats-item-label">Total Requests</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-item-value" id="statsInputTokens">0</div>
+            <div class="stats-item-label">Input Tokens</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-item-value" id="statsOutputTokens">0</div>
+            <div class="stats-item-label">Output Tokens</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-item-value" id="statsAvgTps">--</div>
+            <div class="stats-item-label">Avg tok/sec</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TPS History -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <h3 style="margin:0">TPS History (Tokens / Second)</h3>
+        </div>
+        <table class="tps-table" id="tpsTable">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Provider</th>
+              <th>Avg TPS</th>
+              <th>Max TPS</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="chart-container" style="height:220px;">
+          <canvas id="tpsHistoryChart"></canvas>
+        </div>
+      </div>
+
+      <!-- By Model -->
+      <div class="card">
+        <h3>By Model</h3>
+        <div id="statsByModel" style="color:var(--text-secondary);font-size:13px;font-style:italic">No data yet.</div>
+      </div>
+
+      <!-- Recent Requests -->
+      <div class="card">
+        <h3>Recent Requests</h3>
+        <div class="log-view" id="statsRecent" style="max-height:200px">No data yet.</div>
+      </div>
+
+      <!-- Clear Stats -->
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <h3 style="margin:0">Data Management</h3>
+          <p class="card-description" style="margin-bottom:0">Delete all persisted stats. This cannot be undone.</p>
+        </div>
+        <button class="btn btn-danger" onclick="promptClearStats()">Clear All Stats</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Proxy Tab -->
   <div class="panel" id="panel-proxy">
     <div class="card">
@@ -878,6 +1285,17 @@
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="closeDeleteModal()">Cancel</button>
       <button class="btn btn-danger" onclick="confirmDeleteCustomProvider()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="clearStatsModal" onclick="if(event.target===this)closeClearStatsModal()">
+  <div class="modal-card">
+    <h3>Clear All Stats</h3>
+    <p>Are you sure you want to delete all persisted statistics? This will remove all request history, token usage data, and TPS snapshots. This action cannot be undone.</p>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeClearStatsModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmClearStats()">Clear All</button>
     </div>
   </div>
 </div>
@@ -927,6 +1345,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'proxy') refreshLogs();
+    if (tab.dataset.tab === 'stats') {
+      startStatsPolling();
+      refreshStats();
+      loadStatsHistory();
+    } else {
+      stopStatsPolling();
+    }
   });
 });
 
@@ -1633,6 +2058,398 @@ function refreshOAuthUsage() {
     });
 }
 
+// ── Stats ──
+let statsInterval = null;
+let dailyChart = null;
+let monthlyChart = null;
+let liveSparklineChart = null;
+let tpsHistoryChart = null;
+let liveTpsBuffer = [];
+const maxLiveTpsPoints = 120;
+const chartColors = ['#8b5cf6','#22c55e','#f59e0b','#ef4444','#3b82f6','#ec4899','#14b8a6'];
+
+function getChartThemeColors() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return {
+    grid: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+    text: isDark ? '#a3a3a3' : '#737373',
+    textLight: isDark ? '#737373' : '#a3a3a3',
+  };
+}
+
+async function refreshStats() {
+  try {
+    const data = await api('/stats');
+    renderStats(data);
+  } catch(e) {
+    // Silently ignore stats errors
+  }
+}
+
+function renderStats(data) {
+  // Live counter
+  const tpsEl = document.getElementById('statsTps');
+  const modelEl = document.getElementById('statsModel');
+  const badgeEl = document.getElementById('statsLiveBadge');
+  const liveTps = data.live_tokens_per_sec || 0;
+
+  if (data.request_active) {
+    tpsEl.textContent = liveTps > 0 ? liveTps.toFixed(1) : '0';
+    tpsEl.classList.add('active');
+    const provider = data.current_provider || '';
+    const model = data.current_model || '';
+    modelEl.textContent = (model ? model : 'Processing...') + (provider ? ' via ' + provider : '');
+    badgeEl.style.display = '';
+    const headerTps = document.getElementById('headerTps');
+    const headerTpsValue = document.getElementById('headerTpsValue');
+    if (headerTps && headerTpsValue) {
+      headerTpsValue.textContent = liveTps > 0 ? liveTps.toFixed(1) : '0';
+      headerTps.style.display = '';
+    }
+  } else {
+    tpsEl.textContent = '--';
+    tpsEl.classList.remove('active');
+    if (data.total_requests > 0) {
+      modelEl.textContent = 'Idle — last: ' + (data.current_model || '');
+    } else {
+      modelEl.textContent = 'No active request';
+    }
+    badgeEl.style.display = 'none';
+    const headerTps = document.getElementById('headerTps');
+    if (headerTps) {
+      headerTps.style.display = 'none';
+    }
+  }
+
+  // Session totals
+  document.getElementById('statsTotalRequests').textContent = data.total_requests || 0;
+  document.getElementById('statsInputTokens').textContent = formatNumber(data.total_input_tokens || 0);
+  document.getElementById('statsOutputTokens').textContent = formatNumber(data.total_output_tokens || 0);
+  document.getElementById('statsAvgTps').textContent = data.avg_tokens_per_sec > 0 ? data.avg_tokens_per_sec.toFixed(1) : '--';
+
+  // By model (live)
+  const byModelEl = document.getElementById('statsByModel');
+  if (data.by_model && Object.keys(data.by_model).length > 0) {
+    let html = '';
+    for (const [model, stats] of Object.entries(data.by_model)) {
+      html += `<div class="model-stats-row">
+        <span class="model-stats-name">${esc(model)}</span>
+        <span class="model-stats-detail">${stats.requests} req · ${formatNumber(stats.input_tokens)} in / ${formatNumber(stats.output_tokens)} out · ${stats.avg_tokens_per_sec.toFixed(1)} tok/s</span>
+      </div>`;
+    }
+    byModelEl.innerHTML = html;
+    byModelEl.style.fontStyle = '';
+  } else {
+    byModelEl.innerHTML = 'No data yet.';
+    byModelEl.style.fontStyle = 'italic';
+  }
+
+  // Recent requests
+  const recentEl = document.getElementById('statsRecent');
+  if (data.recent_requests && data.recent_requests.length > 0) {
+    const lines = data.recent_requests.slice().reverse().map(r => {
+      const t = new Date(r.timestamp).toLocaleTimeString();
+      return `${t}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${r.tokens_per_sec.toFixed(1)}tok/s  ${r.duration_ms}ms`;
+    });
+    recentEl.textContent = lines.join('\n');
+  } else {
+    recentEl.textContent = 'No data yet.';
+  }
+
+  // Update sparkline buffer
+  liveTpsBuffer.push(liveTps);
+  if (liveTpsBuffer.length > maxLiveTpsPoints) {
+    liveTpsBuffer.shift();
+  }
+  renderLiveSparkline();
+}
+
+function formatNumber(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function startStatsPolling() {
+  if (statsInterval) return;
+  refreshStats();
+  statsInterval = setInterval(refreshStats, 1000);
+}
+
+function stopStatsPolling() {
+  if (statsInterval) {
+    clearInterval(statsInterval);
+    statsInterval = null;
+  }
+}
+
+// ── Dashboard ──
+
+function initStatsFilters() {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  document.getElementById('statsFilterFrom').value = sevenDaysAgo.toISOString().split('T')[0];
+  document.getElementById('statsFilterTo').value = now.toISOString().split('T')[0];
+  loadStatsFilters();
+}
+
+async function refreshAllStats() {
+  const btn = document.getElementById('statsRefreshBtn');
+  if (btn) btn.classList.add('spinning');
+  try {
+    await refreshStats();
+    await loadStatsHistory();
+    await loadStatsFilters();
+  } catch(e) {
+    console.error('Refresh stats failed:', e);
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+async function loadStatsFilters() {
+  try {
+    const data = await api('/stats/filters');
+    const provSel = document.getElementById('statsFilterProvider');
+    const modelSel = document.getElementById('statsFilterModel');
+    const prevProv = provSel.value;
+    const prevModel = modelSel.value;
+    provSel.innerHTML = '<option value="">All Providers</option>';
+    modelSel.innerHTML = '<option value="">All Models</option>';
+    if (data.providers) {
+      data.providers.forEach(p => {
+        provSel.innerHTML += `<option value="${esc(p)}">${esc(p)}</option>`;
+      });
+    }
+    if (data.models) {
+      data.models.forEach(m => {
+        modelSel.innerHTML += `<option value="${esc(m)}">${esc(m)}</option>`;
+      });
+    }
+    provSel.value = prevProv || '';
+    modelSel.value = prevModel || '';
+  } catch(e) {
+    console.error('Failed to load stats filters:', e);
+  }
+}
+
+async function loadStatsHistory() {
+  try {
+    const from = document.getElementById('statsFilterFrom').value;
+    const to = document.getElementById('statsFilterTo').value;
+    const provider = document.getElementById('statsFilterProvider').value;
+    const model = document.getElementById('statsFilterModel').value;
+    const qs = new URLSearchParams({ from, to, provider, model });
+    const data = await api('/stats/history?' + qs.toString());
+    renderDailyChart(data.daily_tokens || []);
+    renderMonthlyChart(data.monthly_tokens || []);
+    renderTPSHistory(data.tps_history || [], data.by_model || []);
+  } catch(e) {
+    console.error('Failed to load stats history:', e);
+  }
+}
+
+function renderDailyChart(data) {
+  const ctx = document.getElementById('dailyChart').getContext('2d');
+  const theme = getChartThemeColors();
+  const total = data.reduce((sum, d) => sum + d.total, 0);
+  document.getElementById('dailyTotal').innerHTML = formatNumber(total) + '<span class="unit">Total</span>';
+  const labels = data.map(d => d.date.slice(5)); // MM-DD
+  const inputData = data.map(d => d.input);
+  const outputData = data.map(d => d.output);
+
+  if (dailyChart) { dailyChart.destroy(); }
+  dailyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Input', data: inputData, backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 },
+        { label: 'Output', data: outputData, backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+      scales: {
+        x: { grid: { display: false, drawBorder: false }, ticks: { color: theme.text, font: { size: 11 } } },
+        y: { grid: { color: theme.grid, drawBorder: false }, ticks: { color: theme.text, font: { size: 11 }, maxTicksLimit: 6, callback: v => formatNumber(v) } }
+      }
+    }
+  });
+}
+
+function renderMonthlyChart(data) {
+  const ctx = document.getElementById('monthlyChart').getContext('2d');
+  const theme = getChartThemeColors();
+  const total = data.reduce((sum, d) => sum + d.total, 0);
+  document.getElementById('monthlyTotal').innerHTML = formatNumber(total) + '<span class="unit">Total</span>';
+  const labels = data.map(d => d.month);
+  const totals = data.map(d => d.total);
+
+  if (monthlyChart) { monthlyChart.destroy(); }
+  monthlyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Tokens',
+        data: totals,
+        fill: true,
+        backgroundColor: 'rgba(139,92,246,0.12)',
+        borderColor: '#8b5cf6',
+        borderWidth: 2,
+        pointBackgroundColor: '#8b5cf6',
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+      scales: {
+        x: { grid: { display: false, drawBorder: false }, ticks: { color: theme.text, font: { size: 11 } } },
+        y: { grid: { color: theme.grid, drawBorder: false }, ticks: { color: theme.text, font: { size: 11 }, maxTicksLimit: 6, callback: v => formatNumber(v) } }
+      }
+    }
+  });
+}
+
+function renderLiveSparkline() {
+  const ctx = document.getElementById('liveTpsSparkline').getContext('2d');
+  const theme = getChartThemeColors();
+  const labels = liveTpsBuffer.map((_, i) => '');
+  const data = liveTpsBuffer;
+
+  if (liveSparklineChart) {
+    liveSparklineChart.data.labels = labels;
+    liveSparklineChart.data.datasets[0].data = data;
+    liveSparklineChart.update('none');
+    return;
+  }
+  liveSparklineChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: '#8b5cf6',
+        backgroundColor: 'rgba(139,92,246,0.08)',
+        borderWidth: 2,
+        fill: true,
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: { display: false },
+        y: { display: false, min: 0 }
+      },
+      animation: { duration: 0 }
+    }
+  });
+}
+
+function renderTPSHistory(tpsData, byModel) {
+  // Render table
+  const tbody = document.querySelector('#tpsTable tbody');
+  if (!byModel || byModel.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-secondary);font-style:italic;text-align:center;padding:16px">No data yet.</td></tr>';
+  } else {
+    tbody.innerHTML = byModel.map((m, i) => {
+      const color = chartColors[i % chartColors.length];
+      return `<tr>
+        <td><span class="model-dot" style="background:${color}"></span>${esc(m.model)}</td>
+        <td>${esc(m.provider)}</td>
+        <td>${m.avg_tps.toFixed(1)}</td>
+        <td>${m.max_tps.toFixed(1)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Render multi-line chart
+  const ctx = document.getElementById('tpsHistoryChart').getContext('2d');
+  const theme = getChartThemeColors();
+
+  // Group by model
+  const byModelMap = {};
+  tpsData.forEach(p => {
+    if (!byModelMap[p.model]) byModelMap[p.model] = [];
+    byModelMap[p.model].push(p);
+  });
+
+  // Collect all unique timestamps
+  const allTimestamps = [...new Set(tpsData.map(p => p.timestamp))].sort((a, b) => a - b);
+  const labels = allTimestamps.map(ts => {
+    const d = new Date(ts * 1000);
+    return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+  });
+
+  const datasets = Object.keys(byModelMap).map((model, i) => {
+    const color = chartColors[i % chartColors.length];
+    const map = {};
+    byModelMap[model].forEach(p => { map[p.timestamp] = p.avg_tps; });
+    const data = allTimestamps.map(ts => map[ts] || null);
+    return {
+      label: model,
+      data,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+      tension: 0.3,
+      spanGaps: true
+    };
+  });
+
+  if (tpsHistoryChart) { tpsHistoryChart.destroy(); }
+  tpsHistoryChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { mode: 'index', intersect: false }
+      },
+      scales: {
+        x: { grid: { display: false, drawBorder: false }, ticks: { color: theme.text, font: { size: 10 }, maxTicksLimit: 8 } },
+        y: { grid: { color: theme.grid, drawBorder: false }, ticks: { color: theme.text, font: { size: 11 }, maxTicksLimit: 6 } }
+      }
+    }
+  });
+}
+
+function promptClearStats() {
+  document.getElementById('clearStatsModal').classList.add('show');
+}
+
+function closeClearStatsModal() {
+  document.getElementById('clearStatsModal').classList.remove('show');
+}
+
+async function confirmClearStats() {
+  closeClearStatsModal();
+  try {
+    await api('/stats/clear', { method: 'POST' });
+    toast('All stats cleared');
+    loadStatsHistory();
+    loadStatsFilters();
+  } catch(e) {
+    toast('Failed to clear stats: ' + e.message, 'error');
+  }
+}
+
 // ── Init ──
 initTheme();
 loadConfig();
@@ -1640,6 +2457,8 @@ loadModelConfig();
 loadAutoStart();
 updateStatus();
 loadOAuthAccounts();
+initStatsFilters();
+startStatsPolling();
 </script>
 </body>
 </html>

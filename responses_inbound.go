@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
@@ -23,6 +24,9 @@ func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respReq.Model = getEffectiveModel(p.modelRemap, respReq.Model)
+
+	globalStats.StartRequest(respReq.Model, p.providerType)
+	defer globalStats.EndRequest()
 
 	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
 	// don't have api.responses.write scope, so /v1/responses returns 401)
@@ -52,6 +56,8 @@ func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+	reqStart := time.Now()
+
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
 
 	body, err := json.Marshal(chatReq)
@@ -95,12 +101,16 @@ func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Reques
 
 	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq)
 
+	globalStats.RecordRequest(respReq.Model, p.providerType, openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(responsesResp)
 }
 
 func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+	reqStart := time.Now()
+
 	ollamaReq := translateResponsesAPIToOllama(respReq)
 
 	body, err := json.Marshal(ollamaReq)
@@ -143,6 +153,8 @@ func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Reques
 	}
 
 	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq)
+
+	globalStats.RecordRequest(respReq.Model, p.providerType, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

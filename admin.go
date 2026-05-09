@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -29,6 +30,11 @@ func startAdminServer(cfg *Config, port string) {
 	adminMu.Lock()
 	adminConfig = cfg
 	adminMu.Unlock()
+
+	// Init persistent stats DB (shared with proxy process via WAL)
+	if err := initDB(); err != nil {
+		log.Printf("[DB] admin server failed to init: %v", err)
+	}
 
 	mux := http.NewServeMux()
 
@@ -260,6 +266,112 @@ func startAdminServer(cfg *Config, port string) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"logs": content})
+	})
+
+	// API: Live stats - proxy to the running proxy server's /v1/stats endpoint
+	mux.HandleFunc("/admin/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		// Forward to the proxy server which has the actual stats
+		proxyPort := os.Getenv("PRISM_PORT")
+		if proxyPort == "" {
+			proxyPort = "11434"
+		}
+		resp, err := http.Get("http://127.0.0.1:" + proxyPort + "/v1/stats")
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"current_model":        "",
+				"current_provider":     "",
+				"request_active":       false,
+				"live_tokens_received": 0,
+				"live_tokens_per_sec":  0,
+				"total_requests":       0,
+				"total_input_tokens":   0,
+				"total_output_tokens":  0,
+				"avg_tokens_per_sec":   0,
+				"recent_requests":      []interface{}{},
+				"by_model":             map[string]interface{}{},
+			})
+			return
+		}
+		defer resp.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		io.Copy(w, resp.Body)
+	})
+
+	// API: Historical stats - reads directly from SQLite so it works when proxy is off
+	mux.HandleFunc("/admin/stats/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+
+		now := time.Now()
+		fromStr := r.URL.Query().Get("from")
+		toStr := r.URL.Query().Get("to")
+		provider := r.URL.Query().Get("provider")
+		model := r.URL.Query().Get("model")
+
+		var fromTime, toTime time.Time
+		if fromStr != "" {
+			fromTime, _ = time.Parse("2006-01-02", fromStr)
+		}
+		if toStr != "" {
+			toTime, _ = time.Parse("2006-01-02", toStr)
+		}
+		if fromTime.IsZero() {
+			fromTime = now.AddDate(0, 0, -7)
+		}
+		if toTime.IsZero() {
+			toTime = now
+		}
+		fromUnix := fromTime.Unix()
+		toUnix := toTime.Add(24 * time.Hour).Unix()
+
+		daily, _ := getDailyTokens(fromUnix, toUnix, provider, model)
+		monthly, _ := getMonthlyTokens()
+		tpsHist, _ := getTPSHistory(fromUnix, toUnix, provider, model)
+		byModel, _ := getModelHistory(fromUnix, toUnix, provider, model)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"daily_tokens":   daily,
+			"monthly_tokens": monthly,
+			"tps_history":    tpsHist,
+			"by_model":       byModel,
+		})
+	})
+
+	// API: Clear all persistent stats
+	mux.HandleFunc("/admin/stats/clear", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		if err := clearAllStats(); err != nil {
+			writeJSONError(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// API: Get distinct models and providers for filters
+	mux.HandleFunc("/admin/stats/filters", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		models, _ := getDistinctModels()
+		providers, _ := getDistinctProviders()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"models":    models,
+			"providers": providers,
+		})
 	})
 
 	addr := "127.0.0.1:" + port

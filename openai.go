@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
@@ -313,6 +314,9 @@ func (p *Proxy) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request) {
 
 	anthroReq.Model = getEffectiveModel(p.modelRemap, anthroReq.Model)
 
+	globalStats.StartRequest(anthroReq.Model, p.providerType)
+	defer globalStats.EndRequest()
+
 	openAIReq := translateToOpenAI(&anthroReq)
 
 	if anthroReq.Stream {
@@ -324,6 +328,8 @@ func (p *Proxy) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest) {
+	reqStart := time.Now()
+
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to marshal OpenAI request")
@@ -364,6 +370,8 @@ func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request,
 	}
 
 	anthroResp := translateFromOpenAI(&openAIResp, anthroReq)
+
+	globalStats.RecordRequest(anthroReq.Model, p.providerType, openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

@@ -13,6 +13,8 @@ import (
 )
 
 func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+	reqStart := time.Now()
+
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
 
 	body, err := json.Marshal(chatReq)
@@ -67,6 +69,10 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	var accumulatedArgs string
 	var outputTokens int
 	var inputTokens int
+	var liveOutputTokens int
+	defer func() {
+		globalStats.RecordRequest(respReq.Model, p.providerType, inputTokens, outputTokens, time.Since(reqStart))
+	}()
 	var completedEmitted bool
 	var reasoningItemID string
 	var reasoningActive bool
@@ -162,6 +168,8 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 			}
 
 			// Stream the reasoning text as a summary delta
+			liveOutputTokens++
+			globalStats.AddTokens(1)
 			accumulatedReasoning += *choice.Delta.ReasoningContent
 			emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
@@ -290,6 +298,8 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 
 				if tc.Function.Arguments != "" {
 					accumulatedArgs += tc.Function.Arguments
+					liveOutputTokens++
+					globalStats.AddTokens(1)
 					if tc.Function.Arguments != "{}" {
 						emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
 							"type":         "response.function_call_arguments.delta",
@@ -334,6 +344,8 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 
 			accumulatedText += *delta.Content
 			completedOutputText += *delta.Content
+			liveOutputTokens++
+			globalStats.AddTokens(1)
 			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,
@@ -582,6 +594,8 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 }
 
 func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+	reqStart := time.Now()
+
 	ollamaReq := translateResponsesAPIToOllama(respReq)
 
 	body, err := json.Marshal(ollamaReq)
@@ -634,6 +648,9 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 	var funcCallName string
 	var outputTokens int
 	var inputTokens int
+	defer func() {
+		globalStats.RecordRequest(respReq.Model, p.providerType, inputTokens, outputTokens, time.Since(reqStart))
+	}()
 	var accumulatedText string
 	var thinkingActive bool
 	var thinkingSummaryIndex int
@@ -677,12 +694,13 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 		if chunk.PromptEvalCount > 0 {
 			inputTokens = chunk.PromptEvalCount
 		}
-		if chunk.EvalCount > 0 {
+		if chunk.EvalCount > outputTokens {
 			outputTokens = chunk.EvalCount
 		}
 
 		// Handle thinking content
 		if chunk.Message.Thinking != "" {
+			globalStats.AddTokens(1)
 			if !thinkingActive {
 				thinkingActive = true
 				outputIndex++
@@ -808,6 +826,8 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 					continue
 				}
 
+				globalStats.AddTokens(1)
+
 				outputIndex++
 				funcCallItemID = generateID("fc_")
 				funcCallCallID = fmt.Sprintf("call_%s_%s", toolName, funcCallItemID)
@@ -883,6 +903,7 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 
 			accumulatedText += chunk.Message.Content
 			completedOutputText += chunk.Message.Content
+			globalStats.AddTokens(1)
 			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,

@@ -194,10 +194,29 @@ The admin UI provides:
 | **Provider** | Select active provider, set API keys, add/edit/remove custom providers |
 | **OAuth** | Manage Codex (OpenAI) accounts — sign in, view usage credits, activate, or remove accounts |
 | **Models** | Edit model remapping — default model, known models, aliases |
+| **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
+
+### Stats Dashboard
+
+The **Stats** tab surfaces every metric about your proxy usage:
+
+| Section | What it shows |
+|---|---|
+| **Filter bar** | Filter by provider, model, or date range; refresh button to reload all data |
+| **Tokens Per Day** | Stacked bar chart (input + output) with a total headline — persists across restarts via SQLite |
+| **Tokens Per Month** | Filled line chart showing monthly aggregate totals |
+| **Live TPS** | Real-time tokens/sec hero value with a live sparkline chart (120-point rolling window, updated every second) |
+| **Session Totals** | Running counts: total requests, input tokens, output tokens, and average TPS |
+| **TPS History** | Table (model, provider, avg/max TPS) paired with a multi-line chart of 5-minute bucket averages over time |
+| **By Model** | Per-model breakdown of requests, token counts, and average TPS |
+| **Recent Requests** | Timestamped log of the last 50 requests with model, token counts, TPS, and duration |
+| **Data Management** | One-click **Clear All Stats** button to wipe all persisted history |
+
+All request data and TPS snapshots are persisted to `%APPDATA%\prism\stats.db` (SQLite, WAL mode) so the dashboard survives proxy restarts and page refreshes. Charts are rendered with Chart.js and automatically adapt to light/dark theme.
 
 ## Environment variables
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func writeOpenAIError(w http.ResponseWriter, statusCode int, errType string, message string) {
@@ -37,6 +38,9 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	openAIReq.Model = getEffectiveModel(p.modelRemap, openAIReq.Model)
 
+	globalStats.StartRequest(openAIReq.Model, p.providerType)
+	defer globalStats.EndRequest()
+
 	if openAIReq.Stream {
 		if p.providerType == "openai" || p.providerType == "codex" {
 			p.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq)
@@ -54,6 +58,8 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 }
 
 func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+	reqStart := time.Now()
+
 	ollamaReq := translateOpenAIToOllama(openAIReq)
 
 	body, err := json.Marshal(ollamaReq)
@@ -97,12 +103,16 @@ func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Reque
 
 	openAIResp := translateOllamaToOpenAI(&ollamaResp, openAIReq)
 
+	globalStats.RecordRequest(openAIReq.Model, p.providerType, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(openAIResp)
 }
 
 func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+	reqStart := time.Now()
+
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to marshal request")
@@ -145,6 +155,8 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
+
+	globalStats.RecordRequest(openAIReq.Model, p.providerType, 0, 0, time.Since(reqStart))
 }
 
 // buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name

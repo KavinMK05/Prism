@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 )
 
 type ollamaStreamState struct {
@@ -36,6 +38,8 @@ func (s *ollamaStreamState) closeToolCalls() {
 }
 
 func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+	reqStart := time.Now()
+
 	ollamaReq := translateOpenAIToOllama(openAIReq)
 
 	body, err := json.Marshal(ollamaReq)
@@ -87,6 +91,10 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		emittedToolCalls: make(map[string]bool),
 	}
 
+	defer func() {
+		globalStats.RecordRequest(openAIReq.Model, p.providerType, state.inputTokens, state.outputTokens, time.Since(reqStart))
+	}()
+
 	state.writeOpenAISSE(OpenAIStreamChunk{
 		ID:     respID,
 		Object: "chat.completion.chunk",
@@ -119,7 +127,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		if chunk.PromptEvalCount > 0 {
 			state.inputTokens = chunk.PromptEvalCount
 		}
-		if chunk.EvalCount > 0 {
+		if chunk.EvalCount > state.outputTokens {
 			state.outputTokens = chunk.EvalCount
 		}
 
@@ -127,6 +135,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 			if !state.thinkingActive {
 				state.thinkingActive = true
 			}
+			globalStats.AddTokens(1)
 			thinking := chunk.Message.Thinking
 			state.writeOpenAISSE(OpenAIStreamChunk{
 				ID:     respID,
@@ -192,6 +201,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 				}
 
 				argsJSON, _ := json.Marshal(tc.Function.Arguments)
+				globalStats.AddTokens(1)
 				if !state.toolCallsActive {
 					state.toolCallsActive = true
 				}
@@ -232,6 +242,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		}
 
 		if chunk.Message.Content != "" {
+			globalStats.AddTokens(1)
 			if state.thinkingActive {
 				// Buffer content until thinking ends
 				state.pendingContent += chunk.Message.Content
@@ -319,6 +330,12 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 }
 
 func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+	reqStart := time.Now()
+	var liveTokens int
+	defer func() {
+		globalStats.RecordRequest(openAIReq.Model, p.providerType, 0, liveTokens, time.Since(reqStart))
+	}()
+
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to marshal request")
@@ -373,6 +390,26 @@ func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *htt
 				flusher.Flush()
 			}
 			break
+		}
+
+		// Track live token progress for stats
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var chunk OpenAIStreamChunk
+			if json.Unmarshal([]byte(data), &chunk) == nil {
+				if len(chunk.Choices) > 0 {
+					choice := chunk.Choices[0]
+					if (choice.Delta.Content != nil && *choice.Delta.Content != "") ||
+						(choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "") ||
+						len(choice.Delta.ToolCalls) > 0 {
+						liveTokens++
+						globalStats.AddTokens(1)
+					}
+				}
+				if chunk.Usage != nil && chunk.Usage.CompletionTokens > 0 {
+					liveTokens = chunk.Usage.CompletionTokens
+				}
+			}
 		}
 	}
 

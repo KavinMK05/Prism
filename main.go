@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -50,6 +51,13 @@ func runProxyServer() {
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
 		log.SetOutput(logFile)
+	}
+
+	// Init persistent stats DB
+	if err := initDB(); err != nil {
+		log.Printf("[DB] failed to init: %v", err)
+	} else {
+		defer closeDB()
 	}
 
 	cfg := loadConfig()
@@ -99,6 +107,25 @@ func runProxyServer() {
 	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleResponsesAPI)))
 	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleModels)))
 
+	// Stats endpoint (proxied from admin UI)
+	mux.HandleFunc("/v1/stats", loggingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		data, err := StatsToJSON()
+		if err != nil {
+			http.Error(w, "failed to serialize stats", 500)
+			return
+		}
+		w.Write(data)
+	}))
+
+	// Start background TPS snapshot writer
+	go startTPSSnapshotLoop()
+
 	addr := host + ":" + port
 
 	log.Printf("Prism starting on %s -> %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
@@ -122,6 +149,19 @@ func runProxyServer() {
 
 	log.Println("Shutting down...")
 	server.Close()
+}
+
+func startTPSSnapshotLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		snapshot := globalStats.GetSnapshot()
+		if snapshot.RequestActive && snapshot.LiveTokensPerSec > 0 {
+			if err := dbRecordTPSSnapshot(snapshot.CurrentModel, snapshot.CurrentProvider, snapshot.LiveTokensPerSec); err != nil {
+				log.Printf("[DB] TPS snapshot error: %v", err)
+			}
+		}
+	}
 }
 
 func handleCountTokens(w http.ResponseWriter, r *http.Request) {
