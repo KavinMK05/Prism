@@ -48,8 +48,8 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 ```
   Your tools                              Cloud providers
   ─────────                               ────────────────
-                                          
-  Claude Desktop ──┐                       
+
+  Claude Desktop ──┐
   (Anthropic API)  │                       ┌──────────────┐
                    │    ┌───────────┐       │  Ollama Cloud │
   Cursor ──────────┼───→│   Prism   │──────→│  /api/chat    │
@@ -67,6 +67,11 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
                         │ Admin UI │
                         │  :8765  │
                         └─────────┘
+
+                    ┌────────────────────┐
+                    │  Codex (via OAuth) │── Sign in with OpenAI
+                    │  /v1/chat/...      │   account — no API key
+                    └────────────────────┘   needed
 ```
 
 Prism accepts requests in **Anthropic Messages** format (`/v1/messages`), **OpenAI Chat Completions** format (`/v1/chat/completions`), or **OpenAI Responses** format (`/v1/responses`), translates them to whatever your upstream provider speaks, and translates responses back. Streaming works seamlessly in all directions.
@@ -85,9 +90,10 @@ That's it. Prism starts on `http://127.0.0.1:11434` and a system tray icon appea
 
 Open the admin UI from the system tray (right-click → **Open Settings**) or navigate to `http://127.0.0.1:8765/admin`. In the **Provider** tab:
 
-1. Select your upstream provider (Ollama Cloud, OpenCode Go, or Custom)
-2. Enter your API key
-3. Prism auto-restarts with the new config
+1. Select your upstream provider (Ollama Cloud, OpenCode Go, a custom provider, or a Codex OAuth account)
+2. For API-key providers, enter your API key
+3. For Codex, click **Add Codex Account** to sign in with your OpenAI account
+4. Prism auto-restarts with the new config
 
 You can also configure via `%APPDATA%\prism\config.json` — see [Providers](#providers) below.
 
@@ -165,7 +171,9 @@ When launched without arguments, Prism runs as a system tray application with th
 | Menu item | Action |
 |---|---|
 | **Start / Stop / Restart Proxy** | Control the proxy server process |
-| **Provider** → Ollama Cloud / OpenCode Go / Custom | Switch upstream provider on the fly |
+| **Provider** → Ollama Cloud / OpenCode Go / Custom providers | Switch upstream provider on the fly |
+| **Add Codex Account** | Start Codex OAuth flow to link an OpenAI account |
+| **Refresh Usage** | Refresh credit usage for all connected Codex accounts |
 | **Open Settings** | Open the web admin UI in your browser |
 | **Open Folder** | Open the proxy directory in Explorer |
 | **Edit Model Config** | Open `model_remapping.json` in Notepad |
@@ -183,7 +191,8 @@ The admin UI provides:
 
 | Tab | Features |
 |---|---|
-| **Provider** | Select active provider, set API keys, configure base URLs |
+| **Provider** | Select active provider, set API keys, add/edit/remove custom providers |
+| **OAuth** | Manage Codex (OpenAI) accounts — sign in, view usage credits, activate, or remove accounts |
 | **Models** | Edit model remapping — default model, known models, aliases |
 | **Proxy** | Start, stop, and restart the proxy; view status |
 | **Logs** | Live tail of the last 200 log lines |
@@ -202,13 +211,22 @@ Changes are saved immediately and the proxy auto-restarts when needed.
 
 ## Providers
 
-Prism supports three upstream providers, configured via the admin UI or `%APPDATA%\prism\config.json`:
+Prism supports multiple upstream providers, configured via the admin UI or `%APPDATA%\prism\config.json`:
 
 | Provider | Config key | Upstream format | Endpoint |
 |---|---|---|---|
 | **Ollama Cloud** | `ollama_cloud` | Ollama Native | `/api/chat` |
 | **OpenCode Go** | `opencode_go` | OpenAI | `/v1/chat/completions` |
-| **Custom** | `custom` | OpenAI | `/v1/chat/completions` |
+| **Custom providers** | `custom_providers[]` | OpenAI | `/v1/chat/completions` |
+| **Codex (via OAuth)** | `oauth_accounts[]` | OpenAI | `/v1/chat/completions` |
+
+### Custom providers
+
+You can add multiple custom providers (e.g. OpenRouter, Groq, Together AI) — each with its own name, base URL, and API key. Add, edit, or delete them from the admin UI **Provider** tab. Custom providers are assigned unique IDs like `custom_myprovider_abc123`.
+
+### Codex OAuth accounts
+
+Prism supports signing in with your OpenAI account via OAuth (no API key needed). Click **Add Codex Account** in the admin UI **OAuth** tab or system tray, and your browser will open for authentication. Once connected, Prism uses your account token automatically, including token refresh and credit usage tracking.
 
 Switch providers from the system tray, admin UI, or by changing the `active_provider` field — no restart required when using the tray/UI.
 
@@ -219,20 +237,38 @@ Switch providers from the system tray, admin UI, or by changing the `active_prov
 {
   "active_provider": "ollama_cloud",
   "ollama_cloud": {
+    "id": "ollama_cloud",
     "name": "Ollama Cloud",
     "base_url": "https://ollama.com",
     "api_key": ""
   },
   "opencode_go": {
+    "id": "opencode_go",
     "name": "OpenCode Go",
     "base_url": "https://opencode.ai/zen/go",
     "api_key": ""
   },
-  "custom": {
-    "name": "Custom",
-    "base_url": "",
-    "api_key": ""
-  }
+  "custom_providers": [
+    {
+      "id": "custom_openrouter_abc123",
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": ""
+    }
+  ],
+  "oauth_accounts": [
+    {
+      "id": "codex_user_abc123",
+      "provider": "codex",
+      "label": "Codex",
+      "email": "user@example.com",
+      "access_token": "...",
+      "refresh_token": "...",
+      "expires_at": 1234567890,
+      "plan_tier": "plus",
+      "active": true
+    }
+  ]
 }
 ```
 
