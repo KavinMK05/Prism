@@ -206,17 +206,26 @@ The **Stats** tab surfaces every metric about your proxy usage:
 
 | Section | What it shows |
 |---|---|
-| **Filter bar** | Filter by provider, model, or date range; refresh button to reload all data |
+| **Filter bar** | Filter by provider, model, **client origin**, or date range; refresh button to reload all data |
 | **Tokens Per Day** | Stacked bar chart (input + output) with a total headline — persists across restarts via SQLite |
 | **Tokens Per Month** | Filled line chart showing monthly aggregate totals |
 | **Live TPS** | Real-time tokens/sec hero value with a live sparkline chart (120-point rolling window, updated every second) |
 | **Session Totals** | Running counts: total requests, input tokens, output tokens, and average TPS |
+| **Client Breakdown** | Per-client usage stats showing requests, total tokens, and a distribution pie chart — identifies tools like Claude Code, Cursor, Continue, Copilot, Factory Droid, and more automatically by User-Agent |
 | **TPS History** | Table (model, provider, avg/max TPS) paired with a multi-line chart of 5-minute bucket averages over time |
 | **By Model** | Per-model breakdown of requests, token counts, and average TPS |
-| **Recent Requests** | Timestamped log of the last 50 requests with model, token counts, TPS, and duration |
+| **Recent Requests** | Timestamped log of the last 50 requests with model, client, token counts, TPS, and duration |
 | **Data Management** | One-click **Clear All Stats** button to wipe all persisted history |
 
 All request data and TPS snapshots are persisted to `%APPDATA%\prism\stats.db` (SQLite, WAL mode) so the dashboard survives proxy restarts and page refreshes. Charts are rendered with Chart.js and automatically adapt to light/dark theme.
+
+### Client detection
+
+Prism automatically identifies which tool is making each request by inspecting the `User-Agent` header. Detected clients include:
+
+**Claude Code, Cursor, Continue, GitHub Copilot, Aider, OpenCode, Windsurf, Trae, Factory Droid, Supermaven, and Claude Desktop.**
+
+You can override detection by setting the `X-Client-Name` header on your requests — the value is used directly in stats, so you can tag requests with custom names like `"my-script"` or `"ci-pipeline"`.
 
 ## Environment variables
 
