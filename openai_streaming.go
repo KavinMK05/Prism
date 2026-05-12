@@ -15,11 +15,15 @@ import (
 func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest) {
 	reqStart := time.Now()
 	outputTokens := 0
+	inputTokens := 0
 	liveOutputTokens := 0
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, 0, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
+
+	// Inject stream_options to get usage data from the upstream provider
+	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
@@ -107,6 +111,9 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		choice := chunk.Choices[0]
 
 		if chunk.Usage != nil {
+			if chunk.Usage.PromptTokens > 0 {
+				inputTokens = chunk.Usage.PromptTokens
+			}
 			if chunk.Usage.CompletionTokens > 0 {
 				outputTokens = chunk.Usage.CompletionTokens
 			}

@@ -157,15 +157,20 @@ type SSEEvent struct {
 }
 
 type OpenAIChatRequest struct {
-	Model          string              `json:"model"`
-	Messages       []OpenAIChatMessage `json:"messages"`
-	Stream         bool                `json:"stream"`
-	Temperature    *float64            `json:"temperature,omitempty"`
-	TopP           *float64            `json:"top_p,omitempty"`
-	MaxTokens      int                 `json:"max_tokens,omitempty"`
-	Tools          []OpenAITool        `json:"tools,omitempty"`
-	ResponseFormat interface{}         `json:"response_format,omitempty"`
-	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+	Model            string              `json:"model"`
+	Messages         []OpenAIChatMessage `json:"messages"`
+	Stream           bool                `json:"stream"`
+	Temperature      *float64            `json:"temperature,omitempty"`
+	TopP             *float64            `json:"top_p,omitempty"`
+	MaxTokens        int                 `json:"max_tokens,omitempty"`
+	Tools            []OpenAITool        `json:"tools,omitempty"`
+	ResponseFormat   interface{}         `json:"response_format,omitempty"`
+	ReasoningEffort  string             `json:"reasoning_effort,omitempty"`
+	StreamOptions    *OpenAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+type OpenAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type OpenAIChatMessage struct {

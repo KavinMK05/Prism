@@ -276,6 +276,10 @@ func detectClient(r *http.Request) string {
 	case strings.Contains(ua, "claude") && strings.Contains(ua, "anthropic"):
 		return "Claude"
 	default:
+		rawUA := r.UserAgent()
+		if rawUA != "" {
+			return rawUA
+		}
 		return "Unknown"
 	}
 }

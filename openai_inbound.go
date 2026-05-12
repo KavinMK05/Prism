@@ -153,11 +153,19 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Extract usage stats from the response before forwarding
+	var inputTokens, outputTokens int
+	var parsedResp OpenAIChatResponse
+	if json.Unmarshal(respBody, &parsedResp) == nil {
+		inputTokens = parsedResp.Usage.PromptTokens
+		outputTokens = parsedResp.Usage.CompletionTokens
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
 
-	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), 0, 0, time.Since(reqStart))
+	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), inputTokens, outputTokens, time.Since(reqStart))
 }
 
 // buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name

@@ -17,6 +17,11 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
 
+	// Inject stream_options to get usage data from the upstream provider
+	if chatReq.Stream {
+		chatReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
+	}
+
 	body, err := json.Marshal(chatReq)
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to marshal request")

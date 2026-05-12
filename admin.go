@@ -320,10 +320,10 @@ func startAdminServer(cfg *Config, port string) {
 
 		var fromTime, toTime time.Time
 		if fromStr != "" {
-			fromTime, _ = time.Parse("2006-01-02", fromStr)
+			fromTime, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
 		}
 		if toStr != "" {
-			toTime, _ = time.Parse("2006-01-02", toStr)
+			toTime, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
 		}
 		if fromTime.IsZero() {
 			fromTime = now.AddDate(0, 0, -7)

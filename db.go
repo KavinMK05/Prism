@@ -59,8 +59,19 @@ CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
-	// Migration: add client column if it doesn't exist (safe to ignore error)
-	_, _ = db.Exec("ALTER TABLE requests ADD COLUMN client TEXT")
+	// Migration: add client column if it doesn't exist
+	var clientColExists bool
+	row := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name = 'client'")
+	if err := row.Scan(&clientColExists); err != nil {
+		log.Printf("[DB] warning: could not check schema: %v", err)
+	} else if !clientColExists {
+		if _, err := db.Exec("ALTER TABLE requests ADD COLUMN client TEXT"); err != nil {
+			return fmt.Errorf("migrate add client column: %w", err)
+		}
+		log.Printf("[DB] migrated: added client column to requests table")
+	}
+	// Ensure client index exists (safe to run even if it already exists)
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client)")
 	return nil
 }
 
@@ -111,7 +122,7 @@ func getDailyTokens(from, to int64, provider, model, client string) ([]DailyToke
 	if db == nil {
 		return nil, nil
 	}
-	q := `SELECT date(timestamp, 'unixepoch') as day, SUM(input_tokens), SUM(output_tokens)
+	q := `SELECT date(timestamp, 'unixepoch', 'localtime') as day, SUM(input_tokens), SUM(output_tokens)
 		  FROM requests
 		  WHERE timestamp >= ? AND timestamp <= ?`
 	args := []interface{}{from, to}
@@ -158,7 +169,7 @@ func getMonthlyTokens(client string) ([]MonthlyTokens, error) {
 	if db == nil {
 		return nil, nil
 	}
-	q := `SELECT strftime('%Y-%m', timestamp, 'unixepoch') as month,
+	q := `SELECT strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') as month,
 		       SUM(input_tokens), SUM(output_tokens)
 		FROM requests`
 	args := []interface{}{}

@@ -333,10 +333,14 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
 	reqStart := time.Now()
 	var liveTokens int
+	var inputTokens int
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, 0, liveTokens, time.Since(reqStart))
+		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, inputTokens, liveTokens, time.Since(reqStart))
 	}()
+
+	// Inject stream_options to get usage data from the upstream provider
+	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
@@ -408,8 +412,13 @@ func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *htt
 						globalStats.AddTokens(1)
 					}
 				}
-				if chunk.Usage != nil && chunk.Usage.CompletionTokens > 0 {
-					liveTokens = chunk.Usage.CompletionTokens
+				if chunk.Usage != nil {
+					if chunk.Usage.PromptTokens > 0 {
+						inputTokens = chunk.Usage.PromptTokens
+					}
+					if chunk.Usage.CompletionTokens > 0 {
+						liveTokens = chunk.Usage.CompletionTokens
+					}
 				}
 			}
 		}

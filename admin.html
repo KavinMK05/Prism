@@ -60,7 +60,7 @@
   }
 
   /* ── Layout ── */
-  .container { max-width: 720px; margin: 0 auto; padding: 40px 24px; }
+  .container { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
 
   /* ── Header ── */
   .page-header {
@@ -776,10 +776,25 @@
   /* ── Dashboard ── */
   .stats-filter-bar {
     display: flex;
+    flex-direction: column;
     gap: 12px;
     margin-bottom: 20px;
+    align-items: center;
+    width: 100%;
+  }
+  .filter-row {
+    display: flex;
+    gap: 12px;
     flex-wrap: wrap;
     align-items: center;
+    width: 100%;
+  }
+  .filter-row.center { justify-content: space-between; }
+  .filter-row.between { justify-content: space-between; }
+  .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   .stats-filter-bar select,
   .stats-filter-bar input[type="date"] {
@@ -935,7 +950,6 @@
     background: var(--surface);
     color: var(--text-secondary);
     cursor: pointer;
-    margin-left: auto;
     transition: all 0.15s;
   }
   .stats-refresh-btn:hover {
@@ -1245,19 +1259,35 @@
   <div class="panel" id="panel-stats">
     <!-- Filters -->
     <div class="stats-filter-bar" id="statsFilterBar">
-      <div class="stats-filter-label">Provider</div>
-      <select id="statsFilterProvider" onchange="loadStatsHistory()"><option value="">All Providers</option></select>
-      <div class="stats-filter-label">Model</div>
-      <select id="statsFilterModel" onchange="loadStatsHistory()"><option value="">All Models</option></select>
-      <div class="stats-filter-label">Client</div>
-      <select id="statsFilterClient" onchange="loadStatsHistory()"><option value="">All Clients</option></select>
-      <div class="stats-filter-label">From</div>
-      <input type="date" id="statsFilterFrom" onchange="loadStatsHistory()" />
-      <div class="stats-filter-label">To</div>
-      <input type="date" id="statsFilterTo" onchange="loadStatsHistory()" />
-      <button class="stats-refresh-btn" id="statsRefreshBtn" onclick="refreshAllStats()" title="Refresh stats">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-      </button>
+      <div class="filter-row center">
+        <div class="filter-group">
+          <div class="stats-filter-label">Provider</div>
+          <select id="statsFilterProvider" onchange="loadStatsHistory()"><option value="">All Providers</option></select>
+        </div>
+        <div class="filter-group">
+          <div class="stats-filter-label">Model</div>
+          <select id="statsFilterModel" onchange="loadStatsHistory()"><option value="">All Models</option></select>
+        </div>
+        <div class="filter-group">
+          <div class="stats-filter-label">Client</div>
+          <select id="statsFilterClient" onchange="loadStatsHistory()"><option value="">All Clients</option></select>
+        </div>
+      </div>
+      <div class="filter-row between">
+        <div style="display:flex;gap:12px;align-items:center;">
+          <div class="filter-group">
+            <div class="stats-filter-label">From</div>
+            <input type="date" id="statsFilterFrom" onchange="loadStatsHistory()" />
+          </div>
+          <div class="filter-group">
+            <div class="stats-filter-label">To</div>
+            <input type="date" id="statsFilterTo" onchange="loadStatsHistory()" />
+          </div>
+        </div>
+        <button class="stats-refresh-btn" id="statsRefreshBtn" onclick="refreshAllStats()" title="Refresh stats">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+        </button>
+      </div>
     </div>
 
     <div class="stats-layout">
@@ -1502,6 +1532,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'stats') {
       startStatsPolling();
       refreshStats();
+      initStatsFilters();
       loadStatsHistory();
     } else {
       stopStatsPolling();
@@ -2214,6 +2245,7 @@ function refreshOAuthUsage() {
 
 // ── Stats ──
 let statsInterval = null;
+let historyInterval = null;
 let dailyChart = null;
 let monthlyChart = null;
 let liveSparklineChart = null;
@@ -2298,8 +2330,7 @@ function renderStats(data) {
     byModelEl.style.fontStyle = 'italic';
   }
 
-  // By client (live)
-  renderClientStats(data.by_client || null, true);
+  // By client (persistent - updated via loadStatsHistory)
 
   // Recent requests
   const recentEl = document.getElementById('statsRecent');
@@ -2332,6 +2363,8 @@ function startStatsPolling() {
   if (statsInterval) return;
   refreshStats();
   statsInterval = setInterval(refreshStats, 1000);
+  loadStatsHistory();
+  historyInterval = setInterval(loadStatsHistory, 10000);
 }
 
 function stopStatsPolling() {
@@ -2339,15 +2372,26 @@ function stopStatsPolling() {
     clearInterval(statsInterval);
     statsInterval = null;
   }
+  if (historyInterval) {
+    clearInterval(historyInterval);
+    historyInterval = null;
+  }
 }
 
 // ── Dashboard ──
 
+function fmtLocalDate(d) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function initStatsFilters() {
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  document.getElementById('statsFilterFrom').value = sevenDaysAgo.toISOString().split('T')[0];
-  document.getElementById('statsFilterTo').value = now.toISOString().split('T')[0];
+  document.getElementById('statsFilterFrom').value = fmtLocalDate(sevenDaysAgo);
+  document.getElementById('statsFilterTo').value = fmtLocalDate(now);
   loadStatsFilters();
 }
 
@@ -2510,19 +2554,47 @@ function renderLiveSparkline() {
         borderWidth: 2,
         fill: true,
         pointRadius: 0,
-        pointHoverRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: '#8b5cf6',
+        pointHoverBorderColor: '#8b5cf6',
         tension: 0.4
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          enabled: true,
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            title: function() { return ''; },
+            label: function(ctx) {
+              const val = ctx.parsed.y;
+              return val != null ? val.toFixed(1) + ' tok/s' : '';
+            }
+          },
+          backgroundColor: 'rgba(0,0,0,0.75)',
+          titleColor: '#fff',
+          bodyColor: '#fff',
+          borderColor: 'rgba(139,92,246,0.4)',
+          borderWidth: 1,
+          padding: 8,
+          cornerRadius: 6,
+          displayColors: false
+        }
+      },
       scales: {
         x: { display: false },
         y: { display: false, min: 0 }
       },
-      animation: { duration: 0 }
+      animation: { duration: 0 },
+      interaction: {
+        mode: 'index',
+        intersect: false
+      }
     }
   });
 }
@@ -2631,8 +2703,8 @@ function onClientTimeRangeChange() {
     const days = parseInt(range, 10);
     fromDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
   }
-  document.getElementById('statsFilterFrom').value = fromDate.toISOString().split('T')[0];
-  document.getElementById('statsFilterTo').value = now.toISOString().split('T')[0];
+  document.getElementById('statsFilterFrom').value = fmtLocalDate(fromDate);
+  document.getElementById('statsFilterTo').value = fmtLocalDate(now);
   loadStatsHistory();
 }
 
