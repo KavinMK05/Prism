@@ -29,6 +29,13 @@ jobs:
       - name: Build
         run: go build -ldflags="-H windowsgui" -o prism.exe .
 
+      - name: Upload artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-exe
+          path: prism.exe
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
