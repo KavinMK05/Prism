@@ -891,6 +891,61 @@
     color: var(--text-secondary);
     margin-left: 4px;
   }
+  .token-tooltip-wrapper {
+    position: relative;
+    display: inline-block;
+    cursor: default;
+  }
+  .token-tooltip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s, transform 0.15s;
+    z-index: 100;
+  }
+  .token-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: var(--border-strong);
+  }
+  .token-tooltip-wrapper:hover .token-tooltip {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .token-tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .token-tooltip-label {
+    color: var(--text-secondary);
+  }
+  .token-tooltip-value {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .token-tooltip-value.input-color {
+    color: #8b5cf6;
+  }
+  .token-tooltip-value.output-color {
+    color: #a78bfa;
+  }
   .chart-container {
     position: relative;
     height: 180px;
@@ -1296,14 +1351,26 @@
         <div class="chart-card-header">
           <span class="chart-card-title">Tokens Per Day</span>
         </div>
-        <div class="chart-card-value" id="dailyTotal">0<span class="unit">Total</span></div>
+        <div class="token-tooltip-wrapper">
+          <div class="chart-card-value" id="dailyTotal">0<span class="unit">Total</span></div>
+          <div class="token-tooltip" id="dailyTooltip">
+            <div class="token-tooltip-row"><span class="token-tooltip-label">Input</span><span class="token-tooltip-value input-color" id="dailyTooltipInput">0</span></div>
+            <div class="token-tooltip-row"><span class="token-tooltip-label">Output</span><span class="token-tooltip-value output-color" id="dailyTooltipOutput">0</span></div>
+          </div>
+        </div>
         <div class="chart-container"><canvas id="dailyChart"></canvas></div>
       </div>
       <div class="chart-card">
         <div class="chart-card-header">
           <span class="chart-card-title">Tokens Per Month</span>
         </div>
-        <div class="chart-card-value" id="monthlyTotal">0<span class="unit">Total</span></div>
+        <div class="token-tooltip-wrapper">
+          <div class="chart-card-value" id="monthlyTotal">0<span class="unit">Total</span></div>
+          <div class="token-tooltip" id="monthlyTooltip">
+            <div class="token-tooltip-row"><span class="token-tooltip-label">Input</span><span class="token-tooltip-value input-color" id="monthlyTooltipInput">0</span></div>
+            <div class="token-tooltip-row"><span class="token-tooltip-label">Output</span><span class="token-tooltip-value output-color" id="monthlyTooltipOutput">0</span></div>
+          </div>
+        </div>
         <div class="chart-container"><canvas id="monthlyChart"></canvas></div>
       </div>
 
@@ -2466,7 +2533,11 @@ function renderDailyChart(data) {
   const ctx = document.getElementById('dailyChart').getContext('2d');
   const theme = getChartThemeColors();
   const total = data.reduce((sum, d) => sum + d.total, 0);
+  const totalInput = data.reduce((sum, d) => sum + d.input, 0);
+  const totalOutput = data.reduce((sum, d) => sum + d.output, 0);
   document.getElementById('dailyTotal').innerHTML = formatNumber(total) + '<span class="unit">Total</span>';
+  document.getElementById('dailyTooltipInput').textContent = formatNumber(totalInput);
+  document.getElementById('dailyTooltipOutput').textContent = formatNumber(totalOutput);
   const labels = data.map(d => d.date.slice(5)); // MM-DD
   const inputData = data.map(d => d.input);
   const outputData = data.map(d => d.output);
@@ -2497,7 +2568,11 @@ function renderMonthlyChart(data) {
   const ctx = document.getElementById('monthlyChart').getContext('2d');
   const theme = getChartThemeColors();
   const total = data.reduce((sum, d) => sum + d.total, 0);
+  const totalInput = data.reduce((sum, d) => sum + (d.input || 0), 0);
+  const totalOutput = data.reduce((sum, d) => sum + (d.output || 0), 0);
   document.getElementById('monthlyTotal').innerHTML = formatNumber(total) + '<span class="unit">Total</span>';
+  document.getElementById('monthlyTooltipInput').textContent = formatNumber(totalInput);
+  document.getElementById('monthlyTooltipOutput').textContent = formatNumber(totalOutput);
   const labels = data.map(d => d.month);
   const totals = data.map(d => d.total);
 
@@ -2627,6 +2702,12 @@ function renderTPSHistory(tpsData, byModel) {
     byModelMap[p.model].push(p);
   });
 
+  // Ensure all models from byModel appear in the chart, even if they have no TPS snapshot data
+  const allModelNames = [...new Set([
+    ...Object.keys(byModelMap),
+    ...(byModel || []).map(m => m.model)
+  ])];
+
   // Collect all unique timestamps
   const allTimestamps = [...new Set(tpsData.map(p => p.timestamp))].sort((a, b) => a - b);
   const labels = allTimestamps.map(ts => {
@@ -2634,10 +2715,11 @@ function renderTPSHistory(tpsData, byModel) {
     return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
   });
 
-  const datasets = Object.keys(byModelMap).map((model, i) => {
+  const datasets = allModelNames.map((model, i) => {
     const color = chartColors[i % chartColors.length];
+    const points = byModelMap[model] || [];
     const map = {};
-    byModelMap[model].forEach(p => { map[p.timestamp] = p.avg_tps; });
+    points.forEach(p => { map[p.timestamp] = p.avg_tps; });
     const data = allTimestamps.map(ts => map[ts] || null);
     return {
       label: model,

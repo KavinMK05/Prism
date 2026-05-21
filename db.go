@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tps_snapshots (
 	timestamp INTEGER NOT NULL,
 	model TEXT,
 	provider TEXT,
+	client TEXT,
 	tps REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
@@ -72,6 +73,17 @@ CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
 	}
 	// Ensure client index exists (safe to run even if it already exists)
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client)")
+	// Migration: add client column to tps_snapshots if it doesn't exist
+	var tpsClientColExists bool
+	row2 := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tps_snapshots') WHERE name = 'client'")
+	if err := row2.Scan(&tpsClientColExists); err != nil {
+		log.Printf("[DB] warning: could not check tps_snapshots schema: %v", err)
+	} else if !tpsClientColExists {
+		if _, err := db.Exec("ALTER TABLE tps_snapshots ADD COLUMN client TEXT"); err != nil {
+			return fmt.Errorf("migrate add client column to tps_snapshots: %w", err)
+		}
+		log.Printf("[DB] migrated: added client column to tps_snapshots table")
+	}
 	return nil
 }
 
@@ -97,13 +109,13 @@ func dbRecordRequest(req RequestStats) error {
 	return err
 }
 
-func dbRecordTPSSnapshot(model, provider string, tps float64) error {
+func dbRecordTPSSnapshot(model, provider, client string, tps float64) error {
 	if db == nil {
 		return nil
 	}
 	_, err := db.Exec(
-		`INSERT INTO tps_snapshots (timestamp, model, provider, tps) VALUES (?, ?, ?, ?)`,
-		time.Now().Unix(), model, provider, tps,
+		`INSERT INTO tps_snapshots (timestamp, model, provider, client, tps) VALUES (?, ?, ?, ?, ?)`,
+		time.Now().Unix(), model, provider, client, tps,
 	)
 	if err != nil {
 		log.Printf("[DB] failed to record TPS snapshot: %v", err)

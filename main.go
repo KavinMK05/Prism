@@ -157,7 +157,7 @@ func startTPSSnapshotLoop() {
 	for range ticker.C {
 		snapshot := globalStats.GetSnapshot()
 		if snapshot.RequestActive && snapshot.LiveTokensPerSec > 0 {
-			if err := dbRecordTPSSnapshot(snapshot.CurrentModel, snapshot.CurrentProvider, snapshot.LiveTokensPerSec); err != nil {
+			if err := dbRecordTPSSnapshot(snapshot.CurrentModel, snapshot.CurrentProvider, snapshot.CurrentClient, snapshot.LiveTokensPerSec); err != nil {
 				log.Printf("[DB] TPS snapshot error: %v", err)
 			}
 		}
