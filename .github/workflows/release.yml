@@ -6,6 +6,12 @@ on:
       - main
     tags:
       - 'v*'
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'rsrc/**'
+      - '.github/workflows/release.yml'
 
 permissions:
   contents: write
