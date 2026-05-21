@@ -12,7 +12,7 @@ Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Res
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
-![Prism screenshot](./docs/screenshot.png)
+![Prism screenshot](./docs/preview.jpg)
 
 </div>
 
