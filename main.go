@@ -62,7 +62,6 @@ func runProxyServer() {
 
 	cfg := loadConfig()
 	proxyAPIKey := "prism"
-	upstreamAPIKey := cfg.getActiveAPIKey()
 
 	port := os.Getenv("PRISM_PORT")
 	if port == "" {
@@ -74,19 +73,9 @@ func runProxyServer() {
 		host = "127.0.0.1"
 	}
 
-	upstreamURL := cfg.getActiveBaseURL()
-	providerType := cfg.getProviderType()
 	modelRemap := loadModelRemapping()
 
-	var proxy *Proxy
-
-	// Check if active provider is an OAuth account
-	activeOAuth := getActiveOAuthAccountForConfig(cfg)
-	if activeOAuth != nil {
-		proxy = NewProxyWithOAuth(upstreamURL, providerType, modelRemap, activeOAuth)
-	} else {
-		proxy = NewProxy(upstreamURL, upstreamAPIKey, providerType, modelRemap)
-	}
+	router := NewProviderRouter(cfg, modelRemap)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)
@@ -100,12 +89,12 @@ func runProxyServer() {
 	// (not in the --serve proxy process)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", loggingMiddleware(handleRoot))
-	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, proxy.HandleMessages)))
+	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, router.HandleMessages)))
 	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(proxyAPIKey, handleCountTokens)))
 	mux.HandleFunc("/health", loggingMiddleware(handleHealth))
-	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleOpenAIChatCompletions)))
-	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleResponsesAPI)))
-	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, proxy.HandleModels)))
+	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleOpenAIChatCompletions)))
+	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleResponsesAPI)))
+	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleModels)))
 
 	// Stats endpoint (proxied from admin UI)
 	mux.HandleFunc("/v1/stats", loggingMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +117,7 @@ func runProxyServer() {
 
 	addr := host + ":" + port
 
-	log.Printf("Prism starting on %s -> %s (provider: %s)", addr, upstreamURL, cfg.ActiveProvider)
+	log.Printf("Prism starting on %s (default provider: %s)", addr, cfg.DefaultProvider)
 
 	server := &http.Server{
 		Addr:    addr,

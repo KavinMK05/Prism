@@ -12,15 +12,24 @@ import (
 	"time"
 )
 
-func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest) {
+func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 	outputTokens := 0
 	inputTokens := 0
 	liveOutputTokens := 0
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
+		out := outputTokens
+		if out == 0 {
+			out = liveOutputTokens
+		}
+		globalStats.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, out, time.Since(reqStart))
 	}()
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		openAIReq.ReasoningEffort = ""
+	}
 
 	// Inject stream_options to get usage data from the upstream provider
 	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
@@ -31,17 +40,17 @@ func (p *Proxy) handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, op
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (streaming)", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s (streaming)", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))

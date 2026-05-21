@@ -9,6 +9,29 @@ import (
 	"testing"
 )
 
+func makeTestRouter(upstreamURL string) *ProviderRouter {
+	cfg := &Config{
+		DefaultProvider: "custom_test",
+		CustomProviders: []*ProviderConfig{
+			{ID: "custom_test", Name: "Test", BaseURL: upstreamURL, APIKey: "test-key"},
+		},
+	}
+	remap := &ModelRemapping{
+		DefaultModel: "test",
+		KnownModels:  []ModelEntry{{ID: "test", Provider: "custom_test"}},
+		Aliases:      map[string]string{},
+	}
+	return NewProviderRouter(cfg, remap)
+}
+
+func makeTestRP(upstreamURL, providerType string) *ResolvedProvider {
+	return &ResolvedProvider{
+		BaseURL:      upstreamURL,
+		APIKey:       "test-key",
+		ProviderType: providerType,
+	}
+}
+
 func parseSSEEvents(body string) []SSEEvent {
 	var events []SSEEvent
 	var currentEvent SSEEvent
@@ -118,7 +141,8 @@ func TestOllamaStreaming_TextOnly(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"test","stream":true,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -135,7 +159,7 @@ func TestOllamaStreaming_TextOnly(t *testing.T) {
 		Messages: []OllamaMessage{{Role: "user", Content: "hi"}},
 	}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -168,14 +192,15 @@ func TestOllamaStreaming_ThinkingThenText(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -223,14 +248,15 @@ func TestOllamaStreaming_ThinkingWithEmptyChunks(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -277,14 +303,15 @@ func TestOpenAIStreaming_TextOnly(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "openai", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
 
-	proxy.handleOpenAIStreaming(w, req, openAIReq, anthroReq)
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -327,14 +354,15 @@ func TestOpenAIStreaming_ThinkingThenText(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "openai", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
 
-	proxy.handleOpenAIStreaming(w, req, openAIReq, anthroReq)
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -376,14 +404,15 @@ func TestOllamaStreaming_EmptyResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -420,7 +449,8 @@ func TestOpenAIInboundOllamaStreaming_TextOnly(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -431,7 +461,7 @@ func TestOpenAIInboundOllamaStreaming_TextOnly(t *testing.T) {
 		Messages: []OpenAIChatMessage{{Role: "user", Content: "hi"}},
 	}
 
-	proxy.handleOpenAIInboundOllamaStreaming(w, req, openAIReq)
+	router.handleOpenAIInboundOllamaStreaming(w, req, openAIReq, rp)
 
 	chunks := parseOpenAISSEEvents(w.Body.String())
 
@@ -476,13 +506,14 @@ func TestOpenAIInboundOllamaStreaming_ThinkingThenText(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
 
-	proxy.handleOpenAIInboundOllamaStreaming(w, req, openAIReq)
+	router.handleOpenAIInboundOllamaStreaming(w, req, openAIReq, rp)
 
 	chunks := parseOpenAISSEEvents(w.Body.String())
 
@@ -541,14 +572,15 @@ func TestOllamaStreaming_ToolCalls(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -611,14 +643,15 @@ func TestOllamaStreaming_StreamingReadError(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	// Should not panic, should produce some output
 	body := w.Body.String()
@@ -684,14 +717,15 @@ func TestOpenAIStreaming_MultipleToolCalls(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "openai", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
 
-	proxy.handleOpenAIStreaming(w, req, openAIReq, anthroReq)
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -746,14 +780,15 @@ func TestOllamaStreaming_SSEFormat(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	body := w.Body.String()
 
@@ -782,14 +817,15 @@ func TestOllamaStreaming_ContentBlockIndexes(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -845,14 +881,15 @@ func TestOllamaStreaming_ToolCallsThenText(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -907,14 +944,15 @@ func TestOpenAIStreaming_ToolCallsThenText(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "openai", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
 
-	proxy.handleOpenAIStreaming(w, req, openAIReq, anthroReq)
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 	eventTypes := []string{}
@@ -976,14 +1014,15 @@ func TestOllamaStreaming_ConnectionDropDuringToolCalls(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	body := w.Body.String()
 	if body == "" {
@@ -1057,14 +1096,15 @@ func TestOllamaStreaming_MultipleToolCalls(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -1130,14 +1170,15 @@ func TestOllamaStreaming_ToolCallsWithStopDoneReason(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := NewProxy(upstream.URL, "test-key", "ollama", nil)
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 
 	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
 	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
 
-	proxy.handleStreaming(w, req, ollamaReq, anthroReq)
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
 
 	events := parseSSEEvents(w.Body.String())
 

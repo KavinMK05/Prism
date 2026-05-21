@@ -67,8 +67,8 @@ Set environment variables or edit `~/.claude/settings.json`:
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:11434",
-    "ANTHROPIC_AUTH_TOKEN": "prism",
-    "ANTHROPIC_API_KEY": ""
+    "ANTHROPIC_API_KEY": "prism",
+    "ANTHROPIC_AUTH_TOKEN": ""
   }
 }
 ```

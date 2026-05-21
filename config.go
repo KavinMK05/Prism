@@ -23,17 +23,83 @@ type ProviderConfig struct {
 }
 
 type Config struct {
-	ActiveProvider  string            `json:"active_provider"`
-	OllamaCloud     *ProviderConfig   `json:"ollama_cloud"`
-	OpenCodeGo      *ProviderConfig   `json:"opencode_go"`
-	CustomProviders []*ProviderConfig `json:"custom_providers"`
-	OAuthAccounts   []*OAuthAccount   `json:"oauth_accounts"`
+	DefaultProvider  string            `json:"default_provider"`
+	OllamaCloud      *ProviderConfig   `json:"ollama_cloud"`
+	OpenCodeGo       *ProviderConfig   `json:"opencode_go"`
+	CustomProviders  []*ProviderConfig `json:"custom_providers"`
+	OAuthAccounts    []*OAuthAccount   `json:"oauth_accounts"`
+}
+
+// clone returns a deep copy of the Config, safe for mutation without affecting the original
+func (c *Config) clone() *Config {
+	cp := *c
+	if c.OllamaCloud != nil {
+		oc := *c.OllamaCloud
+		cp.OllamaCloud = &oc
+	}
+	if c.OpenCodeGo != nil {
+		og := *c.OpenCodeGo
+		cp.OpenCodeGo = &og
+	}
+	if c.CustomProviders != nil {
+		cp.CustomProviders = make([]*ProviderConfig, len(c.CustomProviders))
+		for i, p := range c.CustomProviders {
+			pc := *p
+			cp.CustomProviders[i] = &pc
+		}
+	}
+	if c.OAuthAccounts != nil {
+		cp.OAuthAccounts = make([]*OAuthAccount, len(c.OAuthAccounts))
+		for i, a := range c.OAuthAccounts {
+			oa := *a
+			cp.OAuthAccounts[i] = &oa
+		}
+	}
+	return &cp
+}
+
+// ModelEntry represents a known model with its associated provider
+type ModelEntry struct {
+	ID        string `json:"id"`
+	Provider  string `json:"provider"`
+	Reasoning bool  `json:"reasoning,omitempty"`
 }
 
 type ModelRemapping struct {
 	DefaultModel string            `json:"default_model"`
-	KnownModels  []string          `json:"known_models"`
+	KnownModels  []ModelEntry      `json:"known_models"`
 	Aliases      map[string]string `json:"aliases"`
+}
+
+// ProviderInfo holds resolved provider details for routing requests
+type ProviderInfo struct {
+	BaseURL      string
+	APIKey       string
+	ProviderType string
+	Name         string
+}
+
+// ResolvedProvider holds per-request resolved provider details
+type ResolvedProvider struct {
+	BaseURL      string
+	APIKey       string
+	ProviderType string
+	ProviderID   string // e.g. "ollama_cloud", "opencode_go", custom ID, or OAuth account ID
+}
+
+// chatCompletionsURL returns the full URL for /chat/completions, handling
+// base URLs that already include /v1 (e.g. https://api.groq.com/openai/v1)
+// and those that don't (e.g. https://api.openai.com).
+func (rp *ResolvedProvider) chatCompletionsURL() string {
+	if strings.HasSuffix(rp.BaseURL, "/v1") || strings.Contains(rp.BaseURL, "/v1/") {
+		return rp.BaseURL + "/chat/completions"
+	}
+	return rp.BaseURL + "/v1/chat/completions"
+}
+
+// apiChatURL returns the full URL for Ollama's /api/chat endpoint.
+func (rp *ResolvedProvider) apiChatURL() string {
+	return rp.BaseURL + "/api/chat"
 }
 
 func getConfigDir() string {
@@ -44,9 +110,10 @@ func getConfigPath() string {
 	return filepath.Join(getConfigDir(), "config.json")
 }
 
-// rawConfig is used for migration from the old single-Custom format
+// rawConfig is used for migration from old formats
 type rawConfig struct {
-	ActiveProvider  string            `json:"active_provider"`
+	ActiveProvider   string            `json:"active_provider"`
+	DefaultProvider string            `json:"default_provider"`
 	OllamaCloud     *ProviderConfig   `json:"ollama_cloud"`
 	OpenCodeGo      *ProviderConfig   `json:"opencode_go"`
 	Custom          *ProviderConfig   `json:"custom"`
@@ -65,20 +132,34 @@ func loadConfig() *Config {
 		return defaultConfig()
 	}
 
-	// Migration: if old "custom" field exists and custom_providers is empty, migrate it
+	// Migration: if old "active_provider" field exists and "default_provider" is empty, migrate it
 	var raw rawConfig
 	if json.Unmarshal(data, &raw) == nil {
+		needsSave := false
+
+		// Migrate active_provider → default_provider
+		if raw.ActiveProvider != "" && cfg.DefaultProvider == "" {
+			cfg.DefaultProvider = raw.ActiveProvider
+			needsSave = true
+		}
+
+		// Migrate old "custom" field to custom_providers
 		if raw.Custom != nil && (raw.Custom.BaseURL != "" || raw.Custom.APIKey != "") && len(raw.CustomProviders) == 0 {
 			raw.Custom.ID = "custom"
 			cfg.CustomProviders = []*ProviderConfig{raw.Custom}
-			cfg.ActiveProvider = "custom"
-			saveConfig(cfg)
-		} else if raw.Custom != nil && len(raw.CustomProviders) == 0 {
-			// Old custom field was empty, just remove it
-			cfg.CustomProviders = []*ProviderConfig{}
-			if cfg.ActiveProvider == "custom" {
-				cfg.ActiveProvider = "ollama_cloud"
+			if cfg.DefaultProvider == "" || cfg.DefaultProvider == "custom" {
+				cfg.DefaultProvider = "custom"
 			}
+			needsSave = true
+		} else if raw.Custom != nil && len(raw.CustomProviders) == 0 {
+			cfg.CustomProviders = []*ProviderConfig{}
+			if cfg.DefaultProvider == "custom" {
+				cfg.DefaultProvider = "ollama_cloud"
+			}
+			needsSave = true
+		}
+
+		if needsSave {
 			saveConfig(cfg)
 		}
 	}
@@ -103,8 +184,8 @@ func loadConfig() *Config {
 	if cfg.OAuthAccounts == nil {
 		cfg.OAuthAccounts = []*OAuthAccount{}
 	}
-	if cfg.ActiveProvider == "" {
-		cfg.ActiveProvider = "ollama_cloud"
+	if cfg.DefaultProvider == "" {
+		cfg.DefaultProvider = "ollama_cloud"
 	}
 	return cfg
 }
@@ -123,7 +204,7 @@ func saveConfig(cfg *Config) error {
 
 func defaultConfig() *Config {
 	return &Config{
-		ActiveProvider: "ollama_cloud",
+		DefaultProvider: "ollama_cloud",
 		OllamaCloud: &ProviderConfig{
 			ID:      "ollama_cloud",
 			Name:    "Ollama Cloud",
@@ -139,82 +220,113 @@ func defaultConfig() *Config {
 	}
 }
 
-func (c *Config) getActiveProvider() *ProviderConfig {
-	switch c.ActiveProvider {
-	case "ollama_cloud":
-		return c.OllamaCloud
-	case "opencode_go":
-		return c.OpenCodeGo
-	default:
-		// Check OAuth accounts first
-		for _, a := range c.OAuthAccounts {
-			if a.ID == c.ActiveProvider {
-				return &ProviderConfig{
-					ID:      a.ID,
-					Name:    a.Label + " (" + a.Email + ")",
-					BaseURL: codexAPIBase,
-					APIKey:  a.AccessToken,
-				}
-			}
+// getProviderByID returns provider info for any provider (built-in, custom, or OAuth)
+func (c *Config) getProviderByID(id string) (*ProviderInfo, error) {
+	// Check OAuth accounts first (they may have their own provider ID)
+	for _, a := range c.OAuthAccounts {
+		if a.ID == id {
+			return &ProviderInfo{
+				BaseURL:      codexAPIBase,
+				APIKey:       a.AccessToken,
+				ProviderType: "codex",
+				Name:         a.Label + " (" + a.Email + ")",
+			}, nil
 		}
-		for _, p := range c.CustomProviders {
-			if p.ID == c.ActiveProvider {
-				return p
-			}
-		}
-		return c.OllamaCloud
 	}
+
+	switch id {
+	case "ollama_cloud":
+		apiKey := c.OllamaCloud.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OLLAMA_API_KEY")
+		}
+		return &ProviderInfo{
+			BaseURL:      c.OllamaCloud.BaseURL,
+			APIKey:       apiKey,
+			ProviderType: "ollama",
+			Name:         c.OllamaCloud.Name,
+		}, nil
+	case "opencode_go":
+		apiKey := c.OpenCodeGo.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENCODE_GO_API_KEY")
+		}
+		return &ProviderInfo{
+			BaseURL:      c.OpenCodeGo.BaseURL,
+			APIKey:       apiKey,
+			ProviderType: "openai",
+			Name:         c.OpenCodeGo.Name,
+		}, nil
+	}
+
+	// Check custom providers
+	for _, p := range c.CustomProviders {
+		if p.ID == id {
+			return &ProviderInfo{
+				BaseURL:      p.BaseURL,
+				APIKey:       p.APIKey,
+				ProviderType: "openai",
+				Name:         p.Name,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("provider not found: %s", id)
 }
 
-func (c *Config) getActiveAPIKey() string {
-	// Check OAuth accounts first
-	for _, a := range c.OAuthAccounts {
-		if a.ID == c.ActiveProvider {
-			return a.AccessToken
+// getProviderName returns a human-readable name for a provider ID
+func (c *Config) getProviderName(id string) string {
+	info, err := c.getProviderByID(id)
+	if err != nil {
+		return id
+	}
+	return info.Name
+}
+
+// resolveModel resolves a requested model name to (resolvedModel, providerID)
+func resolveModel(remap *ModelRemapping, requestedModel string) (string, string) {
+	// 1. Check aliases
+	if target, ok := remap.Aliases[requestedModel]; ok {
+		// Look up the target model in known_models to find its provider
+		for _, entry := range remap.KnownModels {
+			if entry.ID == target {
+				logModelRemap(requestedModel, target+" (via alias, provider: "+entry.Provider+")", "alias")
+				return target, entry.Provider
+			}
+		}
+		// Target not in known_models, fall back to default provider
+		logModelRemap(requestedModel, target+" (via alias, provider: default)", "alias")
+		return target, remap.DefaultProvider()
+	}
+
+	// 2. Check known_models (exact + prefix match)
+	for _, entry := range remap.KnownModels {
+		if requestedModel == entry.ID || strings.HasPrefix(requestedModel, entry.ID+":") || strings.HasPrefix(requestedModel, entry.ID+"[") {
+			return requestedModel, entry.Provider
 		}
 	}
 
-	p := c.getActiveProvider()
-	if p.APIKey != "" {
-		return p.APIKey
-	}
-	switch c.ActiveProvider {
-	case "ollama_cloud":
-		if key := os.Getenv("OLLAMA_API_KEY"); key != "" {
-			return key
+	// 3. Fall back to default_model → look up in known_models
+	if remap.DefaultModel != "" {
+		for _, entry := range remap.KnownModels {
+			if entry.ID == remap.DefaultModel {
+				logModelRemap(requestedModel, remap.DefaultModel+" (default, provider: "+entry.Provider+")", "default")
+				return remap.DefaultModel, entry.Provider
+			}
 		}
-	case "opencode_go":
-		if key := os.Getenv("OPENCODE_GO_API_KEY"); key != "" {
-			return key
-		}
+		// Default model not in known_models, use default provider
+		logModelRemap(requestedModel, remap.DefaultModel+" (default)", "default")
+		return remap.DefaultModel, ""
 	}
+
+	// 4. Last resort: return original model with empty provider (will use DefaultProvider)
+	return requestedModel, ""
+}
+
+// DefaultProvider returns the default provider ID from the config
+func (m *ModelRemapping) DefaultProvider() string {
+	// Return empty string so the caller falls back to cfg.DefaultProvider
 	return ""
-}
-
-func (c *Config) getActiveBaseURL() string {
-	// Check OAuth accounts
-	for _, a := range c.OAuthAccounts {
-		if a.ID == c.ActiveProvider {
-			return codexAPIBase
-		}
-	}
-	p := c.getActiveProvider()
-	return p.BaseURL
-}
-
-func (c *Config) getProviderType() string {
-	// Check OAuth accounts
-	for _, a := range c.OAuthAccounts {
-		if a.ID == c.ActiveProvider {
-			return "codex" // OAuth accounts use the OpenAI Responses API
-		}
-	}
-	switch c.ActiveProvider {
-	case "ollama_cloud":
-		return "ollama"
-	default:
-		return "openai"
-	}
 }
 
 func generateProviderID(name string) string {
@@ -323,12 +435,12 @@ func getModelRemappingPath() string {
 func defaultModelRemapping() *ModelRemapping {
 	return &ModelRemapping{
 		DefaultModel: "glm-5.1:cloud",
-		KnownModels: []string{
-			"glm-5.1:cloud",
-			"deepseek-v4-flash:cloud",
-			"opencode/deepseek-v4-flash",
-			"deepseek-v4-flash",
-			"deepseek-v4-pro:cloud",
+		KnownModels: []ModelEntry{
+			{ID: "glm-5.1:cloud", Provider: "ollama_cloud"},
+			{ID: "deepseek-v4-flash:cloud", Provider: "ollama_cloud"},
+			{ID: "opencode/deepseek-v4-flash", Provider: "opencode_go"},
+			{ID: "deepseek-v4-flash", Provider: "ollama_cloud"},
+			{ID: "deepseek-v4-pro:cloud", Provider: "ollama_cloud"},
 		},
 		Aliases: map[string]string{
 			"claude-3-5-haiku":            "deepseek-v4-flash:cloud",
@@ -348,19 +460,70 @@ func loadModelRemapping() *ModelRemapping {
 		}
 		return remap
 	}
+
+	// Try to unmarshal into the new format (known_models as []ModelEntry)
 	if err := json.Unmarshal(data, remap); err != nil {
-		return defaultModelRemapping()
+		// Try migrating from old format (known_models as []string)
+		var raw struct {
+			DefaultModel string            `json:"default_model"`
+			KnownModels  []string          `json:"known_models"`
+			Aliases      map[string]string `json:"aliases"`
+		}
+		if json.Unmarshal(data, &raw) == nil {
+			remap.DefaultModel = raw.DefaultModel
+			remap.Aliases = raw.Aliases
+			remap.KnownModels = nil
+			for _, id := range raw.KnownModels {
+				remap.KnownModels = append(remap.KnownModels, ModelEntry{
+					ID:       id,
+					Provider: "", // will be set to default below
+				})
+			}
+		} else {
+			return defaultModelRemapping()
+		}
 	}
+
+	// Migration: if any ModelEntry has empty Provider, fill with the config's DefaultProvider
+	cfg := loadConfig()
+	for i := range remap.KnownModels {
+		if remap.KnownModels[i].Provider == "" {
+			remap.KnownModels[i].Provider = cfg.DefaultProvider
+		}
+	}
+
 	if remap.DefaultModel == "" {
 		remap.DefaultModel = "glm-5.1:cloud"
 	}
 	if remap.KnownModels == nil {
-		remap.KnownModels = []string{}
+		remap.KnownModels = []ModelEntry{}
 	}
 	if remap.Aliases == nil {
 		remap.Aliases = map[string]string{}
 	}
+
+	// Save if we migrated
+	if err != nil || needsMigration(data) {
+		saveModelRemapping(remap)
+	}
+
 	return remap
+}
+
+// needsMigration checks if the data contains old-format known_models (strings instead of objects)
+func needsMigration(data []byte) bool {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return false
+	}
+	if km, ok := raw["known_models"]; ok {
+		// If the first element is a string, it's the old format
+		var first string
+		if err := json.Unmarshal(km, &first); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func saveModelRemapping(remap *ModelRemapping) error {
@@ -375,24 +538,31 @@ func saveModelRemapping(remap *ModelRemapping) error {
 	return os.WriteFile(getModelRemappingPath(), data, 0600)
 }
 
-func getEffectiveModel(remap *ModelRemapping, requestedModel string) string {
-	if target, ok := remap.Aliases[requestedModel]; ok {
-		logModelRemap(requestedModel, target, "alias")
-		return target
+// getDefaultAPIKey returns the API key for the default provider (used by tray for display)
+func (c *Config) getDefaultAPIKey() string {
+	info, err := c.getProviderByID(c.DefaultProvider)
+	if err != nil {
+		return ""
 	}
+	return info.APIKey
+}
 
-	for _, known := range remap.KnownModels {
-		if requestedModel == known || strings.HasPrefix(requestedModel, known+":") || strings.HasPrefix(requestedModel, known+"[") {
-			return requestedModel
-		}
+// getDefaultProvider returns the ProviderConfig for the default provider (used by tray for display)
+func (c *Config) getDefaultProvider() *ProviderInfo {
+	info, err := c.getProviderByID(c.DefaultProvider)
+	if err != nil {
+		return &ProviderInfo{Name: c.DefaultProvider}
 	}
+	return info
+}
 
-	if remap.DefaultModel != "" {
-		logModelRemap(requestedModel, remap.DefaultModel, "default")
-		return remap.DefaultModel
+// resolveModelProvider resolves a model using the model remapping and config's default provider
+func resolveModelProvider(cfg *Config, remap *ModelRemapping, requestedModel string) (string, string) {
+	resolvedModel, providerID := resolveModel(remap, requestedModel)
+	if providerID == "" {
+		providerID = cfg.DefaultProvider
 	}
-
-	return requestedModel
+	return resolvedModel, providerID
 }
 
 func logModelRemap(from, to, reason string) {

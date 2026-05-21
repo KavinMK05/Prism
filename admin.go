@@ -77,8 +77,8 @@ func startAdminServer(cfg *Config, port string) {
 				return
 			}
 			// Validate
-			if newCfg.ActiveProvider == "" {
-				newCfg.ActiveProvider = "ollama_cloud"
+			if newCfg.DefaultProvider == "" {
+				newCfg.DefaultProvider = "ollama_cloud"
 			}
 			if newCfg.OllamaCloud == nil {
 				newCfg.OllamaCloud = &ProviderConfig{ID: "ollama_cloud", Name: "Ollama Cloud", BaseURL: "https://ollama.com"}
@@ -98,14 +98,14 @@ func startAdminServer(cfg *Config, port string) {
 					p.ID = generateProviderID(p.Name)
 				}
 			}
-			// Keep OAuth account Active flags in sync with ActiveProvider
+			// Keep OAuth account Active flags in sync with DefaultProvider
 			for _, a := range newCfg.OAuthAccounts {
-				a.Active = (a.ID == newCfg.ActiveProvider)
+				a.Active = (a.ID == newCfg.DefaultProvider)
 			}
 			// Validate custom provider URL if active
-			if newCfg.ActiveProvider != "ollama_cloud" && newCfg.ActiveProvider != "opencode_go" {
+			if newCfg.DefaultProvider != "ollama_cloud" && newCfg.DefaultProvider != "opencode_go" {
 				for _, p := range newCfg.CustomProviders {
-					if p.ID == newCfg.ActiveProvider && p.BaseURL != "" {
+					if p.ID == newCfg.DefaultProvider && p.BaseURL != "" {
 						if err := validateBaseURL(p.BaseURL); err != nil {
 							http.Error(w, "invalid custom base URL: "+err.Error(), 400)
 							return
@@ -168,10 +168,17 @@ func startAdminServer(cfg *Config, port string) {
 				remap.DefaultModel = "glm-5.1:cloud"
 			}
 			if remap.KnownModels == nil {
-				remap.KnownModels = []string{}
+				remap.KnownModels = []ModelEntry{}
 			}
 			if remap.Aliases == nil {
 				remap.Aliases = map[string]string{}
+			}
+			// Ensure all model entries have a provider
+			cfg := loadConfig()
+			for i := range remap.KnownModels {
+				if remap.KnownModels[i].Provider == "" {
+					remap.KnownModels[i].Provider = cfg.DefaultProvider
+				}
 			}
 			if err := saveModelRemapping(&remap); err != nil {
 				http.Error(w, "save failed: "+err.Error(), 500)
@@ -371,12 +378,34 @@ func startAdminServer(cfg *Config, port string) {
 			return
 		}
 		models, _ := getDistinctModels()
-		providers, _ := getDistinctProviders()
+		dbProviders, _ := getDistinctProviders()
 		clients, _ := getDistinctClients()
+
+		// Merge configured providers with ones from the DB
+		cfg := loadConfig()
+		providerSet := map[string]bool{}
+		for _, p := range dbProviders {
+			providerSet[p] = true
+		}
+		// Add all configured providers
+		configProviders := []string{"ollama_cloud", "opencode_go"}
+		for _, p := range cfg.CustomProviders {
+			configProviders = append(configProviders, p.ID)
+		}
+		for _, a := range cfg.OAuthAccounts {
+			configProviders = append(configProviders, a.ID)
+		}
+		for _, p := range configProviders {
+			if !providerSet[p] {
+				dbProviders = append(dbProviders, p)
+				providerSet[p] = true
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"models":    models,
-			"providers": providers,
+			"providers": dbProviders,
 			"clients":   clients,
 		})
 	})

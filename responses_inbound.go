@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
+func (pr *ProviderRouter) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, 405, "invalid_request_error", "Only POST is supported")
 		return
@@ -23,43 +23,53 @@ func (p *Proxy) HandleResponsesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respReq.Model = getEffectiveModel(p.modelRemap, respReq.Model)
+	rp, resolvedModel, err := pr.resolveProviderForModel(respReq.Model)
+	if err != nil {
+		writeOpenAIError(w, 500, "server_error", "Failed to resolve provider: "+err.Error())
+		return
+	}
+	respReq.Model = resolvedModel
 
 	client := detectClient(r)
-	globalStats.StartRequest(respReq.Model, p.providerType, client)
+	globalStats.StartRequest(respReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 
 	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
 	// don't have api.responses.write scope, so /v1/responses returns 401)
-	if p.providerType == "codex" {
+	if rp.ProviderType == "codex" {
 		if respReq.Stream {
-			p.handleResponsesAPIOpenAIStreaming(w, r, &respReq)
+			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp)
 		} else {
-			p.handleResponsesAPIToOpenAI(w, r, &respReq)
+			pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp)
 		}
 		return
 	}
 
 	if respReq.Stream {
-		if p.providerType == "openai" {
-			p.handleResponsesAPIOpenAIStreaming(w, r, &respReq)
+		if rp.ProviderType == "openai" {
+			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp)
 		} else {
-			p.handleResponsesAPIOllamaStreaming(w, r, &respReq)
+			pr.handleResponsesAPIOllamaStreaming(w, r, &respReq, rp)
 		}
 		return
 	}
 
-	if p.providerType == "openai" {
-		p.handleResponsesAPIToOpenAI(w, r, &respReq)
+	if rp.ProviderType == "openai" {
+		pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp)
 	} else {
-		p.handleResponsesAPIToOllama(w, r, &respReq)
+		pr.handleResponsesAPIToOllama(w, r, &respReq, rp)
 	}
 }
 
-func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if chatReq.ReasoningEffort != "" && !pr.isModelReasoning(chatReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		chatReq.ReasoningEffort = ""
+	}
 
 	body, err := json.Marshal(chatReq)
 	if err != nil {
@@ -67,17 +77,17 @@ func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (responses)", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s (responses)", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -102,14 +112,14 @@ func (p *Proxy) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Reques
 
 	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq)
 
-	globalStats.RecordRequest(respReq.Model, p.providerType, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	globalStats.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(responsesResp)
 }
 
-func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	ollamaReq := translateResponsesAPIToOllama(respReq)
@@ -120,17 +130,17 @@ func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (responses)", req.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s (responses)", req.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -155,7 +165,7 @@ func (p *Proxy) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Reques
 
 	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq)
 
-	globalStats.RecordRequest(respReq.Model, p.providerType, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

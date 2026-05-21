@@ -130,7 +130,7 @@ func runTray(iconData []byte) {
 
 		systray.AddSeparator()
 
-		providerMenu := systray.AddMenuItem("Provider", "Select provider")
+		providerMenu := systray.AddMenuItem("Default Provider", "Select default provider")
 		providerOllama = providerMenu.AddSubMenuItem("Ollama Cloud", "Use Ollama Cloud")
 		providerOpenCode = providerMenu.AddSubMenuItem("OpenCode Go", "Use OpenCode Go")
 
@@ -166,7 +166,7 @@ func runTray(iconData []byte) {
 
 		systray.AddSeparator()
 
-		apiKeyItem = systray.AddMenuItem("API Key: "+maskKey(cfg.getActiveAPIKey()), "Current API key")
+		apiKeyItem = systray.AddMenuItem("API Key: "+maskKey(cfg.getDefaultAPIKey()), "Current API key")
 		apiKeyItem.Disable()
 		setKeyItem = systray.AddMenuItem("Set API Key...", "Set the API key for the active provider")
 
@@ -204,7 +204,7 @@ func runTray(iconData []byte) {
 					time.Sleep(500 * time.Millisecond)
 					updateMenu(isProxyRunning())
 				case <-providerOllama.ClickedCh:
-					cfg.ActiveProvider = "ollama_cloud"
+					cfg.DefaultProvider = "ollama_cloud"
 					// Clear Active flags on all OAuth accounts since we switched away
 					for _, a := range cfg.OAuthAccounts {
 						a.Active = false
@@ -220,7 +220,7 @@ func runTray(iconData []byte) {
 						updateMenu(isProxyRunning())
 					}
 				case <-providerOpenCode.ClickedCh:
-					cfg.ActiveProvider = "opencode_go"
+					cfg.DefaultProvider = "opencode_go"
 					// Clear Active flags on all OAuth accounts since we switched away
 					for _, a := range cfg.OAuthAccounts {
 						a.Active = false
@@ -291,7 +291,7 @@ func runTray(iconData []byte) {
 					if id == "" {
 						continue
 					}
-					cfg.ActiveProvider = id
+					cfg.DefaultProvider = id
 					// Clear Active flags on all OAuth accounts since we switched away
 					for _, a := range cfg.OAuthAccounts {
 						a.Active = false
@@ -321,7 +321,7 @@ func runTray(iconData []byte) {
 					if id == "" {
 						continue
 					}
-					cfg.ActiveProvider = id
+					cfg.DefaultProvider = id
 					// Set Active flag on the selected account and clear others
 					for _, a := range cfg.OAuthAccounts {
 						a.Active = (a.ID == id)
@@ -370,7 +370,7 @@ func updateProviderMenu() {
 			providerCustomSlots[i].SetTitle(p.Name)
 			providerCustomSlots[i].SetTooltip("Use " + p.Name)
 			providerCustomSlots[i].Show()
-			if cfg.ActiveProvider == p.ID {
+			if cfg.DefaultProvider == p.ID {
 				providerCustomSlots[i].Check()
 			} else {
 				providerCustomSlots[i].Uncheck()
@@ -403,7 +403,7 @@ func updateProviderMenu() {
 			oauthSlots[i].SetTitle(label)
 			oauthSlots[i].SetTooltip("Switch to " + a.Email)
 			oauthSlots[i].Show()
-			if cfg.ActiveProvider == a.ID {
+			if cfg.DefaultProvider == a.ID {
 				oauthSlots[i].Check()
 			} else {
 				oauthSlots[i].Uncheck()
@@ -415,7 +415,7 @@ func updateProviderMenu() {
 	}
 	oauthIDsMu.Unlock()
 
-	switch cfg.ActiveProvider {
+	switch cfg.DefaultProvider {
 	case "ollama_cloud":
 		providerOllama.Check()
 	case "opencode_go":
@@ -423,34 +423,50 @@ func updateProviderMenu() {
 	default:
 		// Check if active is an OAuth account
 		for _, a := range cfg.OAuthAccounts {
-			if cfg.ActiveProvider == a.ID {
+			if cfg.DefaultProvider == a.ID {
 				// Already checked in the slot loop above
 			}
 		}
 		// Check if active is a custom provider — already checked in the slot loop above
 	}
 
-	providerName := cfg.getActiveProvider().Name
+	providerName := cfg.getDefaultProvider().Name
 	systray.SetTooltip("Prism · " + providerName)
 }
 
 func updateAPIKeyDisplay() {
-	key := cfg.getActiveAPIKey()
+	key := cfg.getDefaultAPIKey()
 	apiKeyItem.SetTitle("API Key: " + maskKey(key))
 }
 
 func setAPIKey() {
-	p := cfg.getActiveProvider()
-	title := "Set API Key - " + p.Name
-	prompt := "Enter API key for " + p.Name + ":"
-	defaultVal := p.APIKey
+	info, err := cfg.getProviderByID(cfg.DefaultProvider)
+	if err != nil {
+		return
+	}
+	title := "Set API Key - " + info.Name
+	prompt := "Enter API key for " + info.Name + ":"
+	defaultVal := info.APIKey
 
 	key, err := showInputDialog(title, prompt, defaultVal)
 	if err != nil || key == "" {
 		return
 	}
 
-	p.APIKey = key
+	// Update the API key for the default provider
+	switch cfg.DefaultProvider {
+	case "ollama_cloud":
+		cfg.OllamaCloud.APIKey = key
+	case "opencode_go":
+		cfg.OpenCodeGo.APIKey = key
+	default:
+		for _, p := range cfg.CustomProviders {
+			if p.ID == cfg.DefaultProvider {
+				p.APIKey = key
+				break
+			}
+		}
+	}
 	saveConfig(cfg)
 	updateAPIKeyDisplay()
 
@@ -494,7 +510,7 @@ func startProxyProcess() {
 			filtered = append(filtered, e)
 		}
 	}
-	cmd.Env = append(filtered, "OLLAMA_API_KEY="+cfg.getActiveAPIKey())
+	cmd.Env = append(filtered, "OLLAMA_API_KEY="+cfg.getDefaultAPIKey())
 	cmd.Dir = filepath.Dir(exe)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

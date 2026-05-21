@@ -37,7 +37,7 @@ func (s *ollamaStreamState) closeToolCalls() {
 	}
 }
 
-func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	ollamaReq := translateOpenAIToOllama(openAIReq)
@@ -48,17 +48,17 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (streaming)", req.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s (streaming)", req.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -93,7 +93,7 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, state.inputTokens, state.outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(openAIReq.Model, rp.ProviderID, client, state.inputTokens, state.outputTokens, time.Since(reqStart))
 	}()
 
 	state.writeOpenAISSE(OpenAIStreamChunk{
@@ -330,14 +330,19 @@ func (p *Proxy) handleOpenAIInboundOllamaStreaming(w http.ResponseWriter, r *htt
 	}
 }
 
-func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 	var liveTokens int
 	var inputTokens int
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(openAIReq.Model, p.providerType, client, inputTokens, liveTokens, time.Since(reqStart))
+		globalStats.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, liveTokens, time.Since(reqStart))
 	}()
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		openAIReq.ReasoningEffort = ""
+	}
 
 	// Inject stream_options to get usage data from the upstream provider
 	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
@@ -348,17 +353,17 @@ func (p *Proxy) handleOpenAIInboundOpenAIStreaming(w http.ResponseWriter, r *htt
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (streaming)", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s (streaming)", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())

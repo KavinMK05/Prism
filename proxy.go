@@ -11,52 +11,72 @@ import (
 	"time"
 )
 
-type Proxy struct {
-	upstreamURL    string
-	apiKey         string
-	providerType   string
-	modelRemap     *ModelRemapping
-	client         *http.Client
-	oauthAccountID string // ID of the active OAuth account, if any
+type ProviderRouter struct {
+	cfg        *Config
+	modelRemap *ModelRemapping
+	client     *http.Client
 }
 
-func NewProxy(upstreamURL, apiKey, providerType string, modelRemap *ModelRemapping) *Proxy {
-	return &Proxy{
-		upstreamURL:  strings.TrimRight(upstreamURL, "/"),
-		apiKey:       apiKey,
-		providerType: providerType,
-		modelRemap:   modelRemap,
-		client:       &http.Client{Timeout: 10 * time.Minute},
+func NewProviderRouter(cfg *Config, modelRemap *ModelRemapping) *ProviderRouter {
+	return &ProviderRouter{
+		cfg:        cfg,
+		modelRemap: modelRemap,
+		client:     &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
-// NewProxyWithOAuth creates a proxy that uses an OAuth account for authentication
-func NewProxyWithOAuth(upstreamURL, providerType string, modelRemap *ModelRemapping, account *OAuthAccount) *Proxy {
-	// Get a valid access token (refresh if needed)
-	token, err := getValidAccessToken(account)
+// resolveProviderForModel resolves a requested model to a provider and returns the provider info
+func (pr *ProviderRouter) resolveProviderForModel(requestedModel string) (*ResolvedProvider, string, error) {
+	resolvedModel, providerID := resolveModelProvider(pr.cfg, pr.modelRemap, requestedModel)
+	providerInfo, err := pr.cfg.getProviderByID(providerID)
 	if err != nil {
-		log.Printf("[OAuth] Failed to get valid token for %s: %v, using stored token", account.Email, err)
-		token = account.AccessToken
+		return nil, resolvedModel, err
 	}
 
-	return &Proxy{
-		upstreamURL:    strings.TrimRight(upstreamURL, "/"),
-		apiKey:         token,
-		providerType:   providerType,
-		modelRemap:     modelRemap,
-		client:         &http.Client{Timeout: 10 * time.Minute},
-		oauthAccountID: account.ID,
+	// For OAuth accounts, get a fresh token
+	if providerInfo.ProviderType == "codex" {
+		for _, a := range pr.cfg.OAuthAccounts {
+			if a.ID == providerID {
+				token, err := getValidAccessToken(a)
+				if err != nil {
+					log.Printf("[OAuth] Token refresh failed for %s: %v, using stored token", a.Email, err)
+					token = a.AccessToken
+				}
+				providerInfo.APIKey = token
+				break
+			}
+		}
 	}
+
+	// Normalize base URL: for openai/codex providers, the base URL typically
+	// already includes the /v1 prefix (e.g. https://api.groq.com/openai/v1).
+	// We append paths like /chat/completions directly, not /v1/chat/completions.
+	baseURL := strings.TrimRight(providerInfo.BaseURL, "/")
+
+	return &ResolvedProvider{
+		BaseURL:      baseURL,
+		APIKey:       providerInfo.APIKey,
+		ProviderType: providerInfo.ProviderType,
+		ProviderID:   providerID,
+	}, resolvedModel, nil
 }
 
-func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
+// isModelReasoning returns true if the model is marked as a reasoning model in the remap
+func (pr *ProviderRouter) isModelReasoning(model string) bool {
+	if pr.modelRemap == nil {
+		return false
+	}
+	for _, m := range pr.modelRemap.KnownModels {
+		if m.ID == model || strings.HasPrefix(model, m.ID+":") || strings.HasPrefix(model, m.ID+"[") {
+			return m.Reasoning
+		}
+	}
+	return false
+}
+
+func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, 405, "method_not_allowed", "Only POST is supported")
-		return
-	}
-
-	if p.providerType == "openai" || p.providerType == "codex" {
-		p.HandleOpenAIMessages(w, r)
 		return
 	}
 
@@ -67,10 +87,20 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	anthroReq.Model = getEffectiveModel(p.modelRemap, anthroReq.Model)
+	rp, resolvedModel, err := pr.resolveProviderForModel(anthroReq.Model)
+	if err != nil {
+		writeAnthropicError(w, 500, "api_error", fmt.Sprintf("Failed to resolve provider: %v", err))
+		return
+	}
+	anthroReq.Model = resolvedModel
+
+	if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
+		pr.HandleOpenAIMessages(w, r, &anthroReq, rp)
+		return
+	}
 
 	client := detectClient(r)
-	globalStats.StartRequest(anthroReq.Model, p.providerType, client)
+	globalStats.StartRequest(anthroReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 	reqStart := time.Now()
 
@@ -81,7 +111,7 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if anthroReq.Stream {
-		p.handleStreaming(w, r, ollamaReq, &anthroReq)
+		pr.handleStreaming(w, r, ollamaReq, &anthroReq, rp)
 		return
 	}
 
@@ -91,17 +121,17 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s", req.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s", req.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -126,7 +156,7 @@ func (p *Proxy) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	anthroResp := translateResponse(&ollamaResp, &anthroReq)
 
-	globalStats.RecordRequest(anthroReq.Model, p.providerType, client, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(anthroReq.Model, rp.ProviderID, client, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

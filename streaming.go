@@ -162,7 +162,7 @@ func (s *streamState) sendStopReason(stopReason string, outputTokens int) {
 	})
 }
 
-func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaReq *OllamaChatRequest, anthroReq *AnthropicRequest) {
+func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaReq *OllamaChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	body, err := json.Marshal(ollamaReq)
@@ -171,17 +171,17 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 		return
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
 		return
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	upstreamReq.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (streaming)", upstreamReq.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s (streaming)", upstreamReq.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(upstreamReq)
+	resp, err := pr.client.Do(upstreamReq)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -209,7 +209,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaRe
 
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(anthroReq.Model, p.providerType, client, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(anthroReq.Model, rp.ProviderID, client, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
 	}()
 
 	state.writeSSE("message_start", map[string]interface{}{

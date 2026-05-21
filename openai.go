@@ -247,7 +247,7 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 		})
 	}
 
-	if choice.Message.Content != "" {
+	if choice.Message.Content != nil && choice.Message.Content != "" {
 		text, ok := choice.Message.Content.(string)
 		if ok && text != "" {
 			content = append(content, AnthropicTextBlock{Type: "text", Text: text})
@@ -299,37 +299,35 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 	}
 }
 
-func (p *Proxy) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request) {
+func (pr *ProviderRouter) HandleOpenAIMessages(w http.ResponseWriter, r *http.Request, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, 405, "method_not_allowed", "Only POST is supported")
 		return
 	}
 
-	var anthroReq AnthropicRequest
-	dec := json.NewDecoder(r.Body)
-	if err := dec.Decode(&anthroReq); err != nil {
-		writeAnthropicError(w, 400, "invalid_request_error", fmt.Sprintf("Failed to parse request: %v", err))
-		return
-	}
-
-	anthroReq.Model = getEffectiveModel(p.modelRemap, anthroReq.Model)
+	// Model and provider are already resolved by the caller
 
 	client := detectClient(r)
-	globalStats.StartRequest(anthroReq.Model, p.providerType, client)
+	globalStats.StartRequest(anthroReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 
-	openAIReq := translateToOpenAI(&anthroReq)
+	openAIReq := translateToOpenAI(anthroReq)
 
 	if anthroReq.Stream {
-		p.handleOpenAIStreaming(w, r, openAIReq, &anthroReq)
+		pr.handleOpenAIStreaming(w, r, openAIReq, anthroReq, rp)
 		return
 	}
 
-	p.handleOpenAINonStreaming(w, r, openAIReq, &anthroReq)
+	pr.handleOpenAINonStreaming(w, r, openAIReq, anthroReq, rp)
 }
 
-func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest) {
+func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		openAIReq.ReasoningEffort = ""
+	}
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
@@ -337,17 +335,17 @@ func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -372,7 +370,7 @@ func (p *Proxy) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request,
 
 	anthroResp := translateFromOpenAI(&openAIResp, anthroReq)
 
-	globalStats.RecordRequest(anthroReq.Model, p.providerType, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	globalStats.RecordRequest(anthroReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

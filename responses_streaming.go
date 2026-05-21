@@ -12,10 +12,15 @@ import (
 	"time"
 )
 
-func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if chatReq.ReasoningEffort != "" && !pr.isModelReasoning(chatReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		chatReq.ReasoningEffort = ""
+	}
 
 	// Inject stream_options to get usage data from the upstream provider
 	if chatReq.Stream {
@@ -28,17 +33,17 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (responses streaming)", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s (responses streaming)", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -77,7 +82,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	var liveOutputTokens int
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(respReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 	var completedEmitted bool
 	var reasoningItemID string
@@ -599,7 +604,7 @@ func (p *Proxy) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http
 	}
 }
 
-func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest) {
+func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	ollamaReq := translateResponsesAPIToOllama(respReq)
@@ -610,17 +615,17 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s (responses streaming)", req.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s (responses streaming)", req.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -656,7 +661,7 @@ func (p *Proxy) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http
 	var inputTokens int
 	client := detectClient(r)
 	defer func() {
-		globalStats.RecordRequest(respReq.Model, p.providerType, client, inputTokens, outputTokens, time.Since(reqStart))
+		globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 	var accumulatedText string
 	var thinkingActive bool

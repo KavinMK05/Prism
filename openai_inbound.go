@@ -23,7 +23,7 @@ func writeOpenAIError(w http.ResponseWriter, statusCode int, errType string, mes
 	})
 }
 
-func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
+func (pr *ProviderRouter) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, 405, "invalid_request_error", "Only POST is supported")
 		return
@@ -36,29 +36,34 @@ func (p *Proxy) HandleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	openAIReq.Model = getEffectiveModel(p.modelRemap, openAIReq.Model)
+	rp, resolvedModel, err := pr.resolveProviderForModel(openAIReq.Model)
+	if err != nil {
+		writeOpenAIError(w, 500, "server_error", "Failed to resolve provider: "+err.Error())
+		return
+	}
+	openAIReq.Model = resolvedModel
 
 	client := detectClient(r)
-	globalStats.StartRequest(openAIReq.Model, p.providerType, client)
+	globalStats.StartRequest(openAIReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 
 	if openAIReq.Stream {
-		if p.providerType == "openai" || p.providerType == "codex" {
-			p.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq)
+		if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
+			pr.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq, rp)
 		} else {
-			p.handleOpenAIInboundOllamaStreaming(w, r, &openAIReq)
+			pr.handleOpenAIInboundOllamaStreaming(w, r, &openAIReq, rp)
 		}
 		return
 	}
 
-	if p.providerType == "openai" || p.providerType == "codex" {
-		p.handleOpenAIInboundToOpenAI(w, r, &openAIReq)
+	if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
+		pr.handleOpenAIInboundToOpenAI(w, r, &openAIReq, rp)
 	} else {
-		p.handleOpenAIInboundToOllama(w, r, &openAIReq)
+		pr.handleOpenAIInboundToOllama(w, r, &openAIReq, rp)
 	}
 }
 
-func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+func (pr *ProviderRouter) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
 	ollamaReq := translateOpenAIToOllama(openAIReq)
@@ -69,17 +74,17 @@ func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s", req.Method, p.upstreamURL+"/api/chat")
+	log.Printf("-> %s %s", req.Method, rp.apiChatURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -104,15 +109,20 @@ func (p *Proxy) handleOpenAIInboundToOllama(w http.ResponseWriter, r *http.Reque
 
 	openAIResp := translateOllamaToOpenAI(&ollamaResp, openAIReq)
 
-	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	globalStats.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(openAIResp)
 }
 
-func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest) {
+func (pr *ProviderRouter) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
+
+	// Strip reasoning_effort for non-reasoning models on custom providers
+	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
+		openAIReq.ReasoningEffort = ""
+	}
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
@@ -120,17 +130,17 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstreamURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
 
-	log.Printf("-> %s %s", req.Method, p.upstreamURL+"/v1/chat/completions")
+	log.Printf("-> %s %s", req.Method, rp.chatCompletionsURL())
 
-	resp, err := p.client.Do(req)
+	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -165,7 +175,7 @@ func (p *Proxy) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
 
-	globalStats.RecordRequest(openAIReq.Model, p.providerType, detectClient(r), inputTokens, outputTokens, time.Since(reqStart))
+	globalStats.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), inputTokens, outputTokens, time.Since(reqStart))
 }
 
 // buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name
@@ -443,7 +453,7 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 	}
 }
 
-func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
+func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeOpenAIError(w, 405, "invalid_request_error", "Only GET is supported")
 		return
@@ -452,37 +462,61 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 	models := []interface{}{}
 	seen := map[string]bool{}
 
-	if p.modelRemap != nil {
-		for _, m := range p.modelRemap.KnownModels {
-			if !seen[m] {
-				seen[m] = true
+	if pr.modelRemap != nil {
+		for _, m := range pr.modelRemap.KnownModels {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				providerName := pr.cfg.getProviderName(m.Provider)
 				models = append(models, map[string]interface{}{
-					"id":       m,
+					"id":       m.ID,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "prism",
+					"owned_by": providerName,
 				})
 			}
 		}
-		for _, target := range p.modelRemap.Aliases {
+		for _, target := range pr.modelRemap.Aliases {
 			if !seen[target] {
 				seen[target] = true
+				// Find the provider for the target model
+				providerName := ""
+				for _, km := range pr.modelRemap.KnownModels {
+					if km.ID == target {
+						providerName = pr.cfg.getProviderName(km.Provider)
+						break
+					}
+				}
+				if providerName == "" {
+					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
+				}
 				models = append(models, map[string]interface{}{
 					"id":       target,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "prism",
+					"owned_by": providerName,
 				})
 			}
 		}
-		for alias := range p.modelRemap.Aliases {
+		for alias := range pr.modelRemap.Aliases {
 			if !seen[alias] {
 				seen[alias] = true
+				// Aliases show the target provider's name
+				target := pr.modelRemap.Aliases[alias]
+				providerName := ""
+				for _, km := range pr.modelRemap.KnownModels {
+					if km.ID == target {
+						providerName = pr.cfg.getProviderName(km.Provider)
+						break
+					}
+				}
+				if providerName == "" {
+					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
+				}
 				models = append(models, map[string]interface{}{
 					"id":       alias,
 					"object":   "model",
 					"created":  0,
-					"owned_by": "prism",
+					"owned_by": providerName,
 				})
 			}
 		}

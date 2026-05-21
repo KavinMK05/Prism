@@ -91,6 +91,9 @@ var (
 	// Track the active OAuth callback server so we can shut it down before starting a new one
 	oauthCallbackServer *http.Server
 	oauthCallbackMu      sync.Mutex
+
+	// Mutex for per-account token refresh
+	oauthTokenMu sync.Mutex
 )
 
 func renderOAuthPage(w http.ResponseWriter, title, message, status string) {
@@ -333,9 +336,9 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[OAuth] Token exchange successful, account=%s email=%s", account.ID, account.Email)
 
-	// Save to config
+	// Save to config (clone to avoid data race on shared adminConfig)
 	adminMu.Lock()
-	cfg := adminConfig
+	cfg := adminConfig.clone()
 	adminMu.Unlock()
 
 	cfg.OAuthAccounts = append(cfg.OAuthAccounts, account)
@@ -361,7 +364,7 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 // removeOAuthAccount removes an OAuth account by ID
 func removeOAuthAccount(id string) error {
 	adminMu.Lock()
-	cfg := adminConfig
+	cfg := adminConfig.clone()
 	adminMu.Unlock()
 
 	found := false
@@ -390,7 +393,7 @@ func removeOAuthAccount(id string) error {
 // setActiveOAuthAccount sets an OAuth account as the active provider
 func setActiveOAuthAccount(id string) error {
 	adminMu.Lock()
-	cfg := adminConfig
+	cfg := adminConfig.clone()
 	adminMu.Unlock()
 
 	found := false
@@ -407,8 +410,8 @@ func setActiveOAuthAccount(id string) error {
 		return fmt.Errorf("account not found: %s", id)
 	}
 
-	// Set active provider to the codex_ prefix
-	cfg.ActiveProvider = id
+	// Set default provider to this account
+	cfg.DefaultProvider = id
 
 	if err := saveConfig(cfg); err != nil {
 		return err
@@ -428,10 +431,10 @@ func getActiveOAuthAccount() *OAuthAccount {
 }
 
 // getActiveOAuthAccountForConfig returns the active OAuth account from a given config
-// based on the ActiveProvider field, which is the canonical source of truth.
+// based on the DefaultProvider field, which is the canonical source of truth.
 func getActiveOAuthAccountForConfig(cfg *Config) *OAuthAccount {
 	for _, a := range cfg.OAuthAccounts {
-		if a.ID == cfg.ActiveProvider {
+		if a.ID == cfg.DefaultProvider {
 			return a
 		}
 	}
@@ -455,17 +458,22 @@ func refreshAccessToken(account *OAuthAccount) error {
 
 // getValidAccessToken returns a valid access token, refreshing if needed
 func getValidAccessToken(account *OAuthAccount) (string, error) {
+	oauthTokenMu.Lock()
 	if !account.IsTokenExpired() {
-		return account.AccessToken, nil
+		token := account.AccessToken
+		oauthTokenMu.Unlock()
+		return token, nil
 	}
+	oauthTokenMu.Unlock()
 
+	// Refresh outside the lock to avoid blocking other accounts during HTTP call
 	if err := refreshAccessToken(account); err != nil {
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
 
 	// Save updated token
 	adminMu.Lock()
-	cfg := adminConfig
+	cfg := adminConfig.clone()
 	adminMu.Unlock()
 
 	for _, a := range cfg.OAuthAccounts {

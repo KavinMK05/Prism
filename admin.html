@@ -630,6 +630,66 @@
     transform: translateX(20px);
   }
 
+  /* ── Reasoning toggle (compact inline version) ── */
+  .reasoning-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    transition: border-color 0.15s, background-color 0.15s;
+  }
+  .reasoning-toggle:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-raised);
+  }
+  .reasoning-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+  }
+  .reasoning-slider {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background-color: var(--border-strong);
+    border-radius: 10px;
+    transition: background-color 0.2s;
+    flex-shrink: 0;
+  }
+  .reasoning-slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: var(--surface);
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .reasoning-toggle input:checked + .reasoning-slider {
+    background-color: var(--accent);
+  }
+  .reasoning-toggle input:checked + .reasoning-slider:before {
+    transform: translateX(16px);
+  }
+  .reasoning-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: color 0.2s;
+  }
+  .reasoning-toggle input:checked ~ .reasoning-label {
+    color: var(--accent);
+  }
+
   /* ── Info text ── */
   .info-text {
     font-size: 12px;
@@ -1181,7 +1241,7 @@
   <!-- Provider Tab -->
   <div class="panel active" id="panel-provider">
     <div class="card">
-      <h3>Active Provider</h3>
+      <h3>Default Provider</h3>
       <div class="provider-cards" id="providerCards"></div>
     </div>
 
@@ -1282,7 +1342,9 @@
       <h3>Default Model</h3>
       <p class="card-description">When an unknown model is requested, route to this model instead.</p>
       <div class="field" style="margin-bottom:0">
-        <input type="text" id="defaultModel" placeholder="e.g. glm-5.1:cloud">
+        <select id="defaultModel" style="width:100%;padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;">
+          <option value="">Select a model...</option>
+        </select>
       </div>
     </div>
 
@@ -1292,6 +1354,15 @@
       <div class="model-tags" id="knownModels"></div>
       <div class="add-model-row">
         <input type="text" id="addKnownModel" placeholder="Add model name..." onkeydown="if(event.key==='Enter')addKnownModel()">
+        <select id="addKnownModelProvider" style="padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;min-width:140px;">
+          <option value="ollama_cloud">Ollama Cloud</option>
+          <option value="opencode_go">OpenCode Go</option>
+        </select>
+        <label class="reasoning-toggle" title="Reasoning model">
+          <input type="checkbox" id="addKnownModelReasoning">
+          <span class="reasoning-slider"></span>
+          <span class="reasoning-label">Reasoning</span>
+        </label>
         <button class="btn btn-ghost" onclick="addKnownModel()">Add</button>
       </div>
     </div>
@@ -1630,6 +1701,25 @@ async function loadConfig() {
   renderProviderCards();
   renderAPIKey();
   updateStatus();
+  updateProviderDropdown();
+}
+
+function updateProviderDropdown() {
+  const select = document.getElementById('addKnownModelProvider');
+  if (!select || !currentConfig) return;
+  // Keep existing values, rebuild options
+  select.innerHTML = '<option value="ollama_cloud">Ollama Cloud</option><option value="opencode_go">OpenCode Go</option>';
+  // Add custom providers
+  (currentConfig.custom_providers || []).forEach(p => {
+    select.innerHTML += '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>';
+  });
+  // Add OAuth accounts
+  (currentConfig.oauth_accounts || []).forEach(a => {
+    const label = a.email || a.label || a.id;
+    select.innerHTML += '<option value="' + esc(a.id) + '">' + esc(label) + ' (OAuth)</option>';
+  });
+  // Set default to current default provider
+  select.value = currentConfig.default_provider || 'ollama_cloud';
 }
 
 function renderProviderCards() {
@@ -1655,7 +1745,7 @@ function renderProviderCards() {
       </button>
     ` : '';
     return `
-    <div class="provider-card ${c.active_provider === p.id ? 'active' : ''} ${p.isCustom ? 'custom-provider' : ''}" onclick="selectProvider('${p.id}')">
+    <div class="provider-card ${c.default_provider === p.id ? 'active' : ''} ${p.isCustom ? 'custom-provider' : ''}" onclick="selectProvider('${p.id}')">
       <div class="radio"></div>
       <div class="info">
         <div class="name">${esc(p.name)}</div>
@@ -1667,7 +1757,7 @@ function renderProviderCards() {
   }).join('');
 
   // Show edit card if a custom provider is active
-  const activeCustom = (c.custom_providers || []).find(p => p.id === c.active_provider);
+  const activeCustom = (c.custom_providers || []).find(p => p.id === c.default_provider);
   const editCard = document.getElementById('customProviderEditCard');
   if (activeCustom) {
     editCard.style.display = '';
@@ -1683,7 +1773,16 @@ function renderProviderCards() {
 
 function renderAPIKey() {
   const c = currentConfig;
-  const p = c.active_provider;
+  const p = c.default_provider;
+
+  // Check if this is an OAuth account - API key section doesn't apply
+  const oauthAcct = (c.oauth_accounts || []).find(a => a.id === p);
+  if (oauthAcct) {
+    document.getElementById('apiKeyCard').style.display = 'none';
+    return;
+  }
+  document.getElementById('apiKeyCard').style.display = '';
+
   const activeProv = getProviderById(p);
   const providerName = activeProv ? activeProv.name : p;
   let key = '';
@@ -1711,7 +1810,7 @@ function maskKey(k) {
 }
 
 async function selectProvider(id) {
-  currentConfig.active_provider = id;
+  currentConfig.default_provider = id;
   try {
     await api('/config', {
       method: 'PUT',
@@ -1753,7 +1852,7 @@ async function addCustomProvider() {
   });
 
   // Switch to the new provider
-  currentConfig.active_provider = id;
+  currentConfig.default_provider = id;
 
   try {
     await api('/config', {
@@ -1769,13 +1868,13 @@ async function addCustomProvider() {
     toast('Failed to add provider: ' + e.message, 'error');
     // Revert the local change
     currentConfig.custom_providers = currentConfig.custom_providers.filter(p => p.id !== id);
-    currentConfig.active_provider = 'ollama_cloud';
+    currentConfig.default_provider = 'ollama_cloud';
   }
   loadConfig();
 }
 
 async function saveEditCustomProvider() {
-  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.active_provider);
+  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.default_provider);
   if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
 
   const newName = document.getElementById('customEditName').value.trim();
@@ -1836,13 +1935,13 @@ async function confirmDeleteCustomProvider() {
   if (!provider) { toast('Provider not found', 'error'); return; }
 
   const originalProviders = currentConfig.custom_providers.slice();
-  const originalActive = currentConfig.active_provider;
+  const originalActive = currentConfig.default_provider;
 
   currentConfig.custom_providers = currentConfig.custom_providers.filter(p => p.id !== id);
 
   // Fall back to ollama_cloud if the deleted provider was active
-  if (currentConfig.active_provider === id) {
-    currentConfig.active_provider = 'ollama_cloud';
+  if (currentConfig.default_provider === id) {
+    currentConfig.default_provider = 'ollama_cloud';
   }
 
   try {
@@ -1856,13 +1955,13 @@ async function confirmDeleteCustomProvider() {
     toast('Failed to delete provider: ' + e.message, 'error');
     // Revert
     currentConfig.custom_providers = originalProviders;
-    currentConfig.active_provider = originalActive;
+    currentConfig.default_provider = originalActive;
   }
   loadConfig();
 }
 
 async function deleteCustomProvider() {
-  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.active_provider);
+  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.default_provider);
   if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
   promptDeleteProvider(activeCustom.id);
 }
@@ -1870,7 +1969,7 @@ async function deleteCustomProvider() {
 async function saveAPIKey() {
   const key = document.getElementById('newAPIKey').value.trim();
   if (!key) { toast('Please enter a key', 'error'); return; }
-  const p = currentConfig.active_provider;
+  const p = currentConfig.default_provider;
   if (p === 'ollama_cloud') currentConfig.ollama_cloud.api_key = key;
   else if (p === 'opencode_go') currentConfig.opencode_go.api_key = key;
   else {
@@ -1943,9 +2042,47 @@ async function loadModelConfig() {
 
 function renderModelConfig() {
   if (!currentRemap) return;
-  document.getElementById('defaultModel').value = currentRemap.default_model || '';
+
+  // Build the default model dropdown
+  const defaultModelSelect = document.getElementById('defaultModel');
+  const currentDefault = currentRemap.default_model || '';
+  defaultModelSelect.innerHTML = buildModelOptions(currentDefault);
+
   renderKnownModels();
   renderAliases();
+}
+
+function buildModelOptions(selectedValue) {
+  const models = currentRemap.known_models || [];
+  // Group by provider
+  const groups = {};
+  models.forEach(m => {
+    const id = typeof m === 'string' ? m : m.id;
+    const prov = typeof m === 'string' ? (currentConfig.default_provider || 'ollama_cloud') : (m.provider || currentConfig.default_provider || 'ollama_cloud');
+    const provName = getProviderDisplayName(prov);
+    if (!groups[provName]) groups[provName] = [];
+    groups[provName].push(id);
+  });
+  let html = '<option value="">Select a model...</option>';
+  for (const [provName, ids] of Object.entries(groups)) {
+    html += '<optgroup label="' + esc(provName) + '">';
+    for (const id of ids) {
+      html += '<option value="' + esc(id) + '"' + (id === selectedValue ? ' selected' : '') + '>' + esc(id) + '</option>';
+    }
+    html += '</optgroup>';
+  }
+  return html;
+}
+
+function getProviderDisplayName(providerId) {
+  if (!currentConfig) return providerId;
+  if (providerId === 'ollama_cloud') return 'Ollama Cloud';
+  if (providerId === 'opencode_go') return 'OpenCode Go';
+  const custom = (currentConfig.custom_providers || []).find(p => p.id === providerId);
+  if (custom) return custom.name;
+  const oauth = (currentConfig.oauth_accounts || []).find(a => a.id === providerId);
+  if (oauth) return oauth.email || oauth.label || oauth.id;
+  return providerId;
 }
 
 function renderKnownModels() {
@@ -1955,9 +2092,16 @@ function renderKnownModels() {
     tags.innerHTML = '<span style="color:var(--text-tertiary);font-size:13px;font-style:italic">No known models yet.</span>';
     return;
   }
-  tags.innerHTML = models.map((m,i) => `
-    <span class="model-tag">${esc(m)}<span class="remove" onclick="removeKnownModel(${i})">×</span></span>
-  `).join('');
+  tags.innerHTML = models.map((m,i) => {
+    const id = typeof m === 'string' ? m : m.id;
+    const provider = typeof m === 'string' ? '' : (m.provider || '');
+    const reasoning = typeof m === 'string' ? false : (m.reasoning || false);
+    const providerLabel = provider ? ' <span style="color:var(--text-tertiary);font-size:11px;">via ' + esc(getProviderDisplayName(provider)) + '</span>' : '';
+    const reasoningLabel = reasoning ? ' <span style="color:var(--accent);font-size:10px;font-weight:600;">✦ reasoning</span>' : '';
+    return `
+    <span class="model-tag">${esc(id)}${providerLabel}${reasoningLabel}<span class="remove" onclick="removeKnownModel(${i})">×</span></span>
+  `;
+  }).join('');
 }
 
 function renderAliases() {
@@ -1967,25 +2111,33 @@ function renderAliases() {
     container.innerHTML = '<span style="color:var(--text-tertiary);font-size:13px;font-style:italic">No aliases yet.</span>';
     return;
   }
-  container.innerHTML = aliases.map(([k,v],i) => `
+  container.innerHTML = aliases.map(([k,v],i) => {
+    const modelOptions = buildModelOptions(v);
+    return `
     <div class="alias-row">
       <input type="text" value="${esc(k)}" data-alias-from="${i}">
       <span class="arrow">→</span>
-      <input type="text" value="${esc(v)}" data-alias-to="${i}">
+      <select data-alias-to="${i}" style="flex:1;padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;">${modelOptions}</select>
       <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function addKnownModel() {
   const input = document.getElementById('addKnownModel');
+  const providerSelect = document.getElementById('addKnownModelProvider');
+  const reasoningToggle = document.getElementById('addKnownModelReasoning');
   const val = input.value.trim();
   if (!val) return;
   if (!currentRemap.known_models) currentRemap.known_models = [];
-  if (!currentRemap.known_models.includes(val)) {
-    currentRemap.known_models.push(val);
+  const provider = providerSelect ? providerSelect.value : (currentConfig.default_provider || 'ollama_cloud');
+  const reasoning = reasoningToggle ? reasoningToggle.checked : false;
+  if (!currentRemap.known_models.find(m => (typeof m === 'string' ? m : m.id) === val)) {
+    currentRemap.known_models.push({ id: val, provider: provider, reasoning: reasoning });
   }
   input.value = '';
+  if (reasoningToggle) reasoningToggle.checked = false;
   renderKnownModels();
   autoSaveModelConfig();
 }
@@ -1998,15 +2150,24 @@ function removeKnownModel(i) {
 
 async function autoSaveModelConfig() {
   try {
+    const knownModels = (currentRemap.known_models || []).map(m => {
+      if (typeof m === 'string') return { id: m, provider: currentConfig.default_provider || 'ollama_cloud' };
+      return m;
+    });
+    const defaultModelEl = document.getElementById('defaultModel');
     const remap = {
-      default_model: document.getElementById('defaultModel').value.trim() || 'glm-5.1:cloud',
-      known_models: [...(currentRemap.known_models || [])],
+      default_model: defaultModelEl ? defaultModelEl.value.trim() : (currentRemap.default_model || 'glm-5.1:cloud'),
+      known_models: knownModels,
       aliases: {}
     };
     document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
-      const from = row.querySelector('input:nth-child(1)').value.trim();
-      const to = row.querySelector('input:nth-child(3)').value.trim();
-      if (from && to) remap.aliases[from] = to;
+      const from = row.querySelector('input[data-alias-from], input[data-alias-new-from]') || row.querySelector('input:first-child');
+      const to = row.querySelector('select[data-alias-to], select[data-alias-new-to]') || row.querySelector('input[data-alias-to], input[data-alias-new-to]');
+      if (from && to) {
+        const fromVal = from.value.trim();
+        const toVal = to.value.trim();
+        if (fromVal && toVal) remap.aliases[fromVal] = toVal;
+      }
     });
     await api('/model-remap', {
       method: 'PUT',
@@ -2025,12 +2186,14 @@ function addAliasRow() {
   // Remove the "no aliases yet" placeholder if present
   if (container.querySelector('span[style*="italic"]')) container.innerHTML = '';
 
+  const modelOptions = buildModelOptions('');
+
   const row = document.createElement('div');
   row.className = 'alias-row';
   row.innerHTML = `
-    <input type="text" placeholder="Incoming model" data-alias-new-from>
+    <input type="text" placeholder="Incoming model name" data-alias-new-from>
     <span class="arrow">→</span>
-    <input type="text" placeholder="Upstream model" data-alias-new-to>
+    <select data-alias-new-to style="flex:1;padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;">${modelOptions}</select>
     <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
   `;
   container.appendChild(row);
@@ -2038,15 +2201,24 @@ function addAliasRow() {
 
 async function saveModelConfig() {
   try {
+    const knownModels = (currentRemap.known_models || []).map(m => {
+      if (typeof m === 'string') return { id: m, provider: currentConfig.default_provider || 'ollama_cloud' };
+      return m;
+    });
+    const defaultModelEl = document.getElementById('defaultModel');
     const remap = {
-      default_model: document.getElementById('defaultModel').value.trim() || 'glm-5.1:cloud',
-      known_models: [...(currentRemap.known_models || [])],
+      default_model: defaultModelEl ? defaultModelEl.value.trim() : (currentRemap.default_model || 'glm-5.1:cloud'),
+      known_models: knownModels,
       aliases: {}
     };
     document.querySelectorAll('#aliasRows .alias-row').forEach(row => {
-      const from = row.querySelector('input:nth-child(1)').value.trim();
-      const to = row.querySelector('input:nth-child(3)').value.trim();
-      if (from && to) remap.aliases[from] = to;
+      const from = row.querySelector('input[data-alias-from], input[data-alias-new-from]') || row.querySelector('input:first-child');
+      const to = row.querySelector('select[data-alias-to], select[data-alias-new-to]') || row.querySelector('input[data-alias-to], input[data-alias-new-to]');
+      if (from && to) {
+        const fromVal = from.value.trim();
+        const toVal = to.value.trim();
+        if (fromVal && toVal) remap.aliases[fromVal] = toVal;
+      }
     });
     await api('/model-remap', {
       method: 'PUT',
@@ -2093,9 +2265,7 @@ async function refreshLogs() {
 
 // ── Helpers ──
 function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── OAuth Tab ──
@@ -2490,7 +2660,8 @@ async function loadStatsFilters() {
     clientSel.innerHTML = '<option value="">All Clients</option>';
     if (data.providers) {
       data.providers.forEach(p => {
-        provSel.innerHTML += `<option value="${esc(p)}">${esc(p)}</option>`;
+        const displayName = getProviderDisplayName(p);
+        provSel.innerHTML += `<option value="${esc(p)}">${esc(displayName)}</option>`;
       });
     }
     if (data.models) {
