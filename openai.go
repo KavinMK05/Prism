@@ -39,6 +39,11 @@ func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
 		req.Tools = translateToolsToOpenAI(anthroReq.Tools)
 	}
 
+	// Map Anthropic thinking to OpenAI reasoning_effort
+	if anthroReq.Thinking != nil {
+		req.ReasoningEffort = "medium" // default effort when thinking is enabled
+	}
+
 	return req
 }
 
@@ -324,10 +329,8 @@ func (pr *ProviderRouter) HandleOpenAIMessages(w http.ResponseWriter, r *http.Re
 func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
-	// Strip reasoning_effort for non-reasoning models on custom providers
-	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
-		openAIReq.ReasoningEffort = ""
-	}
+	// Validate reasoning_effort for the model
+	openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {

@@ -17,10 +17,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
 
-	// Strip reasoning_effort for non-reasoning models on custom providers
-	if chatReq.ReasoningEffort != "" && !pr.isModelReasoning(chatReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
-		chatReq.ReasoningEffort = ""
-	}
+	// Validate reasoning_effort for the model
+	chatReq.ReasoningEffort = pr.validateReasoningEffort(chatReq.Model, chatReq.ReasoningEffort)
 
 	// Inject stream_options to get usage data from the upstream provider
 	if chatReq.Stream {

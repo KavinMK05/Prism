@@ -74,6 +74,50 @@ func (pr *ProviderRouter) isModelReasoning(model string) bool {
 	return false
 }
 
+// validateReasoningEffort returns a valid reasoning_effort value for the model.
+// If the model is not a reasoning model, it returns "" (strip it).
+// If the model is a reasoning model but the effort value is not in the allowed list,
+// it defaults to "medium". If the model has no allowed efforts defined, the value
+// is passed through as-is.
+func (pr *ProviderRouter) validateReasoningEffort(model string, effort string) string {
+	if effort == "" {
+		return ""
+	}
+	if pr.modelRemap == nil {
+		return ""
+	}
+	for _, m := range pr.modelRemap.KnownModels {
+		if m.ID == model || strings.HasPrefix(model, m.ID+":") || strings.HasPrefix(model, m.ID+"[") {
+			if !m.Reasoning {
+				return ""
+			}
+			// If no allowed efforts specified, validate against standard values
+			if len(m.ReasoningEffort) == 0 {
+				standardEfforts := []string{"low", "medium", "high"}
+				for _, valid := range standardEfforts {
+					if effort == valid {
+						return effort
+					}
+				}
+				// Invalid value for reasoning model, default to medium
+				log.Printf("[WARN] Invalid reasoning_effort %q for model %q, defaulting to medium", effort, model)
+				return "medium"
+			}
+			// Check if the effort is in the model's allowed list
+			for _, valid := range m.ReasoningEffort {
+				if effort == valid {
+					return effort
+				}
+			}
+			// Invalid value for reasoning model, default to first allowed effort
+			log.Printf("[WARN] Invalid reasoning_effort %q for model %q, defaulting to %q", effort, model, m.ReasoningEffort[0])
+			return m.ReasoningEffort[0]
+		}
+	}
+	// Model not in known models — strip reasoning_effort to be safe
+	return ""
+}
+
 func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, 405, "method_not_allowed", "Only POST is supported")

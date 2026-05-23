@@ -119,10 +119,8 @@ func (pr *ProviderRouter) handleOpenAIInboundToOllama(w http.ResponseWriter, r *
 func (pr *ProviderRouter) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
-	// Strip reasoning_effort for non-reasoning models on custom providers
-	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
-		openAIReq.ReasoningEffort = ""
-	}
+	// Validate reasoning_effort for the model
+	openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
@@ -462,62 +460,85 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 	models := []interface{}{}
 	seen := map[string]bool{}
 
+	buildModelObj := func(id string, entry ModelEntry, providerName string) map[string]interface{} {
+		obj := map[string]interface{}{
+			"id":       id,
+			"object":   "model",
+			"created":  0,
+			"owned_by": providerName,
+		}
+		if entry.ContextLength > 0 {
+			obj["context_length"] = entry.ContextLength
+		}
+		if entry.MaxOutputTokens > 0 {
+			obj["max_output_tokens"] = entry.MaxOutputTokens
+		}
+		if entry.Reasoning {
+			obj["reasoning"] = true
+		}
+		if len(entry.ReasoningEffort) > 0 {
+			obj["reasoning_effort"] = entry.ReasoningEffort
+		}
+		if entry.Capabilities != nil {
+			caps := map[string]interface{}{}
+			if entry.Capabilities.ToolCalling {
+				caps["tool_calling"] = true
+			}
+			if entry.Capabilities.StructuredOutputs {
+				caps["structured_outputs"] = true
+			}
+			if entry.Capabilities.Vision {
+				caps["vision"] = true
+			}
+			if len(caps) > 0 {
+				obj["capabilities"] = caps
+			}
+		}
+		return obj
+	}
+
 	if pr.modelRemap != nil {
 		for _, m := range pr.modelRemap.KnownModels {
 			if !seen[m.ID] {
 				seen[m.ID] = true
 				providerName := pr.cfg.getProviderName(m.Provider)
-				models = append(models, map[string]interface{}{
-					"id":       m.ID,
-					"object":   "model",
-					"created":  0,
-					"owned_by": providerName,
-				})
+				models = append(models, buildModelObj(m.ID, m, providerName))
 			}
 		}
 		for _, target := range pr.modelRemap.Aliases {
 			if !seen[target] {
 				seen[target] = true
-				// Find the provider for the target model
-				providerName := ""
+				// Find the ModelEntry for the target model
+				entry := ModelEntry{}
 				for _, km := range pr.modelRemap.KnownModels {
 					if km.ID == target {
-						providerName = pr.cfg.getProviderName(km.Provider)
+						entry = km
 						break
 					}
 				}
+				providerName := pr.cfg.getProviderName(entry.Provider)
 				if providerName == "" {
 					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
 				}
-				models = append(models, map[string]interface{}{
-					"id":       target,
-					"object":   "model",
-					"created":  0,
-					"owned_by": providerName,
-				})
+				models = append(models, buildModelObj(target, entry, providerName))
 			}
 		}
 		for alias := range pr.modelRemap.Aliases {
 			if !seen[alias] {
 				seen[alias] = true
-				// Aliases show the target provider's name
 				target := pr.modelRemap.Aliases[alias]
-				providerName := ""
+				entry := ModelEntry{}
 				for _, km := range pr.modelRemap.KnownModels {
 					if km.ID == target {
-						providerName = pr.cfg.getProviderName(km.Provider)
+						entry = km
 						break
 					}
 				}
+				providerName := pr.cfg.getProviderName(entry.Provider)
 				if providerName == "" {
 					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
 				}
-				models = append(models, map[string]interface{}{
-					"id":       alias,
-					"object":   "model",
-					"created":  0,
-					"owned_by": providerName,
-				})
+				models = append(models, buildModelObj(alias, entry, providerName))
 			}
 		}
 	}

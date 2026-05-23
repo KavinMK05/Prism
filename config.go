@@ -58,11 +58,22 @@ func (c *Config) clone() *Config {
 	return &cp
 }
 
-// ModelEntry represents a known model with its associated provider
+// ModelCapabilities describes what a model can do
+type ModelCapabilities struct {
+	ToolCalling       bool `json:"tool_calling,omitempty"`
+	StructuredOutputs bool `json:"structured_outputs,omitempty"`
+	Vision            bool `json:"vision,omitempty"`
+}
+
+// ModelEntry represents a known model with its associated provider and capabilities
 type ModelEntry struct {
-	ID        string `json:"id"`
-	Provider  string `json:"provider"`
-	Reasoning bool  `json:"reasoning,omitempty"`
+	ID              string             `json:"id"`
+	Provider        string             `json:"provider"`
+	Reasoning       bool               `json:"reasoning,omitempty"`
+	ReasoningEffort []string           `json:"reasoning_effort,omitempty"`
+	ContextLength   int                `json:"context_length,omitempty"`
+	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
+	Capabilities    *ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 type ModelRemapping struct {
@@ -436,11 +447,51 @@ func defaultModelRemapping() *ModelRemapping {
 	return &ModelRemapping{
 		DefaultModel: "glm-5.1:cloud",
 		KnownModels: []ModelEntry{
-			{ID: "glm-5.1:cloud", Provider: "ollama_cloud"},
-			{ID: "deepseek-v4-flash:cloud", Provider: "ollama_cloud"},
-			{ID: "opencode/deepseek-v4-flash", Provider: "opencode_go"},
-			{ID: "deepseek-v4-flash", Provider: "ollama_cloud"},
-			{ID: "deepseek-v4-pro:cloud", Provider: "ollama_cloud"},
+			{
+				ID:              "glm-5.1:cloud",
+				Provider:        "ollama_cloud",
+				Reasoning:       true,
+				ReasoningEffort: []string{"low", "medium", "high"},
+				ContextLength:   128000,
+				MaxOutputTokens: 16384,
+				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true, Vision: true},
+			},
+			{
+				ID:              "deepseek-v4-flash:cloud",
+				Provider:        "ollama_cloud",
+				Reasoning:       true,
+				ReasoningEffort: []string{"low", "medium", "high"},
+				ContextLength:   128000,
+				MaxOutputTokens: 16384,
+				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
+			},
+			{
+				ID:              "opencode/deepseek-v4-flash",
+				Provider:        "opencode_go",
+				Reasoning:       true,
+				ReasoningEffort: []string{"low", "medium", "high"},
+				ContextLength:   128000,
+				MaxOutputTokens: 16384,
+				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
+			},
+			{
+				ID:              "deepseek-v4-flash",
+				Provider:        "ollama_cloud",
+				Reasoning:       true,
+				ReasoningEffort: []string{"low", "medium", "high"},
+				ContextLength:   128000,
+				MaxOutputTokens: 16384,
+				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
+			},
+			{
+				ID:              "deepseek-v4-pro:cloud",
+				Provider:        "ollama_cloud",
+				Reasoning:       true,
+				ReasoningEffort: []string{"low", "medium", "high", "max"},
+				ContextLength:   128000,
+				MaxOutputTokens: 16384,
+				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
+			},
 		},
 		Aliases: map[string]string{
 			"claude-3-5-haiku":            "deepseek-v4-flash:cloud",

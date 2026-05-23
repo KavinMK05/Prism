@@ -26,10 +26,8 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		globalStats.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, out, time.Since(reqStart))
 	}()
 
-	// Strip reasoning_effort for non-reasoning models on custom providers
-	if openAIReq.ReasoningEffort != "" && !pr.isModelReasoning(openAIReq.Model) && rp.ProviderID != "ollama_cloud" && rp.ProviderID != "opencode_go" {
-		openAIReq.ReasoningEffort = ""
-	}
+	// Validate reasoning_effort for the model
+	openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
 
 	// Inject stream_options to get usage data from the upstream provider
 	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}

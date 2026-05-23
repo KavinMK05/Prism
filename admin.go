@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,266 @@ var (
 	adminMu     sync.Mutex
 	adminConfig *Config
 )
+
+// modelsDevMatchProviders fuzzy-matches a Prism provider ID against models.dev provider keys.
+// Returns matching models.dev provider keys, or nil to search all.
+func modelsDevMatchProviders(prismProviderID string, allProviderKeys []string) []string {
+	if prismProviderID == "" {
+		return nil
+	}
+	// Normalize: lowercase, replace _ with - for comparison
+	searchNorm := strings.ToLower(strings.ReplaceAll(prismProviderID, "_", "-"))
+	// First pass: exact match after normalization
+	for _, pk := range allProviderKeys {
+		pkNorm := strings.ToLower(strings.ReplaceAll(pk, "_", "-"))
+		if pkNorm == searchNorm {
+			return []string{pk}
+		}
+	}
+	// Second pass: provider key contains the search term or vice versa
+	var matches []string
+	for _, pk := range allProviderKeys {
+		pkNorm := strings.ToLower(strings.ReplaceAll(pk, "_", "-"))
+		if strings.Contains(pkNorm, searchNorm) || strings.Contains(searchNorm, pkNorm) {
+			matches = append(matches, pk)
+		}
+	}
+	if len(matches) > 0 {
+		return matches
+	}
+	// Third pass: strip common suffixes and retry
+	base := searchNorm
+	base = strings.TrimSuffix(base, "-cloud")
+	base = strings.TrimSuffix(base, "-go")
+	if base != searchNorm && base != "" {
+		for _, pk := range allProviderKeys {
+			pkNorm := strings.ToLower(strings.ReplaceAll(pk, "_", "-"))
+			if strings.Contains(pkNorm, base) || strings.Contains(base, pkNorm) {
+				matches = append(matches, pk)
+			}
+		}
+	}
+	if len(matches) > 0 {
+		return matches
+	}
+	// No match found - search all providers
+	return nil
+}
+
+// modelsDevResult holds a parsed models.dev model entry.
+type modelsDevResult struct {
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	ContextLength    int      `json:"context_length"`
+	MaxOutputTokens  int      `json:"max_output_tokens"`
+	Reasoning        bool     `json:"reasoning"`
+	ToolCall         bool     `json:"tool_calling"`
+	StructuredOutput bool     `json:"structured_output"`
+	Vision           bool     `json:"vision"`
+	ReasoningEffort  []string `json:"reasoning_effort,omitempty"`
+	ProviderID       string   `json:"provider_id"`
+}
+
+// fetchModelsDevModel fetches a model from models.dev, scoped to mapped providers if prismProvider is given.
+func fetchModelsDevModel(modelID, prismProvider string) (*modelsDevResult, error) {
+	resp, err := http.Get("https://models.dev/api.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models.dev: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("models.dev returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read models.dev response")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse models.dev response")
+	}
+	type modelInfo struct {
+		Name            string `json:"name"`
+		ID              string `json:"id"`
+		Limit           struct {
+			Context int `json:"context"`
+			Output  int `json:"output"`
+		} `json:"limit"`
+		Reasoning        bool `json:"reasoning"`
+		ToolCall         bool `json:"tool_call"`
+		StructuredOutput bool `json:"structured_output"`
+		Modalities       *struct {
+			Input  []string `json:"input"`
+			Output []string `json:"output"`
+		} `json:"modalities"`
+	}
+	type providerInfo struct {
+		ID     string               `json:"id"`
+		Name   string               `json:"name"`
+		Models map[string]modelInfo `json:"models"`
+	}
+	// Fuzzy-match Prism provider to models.dev provider keys
+	allProviderKeys := make([]string, 0, len(raw))
+	for k := range raw {
+		allProviderKeys = append(allProviderKeys, k)
+	}
+	providerKeys := modelsDevMatchProviders(prismProvider, allProviderKeys)
+	// Strip provider suffix like :cloud or :free
+	searchBase := modelID
+	if idx := strings.Index(modelID, ":"); idx > 0 {
+		searchBase = modelID[:idx]
+	}
+	searchID := strings.ToLower(searchBase)
+	type match struct {
+		model    modelInfo
+		provider string
+		exact    bool
+		native   bool
+	}
+	var matches []match
+	for provKey, provRaw := range raw {
+		var prov providerInfo
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		if len(providerKeys) > 0 {
+			found := false
+			for _, pk := range providerKeys {
+				if strings.EqualFold(prov.ID, pk) || strings.EqualFold(provKey, pk) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		provIDLower := strings.ToLower(prov.ID)
+		for _, m := range prov.Models {
+			mID := strings.ToLower(m.ID)
+			mName := strings.ToLower(m.Name)
+			isExact := mID == searchID
+			isNative := strings.HasPrefix(searchID, provIDLower)
+			if isExact {
+				matches = append(matches, match{model: m, provider: prov.ID, exact: true, native: isNative})
+			} else if strings.Contains(mID, searchID) || strings.Contains(searchID, mID) || strings.Contains(mName, searchID) {
+				matches = append(matches, match{model: m, provider: prov.ID, exact: false, native: isNative})
+			}
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].exact != matches[j].exact {
+			return matches[i].exact
+		}
+		if matches[i].native != matches[j].native {
+			return matches[i].native
+		}
+		return false
+	})
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	best := matches[len(matches)-1]
+	vision := false
+	if best.model.Modalities != nil {
+		for _, mod := range best.model.Modalities.Input {
+			if mod == "image" {
+				vision = true
+			}
+		}
+	}
+	result := &modelsDevResult{
+		ID:               best.model.ID,
+		Name:             best.model.Name,
+		ProviderID:       best.provider,
+		ContextLength:    best.model.Limit.Context,
+		MaxOutputTokens:  best.model.Limit.Output,
+		Reasoning:        best.model.Reasoning,
+		ToolCall:         best.model.ToolCall,
+		StructuredOutput: best.model.StructuredOutput,
+		Vision:           vision,
+	}
+	if best.model.Reasoning {
+		efforts := []string{"low", "medium", "high"}
+		if strings.Contains(searchID, "deepseek-v4") {
+			efforts = append(efforts, "max")
+		}
+		result.ReasoningEffort = efforts
+	}
+	return result, nil
+}
+
+// fetchModelsDevSearch returns matching model IDs from a specific models.dev provider.
+func fetchModelsDevSearch(query, prismProvider string) ([]map[string]string, error) {
+	resp, err := http.Get("https://models.dev/api.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models.dev: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("models.dev returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read models.dev response")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse models.dev response")
+	}
+	type modelInfo struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
+	type providerInfo struct {
+		ID     string               `json:"id"`
+		Name   string               `json:"name"`
+		Models map[string]modelInfo `json:"models"`
+	}
+	// Fuzzy-match Prism provider to models.dev provider keys
+	allProviderKeys := make([]string, 0, len(raw))
+	for k := range raw {
+		allProviderKeys = append(allProviderKeys, k)
+	}
+	providerKeys := modelsDevMatchProviders(prismProvider, allProviderKeys)
+	q := strings.ToLower(query)
+	var results []map[string]string
+	for provKey, provRaw := range raw {
+		var prov providerInfo
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		if len(providerKeys) > 0 {
+			found := false
+			for _, pk := range providerKeys {
+				if strings.EqualFold(prov.ID, pk) || strings.EqualFold(provKey, pk) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		for _, m := range prov.Models {
+			mID := strings.ToLower(m.ID)
+			mName := strings.ToLower(m.Name)
+			if q == "" || strings.Contains(mID, q) || strings.Contains(mName, q) {
+				results = append(results, map[string]string{
+					"id":   m.ID,
+					"name": m.Name,
+				})
+			}
+		}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i]["id"] < results[j]["id"]
+	})
+	if len(results) > 50 {
+		results = results[:50]
+	}
+	return results, nil
+}
 
 func startAdminServer(cfg *Config, port string) {
 	adminMu.Lock()
@@ -408,6 +669,63 @@ func startAdminServer(cfg *Config, port string) {
 			"providers": dbProviders,
 			"clients":   clients,
 		})
+	})
+
+	// API: Model info from models.dev (fetched directly to work when proxy is off)
+	mux.HandleFunc("/admin/model-info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		modelID := r.URL.Query().Get("id")
+		if modelID == "" {
+			writeJSONError(w, "missing id parameter", 400)
+			return
+		}
+		prismProvider := r.URL.Query().Get("provider")
+		result, err := fetchModelsDevModel(modelID, prismProvider)
+		if err != nil {
+			writeJSONError(w, err.Error(), 502)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if result == nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"found": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"found":             true,
+			"id":                result.ID,
+			"name":              result.Name,
+			"provider_id":       result.ProviderID,
+			"context_length":    result.ContextLength,
+			"max_output_tokens": result.MaxOutputTokens,
+			"reasoning":         result.Reasoning,
+			"tool_calling":      result.ToolCall,
+			"structured_outputs": result.StructuredOutput,
+			"vision":            result.Vision,
+			"reasoning_effort":  result.ReasoningEffort,
+		})
+	})
+
+	// API: Model search from models.dev - returns matching model IDs scoped to a provider
+	mux.HandleFunc("/admin/model-search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		query := r.URL.Query().Get("q")
+		prismProvider := r.URL.Query().Get("provider")
+		results, err := fetchModelsDevSearch(query, prismProvider)
+		if err != nil {
+			writeJSONError(w, err.Error(), 502)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if results == nil {
+			results = []map[string]string{}
+		}
+		json.NewEncoder(w).Encode(results)
 	})
 
 	addr := "127.0.0.1:" + port

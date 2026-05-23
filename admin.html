@@ -492,6 +492,38 @@
   .alias-row input::placeholder {
     color: var(--text-tertiary);
   }
+  .model-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 300px;
+    max-width: 420px;
+    max-height: 240px;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    z-index: 100;
+    margin-top: 2px;
+  }
+  .model-search-dropdown .ms-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .model-search-dropdown .ms-item:last-child { border-bottom: none; }
+  .model-search-dropdown .ms-item:hover,
+  .model-search-dropdown .ms-item.active {
+    background: var(--surface-secondary);
+  }
+  .model-search-dropdown .ms-item .ms-id { font-weight: 500; }
+  .model-search-dropdown .ms-item .ms-name { color: var(--text-secondary); font-size: 12px; margin-left: 12px; }
+  .model-search-dropdown .ms-empty { padding: 12px; color: var(--text-tertiary); font-size: 13px; text-align: center; }
 
   /* ── Aliases ── */
   .alias-list { display: flex; flex-direction: column; gap: 10px; }
@@ -1201,6 +1233,29 @@
     .client-summary-row { grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .client-summary-value { font-size: 18px; }
   }
+
+  /* ── Known Models Accordion ── */
+  .model-rows { display: flex; flex-direction: column; }
+  .model-row { border-bottom: 1px solid var(--border); }
+  .model-row:last-child { border-bottom: none; }
+  .row-main { display: flex; align-items: center; gap: 12px; padding: 14px 24px; cursor: pointer; transition: background 0.15s; }
+  .row-main:hover { background: var(--surface-hover); }
+  .model-name { font-size: 14px; font-weight: 500; color: var(--text); flex: 1; }
+  .row-provider { font-size: 11px; color: var(--text-secondary); background: var(--surface-secondary); padding: 2px 8px; border-radius: var(--radius-pill); border: 1px solid var(--border); }
+  .cap-dots { display: flex; gap: 4px; }
+  .cap-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  .cap-dot.on { background: var(--success); }
+  .cap-dot.reasoning { background: #8b5cf6; }
+  .expand-btn { width: 24px; height: 24px; border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); transition: all 0.15s; }
+  .expand-btn:hover { background: var(--surface-hover); color: var(--text); }
+  .row-detail { padding: 0 24px 20px; display: none; }
+  .row-detail.open { display: block; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .detail-grid .full { grid-column: 1 / -1; }
+  .detail-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .detail-actions .btn { padding: 6px 14px; font-size: 12px; }
+  .add-section { padding: 20px 24px; border-top: 1px solid var(--border); margin-top: 8px; }
+  .add-section h4 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
 </style>
   <link rel="icon" type="image/png" href="/admin/icon.png" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -1239,8 +1294,7 @@
   </div>
 
   <!-- Provider Tab -->
-  <div class="panel active" id="panel-provider">
-    <div class="card">
+  <div class="panel active" id="panel-provider">    <div class="card">
       <h3>Default Provider</h3>
       <div class="provider-cards" id="providerCards"></div>
     </div>
@@ -1347,25 +1401,58 @@
         </select>
       </div>
     </div>
-
     <div class="card">
       <h3>Known Models</h3>
       <p class="card-description">Models in this list pass through without remapping.</p>
-      <div class="model-tags" id="knownModels"></div>
-      <div class="add-model-row">
-        <input type="text" id="addKnownModel" placeholder="Add model name..." onkeydown="if(event.key==='Enter')addKnownModel()">
-        <select id="addKnownModelProvider" style="padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;min-width:140px;">
-          <option value="ollama_cloud">Ollama Cloud</option>
-          <option value="opencode_go">OpenCode Go</option>
-        </select>
-        <label class="reasoning-toggle" title="Reasoning model">
-          <input type="checkbox" id="addKnownModelReasoning">
-          <span class="reasoning-slider"></span>
-          <span class="reasoning-label">Reasoning</span>
-        </label>
-        <button class="btn btn-ghost" onclick="addKnownModel()">Add</button>
+      <div class="model-rows" id="knownModels"></div>
+            <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+        <div class="add-model-row" style="position:relative;">
+          <input type="text" id="addKnownModel" placeholder="Model ID (e.g. deepseek-v4-flash:cloud)" onkeydown="if(event.key==='Enter'){addKnownModel();return false;}" oninput="modelSearchDebounce()" autocomplete="off">
+          <div id="modelSearchDropdown" class="model-search-dropdown" style="display:none;"></div>
+          <select id="addKnownModelProvider" style="padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;min-width:140px;">
+            <option value="ollama_cloud">Ollama Cloud</option>
+            <option value="opencode_go">OpenCode Go</option>
+          </select>
+          <button class="btn btn-ghost" onclick="fetchModelInfo()" title="Fetch info from models.dev">Fetch</button>
+        </div>
+        <div id="modelInfoFields" style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:2px;">Context Length</label>
+            <input type="number" id="addKnownModelContextLength" placeholder="e.g. 128000" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:2px;">Max Output Tokens</label>
+            <input type="number" id="addKnownModelMaxOutput" placeholder="e.g. 16384" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:2px;">Reasoning Effort Levels</label>
+            <input type="text" id="addKnownModelReasoningEffort" placeholder="low,medium,high" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div style="display:flex;align-items:end;gap:12px;padding-bottom:2px;">
+            <label class="reasoning-toggle" title="Reasoning model" style="margin-bottom:0">
+              <input type="checkbox" id="addKnownModelReasoning">
+              <span class="reasoning-slider"></span>
+              <span class="reasoning-label">Reasoning</span>
+            </label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;" title="Supports tool/function calling">
+              <input type="checkbox" id="addKnownModelToolCall"> Tools
+            </label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;" title="Supports structured/JSON output">
+              <input type="checkbox" id="addKnownModelStructured"> Struct
+            </label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;" title="Supports image input">
+              <input type="checkbox" id="addKnownModelVision"> Vision
+            </label>
+          </div>
+        </div>
+        <div id="modelInfoStatus" style="margin-top:6px;font-size:12px;color:var(--text-tertiary);min-height:18px;"></div>
+        <div style="margin-top:8px;text-align:right;">
+          <button class="btn btn-ghost" onclick="addKnownModel()">Add Model</button>
+        </div>
       </div>
     </div>
+    
+
 
     <div class="card">
       <h3>Model Aliases</h3>
@@ -2085,23 +2172,129 @@ function getProviderDisplayName(providerId) {
   return providerId;
 }
 
-function renderKnownModels() {
-  const tags = document.getElementById('knownModels');
+﻿function renderKnownModels() {
+  const container = document.getElementById('knownModels');
   const models = currentRemap.known_models || [];
   if (models.length === 0) {
-    tags.innerHTML = '<span style="color:var(--text-tertiary);font-size:13px;font-style:italic">No known models yet.</span>';
+    container.innerHTML = '<div style="color:var(--text-tertiary);font-size:13px;font-style:italic;padding:8px 0;">No known models yet.</div>';
     return;
   }
-  tags.innerHTML = models.map((m,i) => {
+  container.innerHTML = '<div class="model-rows">' + models.map((m,i) => {
     const id = typeof m === 'string' ? m : m.id;
     const provider = typeof m === 'string' ? '' : (m.provider || '');
     const reasoning = typeof m === 'string' ? false : (m.reasoning || false);
-    const providerLabel = provider ? ' <span style="color:var(--text-tertiary);font-size:11px;">via ' + esc(getProviderDisplayName(provider)) + '</span>' : '';
-    const reasoningLabel = reasoning ? ' <span style="color:var(--accent);font-size:10px;font-weight:600;">✦ reasoning</span>' : '';
+    const ctxLen = (typeof m === 'string' ? 0 : (m.context_length || 0));
+    const maxOut = (typeof m === 'string' ? 0 : (m.max_output_tokens || 0));
+    const effort = (typeof m === 'string' ? '' : (Array.isArray(m.reasoning_effort) ? m.reasoning_effort.join(',') : (m.reasoning_effort || '')));
+    const caps = typeof m === 'string' ? null : m.capabilities;
+    const hasTools = caps?.tool_calling;
+    const hasStruct = caps?.structured_outputs;
+    const hasVision = caps?.vision;
+    const providerName = provider ? esc(getProviderDisplayName(provider)) : '';
     return `
-    <span class="model-tag">${esc(id)}${providerLabel}${reasoningLabel}<span class="remove" onclick="removeKnownModel(${i})">×</span></span>
+    <div class="model-row" data-model-idx="${i}">
+      <div class="row-main" onclick="toggleModelRow(${i})">
+        <span class="model-name">${esc(id)}</span>
+        ${providerName ? '<span class="row-provider">' + providerName + '</span>' : ''}
+        <div class="cap-dots">
+          <span class="cap-dot ${reasoning ? 'reasoning' : ''}"></span>
+          <span class="cap-dot ${hasTools ? 'on' : ''}"></span>
+          <span class="cap-dot ${hasStruct ? 'on' : ''}"></span>
+          <span class="cap-dot ${hasVision ? 'on' : ''}"></span>
+        </div>
+        <button class="expand-btn" onclick="event.stopPropagation();toggleModelRow(${i})" title="Expand">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+      </div>
+      <div class="row-detail" id="model-detail-${i}">
+        <div class="detail-grid">
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Provider</label>
+            <select id="edit-provider-${i}" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+              ${buildProviderOptions(provider)}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Context Length</label>
+            <input type="number" id="edit-ctx-${i}" value="${ctxLen}" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Max Output Tokens</label>
+            <input type="number" id="edit-maxout-${i}" value="${maxOut}" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div class="full">
+            <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Reasoning Effort Levels</label>
+            <input type="text" id="edit-effort-${i}" value="${esc(effort)}" placeholder="low,medium,high" style="width:100%;padding:8px 10px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          </div>
+          <div class="full">
+            <div style="display:flex;gap:16px;flex-wrap:wrap;">
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="edit-reasoning-${i}" ${reasoning ? 'checked' : ''}> Reasoning</label>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="edit-tools-${i}" ${hasTools ? 'checked' : ''}> Tools</label>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="edit-struct-${i}" ${hasStruct ? 'checked' : ''}> Struct</label>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="edit-vision-${i}" ${hasVision ? 'checked' : ''}> Vision</label>
+            </div>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="btn btn-primary" onclick="saveModelEdit(${i})" title="Save changes to this model">Save Changes</button>
+          <button class="btn btn-danger" onclick="removeKnownModel(${i})" title="Remove this model">Delete Model</button>
+        </div>
+      </div>
+    </div>
   `;
-  }).join('');
+  }).join('') + '</div>';
+}
+
+
+function toggleModelRow(i) {
+  const detail = document.getElementById('model-detail-' + i);
+  if (!detail) return;
+  detail.classList.toggle('open');
+}
+
+function buildProviderOptions(selected) {
+  const providers = [
+    { value: 'ollama_cloud', label: 'Ollama Cloud' },
+    { value: 'opencode_go', label: 'OpenCode Go' },
+  ];
+  (currentConfig.custom_providers || []).forEach(p => {
+    providers.push({ value: p.id, label: p.name });
+  });
+  (currentConfig.oauth_accounts || []).forEach(a => {
+    providers.push({ value: a.id, label: (a.email || a.label || a.id) + ' (OAuth)' });
+  });
+  return providers.map(p => '<option value="' + esc(p.value) + '"' + (p.value === selected ? ' selected' : '') + '>' + esc(p.label) + '</option>').join('');
+}
+
+function saveModelEdit(i) {
+  const models = currentRemap.known_models || [];
+  if (i < 0 || i >= models.length) return;
+  const m = models[i];
+  const id = typeof m === 'string' ? m : m.id;
+  const provider = document.getElementById('edit-provider-' + i)?.value || '';
+  const ctxLen = parseInt(document.getElementById('edit-ctx-' + i)?.value) || 0;
+  const maxOut = parseInt(document.getElementById('edit-maxout-' + i)?.value) || 0;
+  const effort = (document.getElementById('edit-effort-' + i)?.value || '').trim();
+  const effortArr = effort ? effort.split(',').map(s => s.trim()).filter(s => s) : [];
+  const reasoning = document.getElementById('edit-reasoning-' + i)?.checked || false;
+  const toolCall = document.getElementById('edit-tools-' + i)?.checked || false;
+  const structured = document.getElementById('edit-struct-' + i)?.checked || false;
+  const vision = document.getElementById('edit-vision-' + i)?.checked || false;
+  models[i] = {
+    id: id,
+    provider: provider,
+    context_length: ctxLen,
+    max_output_tokens: maxOut,
+    reasoning: reasoning,
+    reasoning_effort: effortArr,
+    capabilities: {
+      tool_calling: toolCall,
+      structured_outputs: structured,
+      vision: vision,
+    }
+  };
+  renderKnownModels();
+  toast('Model updated');
 }
 
 function renderAliases() {
@@ -2124,6 +2317,70 @@ function renderAliases() {
   }).join('');
 }
 
+function modelSearchDebounce() {
+  clearTimeout(window._modelSearchTimer);
+  const input = document.getElementById('addKnownModel');
+  const dropdown = document.getElementById('modelSearchDropdown');
+  const val = input.value.trim();
+  if (!val) { dropdown.style.display = 'none'; return; }
+  window._modelSearchTimer = setTimeout(() => doModelSearch(val), 250);
+}
+
+async function doModelSearch(query) {
+  const dropdown = document.getElementById('modelSearchDropdown');
+  const providerSelect = document.getElementById('addKnownModelProvider');
+  const provider = providerSelect ? providerSelect.value : '';
+  try {
+    const res = await fetch('/admin/model-search?q=' + encodeURIComponent(query) + (provider ? '&provider=' + encodeURIComponent(provider) : ''));
+    if (!res.ok) throw new Error(await res.text());
+    const results = await res.json();
+    if (!results || results.length === 0) { dropdown.style.display = 'none'; return; }
+    dropdown.innerHTML = results.map(r =>
+      `\u003cdiv class=\"ms-item\" onclick=\"selectSearchModel('${esc(r.id)}')\"\u003e\n` +
+      `  \u003cspan class=\"ms-id\"\u003e${esc(r.id)}\u003c/span\u003e\n` +
+      `  \u003cspan class=\"ms-name\"\u003e${esc(r.name || '')}\u003c/span\u003e\n` +
+      `\u003c/div\u003e`
+    ).join('');
+    dropdown.style.display = 'block';
+  } catch (e) {
+    dropdown.style.display = 'none';
+  }
+}
+
+function selectSearchModel(id) {
+  const input = document.getElementById('addKnownModel');
+  const dropdown = document.getElementById('modelSearchDropdown');
+  input.value = id;
+  dropdown.style.display = 'none';
+  fetchModelInfo();
+}
+
+async function fetchModelInfo() {
+  const input = document.getElementById('addKnownModel');
+  const providerSelect = document.getElementById('addKnownModelProvider');
+  const status = document.getElementById('modelInfoStatus');
+  const id = input.value.trim();
+  if (!id) return;
+  const provider = providerSelect ? providerSelect.value : '';
+  status.textContent = 'Fetching...';
+  try {
+    const res = await fetch('/admin/model-info?id=' + encodeURIComponent(id) + (provider ? '&provider=' + encodeURIComponent(provider) : ''));
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data.found) { status.textContent = 'Model not found on models.dev'; return; }
+    document.getElementById('addKnownModelContextLength').value = data.context_length || '';
+    document.getElementById('addKnownModelMaxOutput').value = data.max_output_tokens || '';
+    document.getElementById('addKnownModelReasoningEffort').value = Array.isArray(data.reasoning_effort) ? data.reasoning_effort.join(',') : (data.reasoning_effort || '');
+    document.getElementById('addKnownModelReasoning').checked = !!data.reasoning;
+    document.getElementById('addKnownModelToolCall').checked = !!data.tool_calling;
+    document.getElementById('addKnownModelStructured').checked = !!data.structured_outputs;
+    document.getElementById('addKnownModelVision').checked = !!data.vision;
+    status.textContent = 'Fetched info for ' + (data.name || id);
+  } catch (e) {
+    status.textContent = 'Fetch failed: ' + e.message;
+  }
+}
+
 function addKnownModel() {
   const input = document.getElementById('addKnownModel');
   const providerSelect = document.getElementById('addKnownModelProvider');
@@ -2133,11 +2390,37 @@ function addKnownModel() {
   if (!currentRemap.known_models) currentRemap.known_models = [];
   const provider = providerSelect ? providerSelect.value : (currentConfig.default_provider || 'ollama_cloud');
   const reasoning = reasoningToggle ? reasoningToggle.checked : false;
+  const ctxLen = parseInt(document.getElementById('addKnownModelContextLength')?.value) || 0;
+  const maxOut = parseInt(document.getElementById('addKnownModelMaxOutput')?.value) || 0;
+  const effortStr = (document.getElementById('addKnownModelReasoningEffort')?.value || '').trim();
+  const effortArr = effortStr ? effortStr.split(',').map(s => s.trim()).filter(s => s) : [];
+  const toolCall = document.getElementById('addKnownModelToolCall')?.checked || false;
+  const structured = document.getElementById('addKnownModelStructured')?.checked || false;
+  const vision = document.getElementById('addKnownModelVision')?.checked || false;
   if (!currentRemap.known_models.find(m => (typeof m === 'string' ? m : m.id) === val)) {
-    currentRemap.known_models.push({ id: val, provider: provider, reasoning: reasoning });
+    currentRemap.known_models.push({
+      id: val,
+      provider: provider,
+      reasoning: reasoning,
+      context_length: ctxLen,
+      max_output_tokens: maxOut,
+      reasoning_effort: effortArr,
+      capabilities: {
+        tool_calling: toolCall,
+        structured_outputs: structured,
+        vision: vision
+      }
+    });
   }
   input.value = '';
   if (reasoningToggle) reasoningToggle.checked = false;
+  document.getElementById('addKnownModelContextLength').value = '';
+  document.getElementById('addKnownModelMaxOutput').value = '';
+  document.getElementById('addKnownModelReasoningEffort').value = '';
+  document.getElementById('addKnownModelToolCall').checked = false;
+  document.getElementById('addKnownModelStructured').checked = false;
+  document.getElementById('addKnownModelVision').checked = false;
+  document.getElementById('modelInfoStatus').textContent = '';
   renderKnownModels();
   autoSaveModelConfig();
 }
@@ -2192,9 +2475,9 @@ function addAliasRow() {
   row.className = 'alias-row';
   row.innerHTML = `
     <input type="text" placeholder="Incoming model name" data-alias-new-from>
-    <span class="arrow">→</span>
+    <span class="arrow">ΓåÆ</span>
     <select data-alias-new-to style="flex:1;padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;">${modelOptions}</select>
-    <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
+    <button class="btn-remove" onclick="this.parentElement.remove()">├ù</button>
   `;
   container.appendChild(row);
 }
@@ -2232,7 +2515,7 @@ async function saveModelConfig() {
   }
 }
 
-// ── Proxy control ──
+// ΓöÇΓöÇ Proxy control ΓöÇΓöÇ
 async function startProxy() {
   await api('/proxy/start', { method: 'POST' });
   toast('Proxy starting...');
@@ -2251,7 +2534,7 @@ async function restartProxy() {
   setTimeout(updateStatus, 2000);
 }
 
-// ── Logs ──
+// ΓöÇΓöÇ Logs ΓöÇΓöÇ
 async function refreshLogs() {
   try {
     const data = await api('/logs');
@@ -2263,12 +2546,12 @@ async function refreshLogs() {
   }
 }
 
-// ── Helpers ──
+// ΓöÇΓöÇ Helpers ΓöÇΓöÇ
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ── OAuth Tab ──
+// ΓöÇΓöÇ OAuth Tab ΓöÇΓöÇ
 function loadOAuthAccounts() {
   fetch('/admin/oauth/accounts')
     .then(r => r.json())
@@ -2288,7 +2571,7 @@ function loadOAuthAccounts() {
         html += `<div class="oauth-account${activeClass}">
           <div class="oauth-account-info">
             <div class="oauth-account-email">${esc(a.email || a.label || a.id)}</div>
-            <div class="oauth-account-meta">${planLabel} · Token: ${tokenStatus}${a.token_expiry ? ' · Expires: ' + esc(a.token_expiry) : ''}</div>
+            <div class="oauth-account-meta">${planLabel} ┬╖ Token: ${tokenStatus}${a.token_expiry ? ' ┬╖ Expires: ' + esc(a.token_expiry) : ''}</div>
           </div>
           <div class="oauth-account-actions">
             <button class="btn btn-secondary" onclick="activateOAuthAccount('${esc(a.id)}')" ${a.active ? 'disabled' : ''}>${a.active ? 'Active' : 'Activate'}</button>
@@ -2345,7 +2628,7 @@ function renderOAuthUsage(accounts) {
       <div class="usage-bar-fill ${fillClass}" style="width:${pctUsed}%"></div>
       <div class="usage-bar-label">${pctUsed.toFixed(1)}% used</div>
     </div>
-    <div class="usage-detail">Credits: ${creditsUsed} / ${creditsTotal}${activeAccount.weekly_reset_at ? ' · Resets: ' + new Date(activeAccount.weekly_reset_at * 1000).toLocaleDateString() : ''}</div>
+    <div class="usage-detail">Credits: ${creditsUsed} / ${creditsTotal}${activeAccount.weekly_reset_at ? ' ┬╖ Resets: ' + new Date(activeAccount.weekly_reset_at * 1000).toLocaleDateString() : ''}</div>
   `;
 }
 
@@ -2480,7 +2763,7 @@ function refreshOAuthUsage() {
     });
 }
 
-// ── Stats ──
+// ΓöÇΓöÇ Stats ΓöÇΓöÇ
 let statsInterval = null;
 let historyInterval = null;
 let dailyChart = null;
@@ -2508,6 +2791,7 @@ async function refreshStats() {
     // Silently ignore stats errors
   }
 }
+
 
 function renderStats(data) {
   // Live counter

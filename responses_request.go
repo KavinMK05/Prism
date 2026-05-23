@@ -61,10 +61,25 @@ func translateResponsesAPIToChatCompletions(req *ResponsesAPIRequest) *OpenAICha
 	// Handle reasoning
 	if req.Reasoning != nil {
 		if effort, ok := req.Reasoning.(string); ok {
-			chatReq.ReasoningEffort = effort
+			// Normalize non-standard effort values
+			switch effort {
+			case "enabled", "on", "true":
+				chatReq.ReasoningEffort = "medium"
+			case "disabled", "off", "false", "none":
+				// Don't set reasoning_effort at all
+			default:
+				chatReq.ReasoningEffort = effort
+			}
 		} else if m, ok := req.Reasoning.(map[string]interface{}); ok {
 			if e, ok := m["effort"].(string); ok {
-				chatReq.ReasoningEffort = e
+				switch e {
+				case "enabled", "on", "true":
+					chatReq.ReasoningEffort = "medium"
+				case "disabled", "off", "false", "none":
+					// Don't set reasoning_effort
+				default:
+					chatReq.ReasoningEffort = e
+				}
 			}
 		}
 	}
