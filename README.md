@@ -38,8 +38,13 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 | **Model remapping** | ✅ | ✅ |
 | **Tool calling** | ✅ | ✅ |
 | **Thinking/reasoning** | ✅ | ⚠️ partial |
+| **Per-model reasoning toggle** | ✅ | ❌ |
+| **Reasoning effort validation** | ✅ | ❌ |
 | **Image support** | ✅ | ✅ |
 | **Structured outputs** | ✅ | ⚠️ partial |
+| **Per-model capabilities** | ✅ Tools / Vision / Struct | ❌ |
+| **models.dev auto-lookup** | ✅ | ❌ |
+| **Provider-per-model routing** | ✅ | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
 
@@ -108,7 +113,7 @@ Edit your Claude Desktop config:
 {
   "inferenceProvider": "gateway",
   "inferenceGatewayBaseUrl": "http://127.0.0.1:11434",
-  "inferenceGatewayApiKey": "ollama",
+  "inferenceGatewayApiKey": "prism",
   "inferenceModels": [
     { "name": "glm-5.1:cloud" },
     { "name": "deepseek-v4-pro:cloud", "supports1m": true }
@@ -127,7 +132,7 @@ Edit `~/.claude/settings.json`:
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:11434",
-    "ANTHROPIC_AUTH_TOKEN": "ollama",
+    "ANTHROPIC_AUTH_TOKEN": "prism",
     "ANTHROPIC_API_KEY": ""
   }
 }
@@ -152,7 +157,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:11434/v1",
-    api_key="ollama"
+    api_key="prism"
 )
 
 response = client.responses.create(
@@ -191,11 +196,11 @@ The admin UI provides:
 
 | Tab | Features |
 |---|---|
-| **Provider** | Select active provider, set API keys, add/edit/remove custom providers |
+| **Provider** | Select default provider, set API keys, add/edit/remove custom providers |
 | **OAuth** | Manage Codex (OpenAI) accounts — sign in, view usage credits, activate, or remove accounts |
-| **Models** | Edit model remapping — default model, known models, aliases |
+| **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. Includes **models.dev** search and auto-fill for model info. |
 | **Stats** | Live and historical performance dashboard (see below) |
-| **Proxy** | Start, stop, and restart the proxy; view status |
+| **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -248,6 +253,14 @@ Prism supports multiple upstream providers, configured via the admin UI or `%APP
 | **Custom providers** | `custom_providers[]` | OpenAI | `/v1/chat/completions` |
 | **Codex (via OAuth)** | `oauth_accounts[]` | OpenAI | `/v1/chat/completions` |
 
+### Provider-per-model routing
+
+Each model in your remapping is assigned to a specific provider. When a request arrives, Prism resolves the model, looks up its assigned provider, and routes the request to that upstream — even if other models go to different providers. This means you can mix models from Ollama Cloud, OpenCode Go, custom providers, and OAuth accounts in a single session.
+
+- The `default_provider` field in config is used only as a fallback when a model has no explicit provider assignment.
+- Provider routing is handled by the **ProviderRouter**, which resolves the provider per-request based on the requested model name.
+- Models from different providers can coexist — set each model's provider when adding it to **Known Models**.
+
 ### Custom providers
 
 You can add multiple custom providers (e.g. OpenRouter, Groq, Together AI) — each with its own name, base URL, and API key. Add, edit, or delete them from the admin UI **Provider** tab. Custom providers are assigned unique IDs like `custom_myprovider_abc123`.
@@ -256,14 +269,14 @@ You can add multiple custom providers (e.g. OpenRouter, Groq, Together AI) — e
 
 Prism supports signing in with your OpenAI account via OAuth (no API key needed). Click **Add Codex Account** in the admin UI **OAuth** tab or system tray, and your browser will open for authentication. Once connected, Prism uses your account token automatically, including token refresh and credit usage tracking.
 
-Switch providers from the system tray, admin UI, or by changing the `active_provider` field — no restart required when using the tray/UI.
+Switch providers from the system tray, admin UI, or by changing the `default_provider` field — no restart required when using the tray/UI.
 
 <details>
 <summary><strong>Full config example</strong></summary>
 
 ```json
 {
-  "active_provider": "ollama_cloud",
+  "default_provider": "ollama_cloud",
   "ollama_cloud": {
     "id": "ollama_cloud",
     "name": "Ollama Cloud",
@@ -313,13 +326,63 @@ API keys in the config file take priority. If empty, Prism falls back to these e
 
 Prism can remap model names on the fly — useful when clients send model names that don't exist on your upstream provider.
 
-Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping.json`:
+Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping.json`.
+
+### Default model
+
+When an unknown model is requested, Prism falls back to this model. Select it from the dropdown in the admin UI or set `default_model`.
+
+### Known models
+
+Known models are now rich entries — not just strings — with per-model provider assignment, reasoning toggle, capabilities, and token limits. Each entry includes:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Model identifier (e.g. `deepseek-v4-flash:cloud`) |
+| `provider` | string | Provider to route this model to (e.g. `ollama_cloud`, `opencode_go`, a custom provider ID, or an OAuth account ID) |
+| `reasoning` | bool | Whether this model supports thinking/reasoning |
+| `reasoning_effort` | string[] | Allowed reasoning effort levels (`low`, `medium`, `high`, `max`) |
+| `context_length` | int | Maximum context window in tokens |
+| `max_output_tokens` | int | Maximum output tokens |
+| `capabilities.tool_calling` | bool | Supports tool/function calling |
+| `capabilities.structured_outputs` | bool | Supports structured/JSON output |
+| `capabilities.vision` | bool | Supports image input |
+
+Models matching a known entry pass through without remapping. A model that doesn't match any entry falls back to the default model.
+
+### Reasoning toggle & effort validation
+
+Prism now validates `reasoning_effort` against each model's capabilities:
+
+- **Non-reasoning models**: `reasoning_effort` is automatically stripped from requests.
+- **Reasoning models**: Invalid effort values are normalized to the model's first allowed effort (e.g. `"invalid"` → `"medium"`), with a warning logged.
+- **Unknown models**: `reasoning_effort` is stripped for safety.
+- **Responses API normalization**: `enabled` / `on` / `true` → `medium`; `disabled` / `off` / `false` / `none` → omitted.
+- **Anthropic → OpenAI translation**: Anthropic `thinking` is mapped to `reasoning_effort=medium`.
+
+### Model aliases
+
+Map incoming model names to different upstream models.
 
 | Feature | What it does |
 |---|---|
 | **Aliases** | Map model names (e.g. `claude-3-5-haiku` → `deepseek-v4-flash:cloud`) |
 | **Default model** | Fallback when a requested model isn't recognized |
-| **Known models** | Whitelist of models that pass through without remapping |
+| **Known models** | Rich entries with per-model provider, reasoning, and capabilities |
+
+### models.dev auto-lookup
+
+The admin UI integrates with [models.dev](https://models.dev) to auto-fill model information. When adding or editing a model:
+
+1. Start typing a model ID — a search dropdown appears with results from models.dev, scoped to the selected provider.
+2. Click **Fetch** or select a search result to auto-fill:
+   - Context length
+   - Max output tokens
+   - Reasoning toggle and allowed effort levels
+   - Tool calling, structured output, and vision capabilities
+3. The lookup runs directly from the admin server (not through the proxy) so it works even when the proxy is stopped.
+
+The search is scoped to the selected provider (Ollama Cloud, OpenCode Go, or custom) — results are fuzzy-matched against models.dev provider keys.
 
 <details>
 <summary><strong>Full remapping example</strong></summary>
@@ -328,15 +391,61 @@ Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping
 {
   "default_model": "glm-5.1:cloud",
   "known_models": [
-    "glm-5.1:cloud",
-    "deepseek-v4-flash:cloud",
-    "opencode/deepseek-v4-flash",
-    "deepseek-v4-pro:cloud"
+    {
+      "id": "glm-5.1:cloud",
+      "provider": "ollama_cloud",
+      "reasoning": true,
+      "reasoning_effort": ["low", "medium", "high"],
+      "context_length": 128000,
+      "max_output_tokens": 16384,
+      "capabilities": {
+        "tool_calling": true,
+        "structured_outputs": true,
+        "vision": true
+      }
+    },
+    {
+      "id": "deepseek-v4-flash:cloud",
+      "provider": "ollama_cloud",
+      "reasoning": true,
+      "reasoning_effort": ["low", "medium", "high"],
+      "context_length": 128000,
+      "max_output_tokens": 16384,
+      "capabilities": {
+        "tool_calling": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "opencode/deepseek-v4-flash",
+      "provider": "opencode_go",
+      "reasoning": true,
+      "reasoning_effort": ["low", "medium", "high"],
+      "context_length": 128000,
+      "max_output_tokens": 16384,
+      "capabilities": {
+        "tool_calling": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "deepseek-v4-pro:cloud",
+      "provider": "ollama_cloud",
+      "reasoning": true,
+      "reasoning_effort": ["low", "medium", "high", "max"],
+      "context_length": 128000,
+      "max_output_tokens": 16384,
+      "capabilities": {
+        "tool_calling": true,
+        "structured_outputs": true
+      }
+    }
   ],
   "aliases": {
     "claude-3-5-haiku": "deepseek-v4-flash:cloud",
     "claude-3-5-haiku-20241022": "deepseek-v4-flash:cloud",
-    "claude-3-haiku-20240307": "deepseek-v4-flash:cloud"
+    "claude-3-haiku-20240307": "deepseek-v4-flash:cloud",
+    "claude-haiku-3-5-20241022": "deepseek-v4-flash:cloud"
   }
 }
 ```
@@ -352,6 +461,9 @@ Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping
 | `POST` | `/v1/responses` | `Authorization: Bearer <key>` | OpenAI Responses API |
 | `GET` | `/v1/models` | `Authorization: Bearer <key>` | List available models |
 | `GET` | `/health` | None | Health check |
+| `GET` | `/api/model-info` | None | Look up model details from models.dev (admin UI) |
+| `GET` | `/admin/model-info` | None | Look up model details from models.dev (admin server only) |
+| `GET` | `/admin/model-search` | None | Search models on models.dev (admin server only) |
 | `POST` | `/v1/messages/count_tokens` | `x-api-key` header | Returns 404 (not supported upstream) |
 
 ## Translation support
@@ -517,23 +629,23 @@ go build -o prism.exe .
 # 2. Test Anthropic endpoint
 Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/messages" -Method POST `
   -ContentType "application/json" `
-  -Headers @{"x-api-key"="ollama"} `
+  -Headers @{"x-api-key"="prism"} `
   -Body '{"model":"glm-5.1:cloud","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
 
 # 3. Test OpenAI Chat Completions endpoint
 Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/chat/completions" -Method POST `
   -ContentType "application/json" `
-  -Headers @{"Authorization"="Bearer ollama"} `
+  -Headers @{"Authorization"="Bearer prism"} `
   -Body '{"model":"glm-5.1:cloud","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
 
 # 4. Test OpenAI Responses API endpoint
 Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/responses" -Method POST `
   -ContentType "application/json" `
-  -Headers @{"Authorization"="Bearer ollama"} `
+  -Headers @{"Authorization"="Bearer prism"} `
   -Body '{"model":"glm-5.1:cloud","input":"hi"}'
 
 # 5. Test model listing
-Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/models" -Headers @{"Authorization"="Bearer ollama"}
+Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/models" -Headers @{"Authorization"="Bearer prism"}
 
 # 6. Test admin UI
 Invoke-RestMethod -Uri "http://127.0.0.1:8765/admin/status"
