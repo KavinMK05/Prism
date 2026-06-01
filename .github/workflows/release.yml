@@ -74,6 +74,7 @@ jobs:
           cp Info.plist Prism.app/Contents/Info.plist
           echo -n "APPL????" > Prism.app/Contents/PkgInfo
           chmod +x Prism.app/Contents/MacOS/prism
+          codesign --force --deep -s - Prism.app
           ditto -c -k --keepParent Prism.app Prism-macOS.zip
 
       - name: Upload artifact
