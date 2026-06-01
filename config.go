@@ -8,10 +8,8 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -111,10 +109,6 @@ func (rp *ResolvedProvider) chatCompletionsURL() string {
 // apiChatURL returns the full URL for Ollama's /api/chat endpoint.
 func (rp *ResolvedProvider) apiChatURL() string {
 	return rp.BaseURL + "/api/chat"
-}
-
-func getConfigDir() string {
-	return filepath.Join(os.Getenv("APPDATA"), "prism")
 }
 
 func getConfigPath() string {
@@ -380,63 +374,6 @@ func maskKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "..." + key[len(key)-4:]
-}
-
-func showInputDialog(title, prompt, defaultValue string) (string, error) {
-	if !isSafeInput(title) || !isSafeInput(prompt) {
-		return "", fmt.Errorf("invalid characters in dialog title or prompt")
-	}
-
-	safeDefault := defaultValue
-	if !isSafeInput(safeDefault) {
-		safeDefault = ""
-	}
-
-	vbs := fmt.Sprintf(`Dim result
-result = InputBox("%s", "%s", "%s")
-If result <> "" Then
-    WScript.Echo result
-End If`,
-		escapeVBS(prompt),
-		escapeVBS(title),
-		escapeVBS(safeDefault),
-	)
-
-	tmpVBS := filepath.Join(os.TempDir(), "prism-input.vbs")
-	if err := os.WriteFile(tmpVBS, []byte(vbs), 0600); err != nil {
-		return "", err
-	}
-	defer os.Remove(tmpVBS)
-
-	cmd := exec.Command("cscript", "//Nologo", "//E:vbscript", tmpVBS)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: 0x08000000,
-	}
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	result := strings.TrimSpace(string(out))
-	if result == "" {
-		return "", nil
-	}
-	return result, nil
-}
-
-func escapeVBS(s string) string {
-	s = strings.ReplaceAll(s, `"`, `""`)
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", "")
-	return s
-}
-
-func isSafeInput(s string) bool {
-	for _, r := range s {
-		if r < 32 && r != '\t' {
-			return false
-		}
-	}
-	return !strings.ContainsAny(s, "(){}<>|&;`$")
 }
 
 func getModelRemappingPath() string {
