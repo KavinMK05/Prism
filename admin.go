@@ -16,7 +16,7 @@ import (
 )
 
 //go:embed admin.html
-//go:embed docs/icon.png
+//go:embed icon.png
 var adminFS embed.FS
 
 var (
@@ -314,7 +314,7 @@ func startAdminServer(cfg *Config, port string) {
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		icon, _ := adminFS.ReadFile("docs/icon.png")
+		icon, _ := adminFS.ReadFile("icon.png")
 		w.Write(icon)
 	})
 
