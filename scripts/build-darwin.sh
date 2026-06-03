@@ -34,8 +34,15 @@ echo -n "APPL????" > Prism.app/Contents/PkgInfo
 # Ensure binary is executable
 chmod +x Prism.app/Contents/MacOS/prism
 
-# Ad-hoc codesign to bypass Gatekeeper damaged warning
-codesign --force --deep -s - Prism.app
+# Code signing
+SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+if [ -n "$SIGNING_IDENTITY" ]; then
+    echo "Signing with Developer ID: $SIGNING_IDENTITY"
+    codesign --force --deep --options runtime --entitlements Prism.entitlements --sign "$SIGNING_IDENTITY" Prism.app
+else
+    echo "No signing identity set, performing ad-hoc signing"
+    codesign --force --deep -s - Prism.app
+fi
 
 # Create DMG for distribution
 echo "Creating DMG..."
@@ -44,6 +51,21 @@ cp -R Prism.app dmg_temp/
 ln -s /Applications dmg_temp/Applications
 hdiutil create -volname "Prism" -srcfolder dmg_temp -ov -format UDZO Prism-macOS.dmg
 rm -rf dmg_temp
+
+# Notarize if credentials are available
+if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+    echo "Notarizing Prism-macOS.dmg..."
+    xcrun notarytool submit Prism-macOS.dmg \
+        --apple-id "$APPLE_ID" \
+        --password "$APPLE_APP_PASSWORD" \
+        --team-id "$APPLE_TEAM_ID" \
+        --wait
+    echo "Stapling notarization ticket..."
+    xcrun stapler staple Prism-macOS.dmg
+    echo "Notarization complete!"
+else
+    echo "Skipping notarization (APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID not set)"
+fi
 
 echo "Built Prism.app"
 echo "Created Prism-macOS.dmg for distribution"
