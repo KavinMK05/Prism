@@ -34,7 +34,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load icon: %v", err)
 	}
-	runTray(iconData)
+	templateIconData, err := loadTemplateIconData()
+	if err != nil {
+		log.Fatalf("Failed to load template icon: %v", err)
+	}
+	runTray(iconData, templateIconData)
 }
 
 func runProxyServer() {

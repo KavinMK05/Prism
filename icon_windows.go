@@ -10,3 +10,7 @@ var iconFS embed.FS
 func loadIconData() ([]byte, error) {
 	return embed.FS.ReadFile(iconFS, "logo_icon.ico")
 }
+
+func loadTemplateIconData() ([]byte, error) {
+	return nil, nil
+}
