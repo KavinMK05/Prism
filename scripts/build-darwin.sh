@@ -52,11 +52,25 @@ fi
 
 # ── Create DMG ──
 echo "Creating DMG..."
-mkdir -p dmg_temp
-cp -R Prism.app dmg_temp/
-ln -s /Applications dmg_temp/Applications
-hdiutil create -volname "Prism" -srcfolder dmg_temp -ov -format UDZO Prism-macOS.dmg
-rm -rf dmg_temp
+if command -v create-dmg &> /dev/null; then
+    create-dmg \
+        --volname "Prism" \
+        --window-pos 200 120 \
+        --window-size 600 400 \
+        --icon-size 100 \
+        --icon "Prism.app" 175 120 \
+        --hide-extension "Prism.app" \
+        --app-drop-link 425 120 \
+        Prism-macOS.dmg \
+        Prism.app
+else
+    echo "create-dmg not found, falling back to hdiutil"
+    mkdir -p dmg_temp
+    cp -R Prism.app dmg_temp/
+    ln -s /Applications dmg_temp/Applications
+    hdiutil create -volname "Prism" -srcfolder dmg_temp -ov -format UDZO Prism-macOS.dmg
+    rm -rf dmg_temp
+fi
 
 # ── Sign DMG ──
 if [ -n "$SIGNING_IDENTITY" ]; then

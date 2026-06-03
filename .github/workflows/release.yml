@@ -115,12 +115,21 @@ jobs:
             codesign --force --deep -s - Prism.app
           fi
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Create DMG
         run: |
-          mkdir -p dmg_temp
-          cp -R Prism.app dmg_temp/
-          ln -s /Applications dmg_temp/Applications
-          hdiutil create -volname "Prism" -srcfolder dmg_temp -ov -format UDZO Prism-macOS.dmg
+          create-dmg \
+            --volname "Prism" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Prism.app" 175 120 \
+            --hide-extension "Prism.app" \
+            --app-drop-link 425 120 \
+            Prism-macOS.dmg \
+            Prism.app
 
       - name: Sign DMG
         if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
