@@ -49,18 +49,14 @@ func getAdminPort() string {
 	return port
 }
 
-func runTray(iconData []byte, templateIconData []byte) {
+func runTray(iconData []byte) {
 	cfg = loadConfig()
 
 	// Start the admin UI server in the tray process
 	startAdminServer(cfg, getAdminPort())
 
 	systray.Run(func() {
-		if len(templateIconData) > 0 {
-			systray.SetTemplateIcon(templateIconData, iconData)
-		} else {
-			systray.SetIcon(iconData)
-		}
+		systray.SetIcon(iconData)
 		systray.SetTooltip("Prism")
 
 		running := isProxyRunning()
