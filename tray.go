@@ -49,7 +49,7 @@ func getAdminPort() string {
 	return port
 }
 
-func runTray(iconData []byte) {
+func runTray(iconData []byte, cleanup func()) {
 	cfg = loadConfig()
 
 	// Start the admin UI server in the tray process
@@ -217,6 +217,9 @@ func runTray(iconData []byte) {
 				case <-quitItem.ClickedCh:
 					stopProxyProcess()
 					closeLogFile()
+					if cleanup != nil {
+						cleanup()
+					}
 					systray.Quit()
 				}
 			}

@@ -26,15 +26,12 @@ func main() {
 		log.Println(err)
 		return
 	}
-	if cleanup != nil {
-		defer cleanup()
-	}
 
 	iconData, err := loadIconData()
 	if err != nil {
 		log.Fatalf("Failed to load icon: %v", err)
 	}
-	runTray(iconData)
+	runTray(iconData, cleanup)
 }
 
 func runProxyServer() {
