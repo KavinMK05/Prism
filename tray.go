@@ -56,7 +56,7 @@ func runTray(iconData []byte, cleanup func()) {
 	startAdminServer(cfg, getAdminPort())
 
 	systray.Run(func() {
-		systray.SetIcon(iconData)
+		setPlatformIcon(iconData)
 		systray.SetTooltip("Prism")
 
 		running := isProxyRunning()
