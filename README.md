@@ -1,14 +1,15 @@
 <div align="center">
 
-<img src="./docs/image 1.png" alt="Prism" width="120" />
+<img src="./docs/icon.png" alt="Prism" width="120" />
 
 # Prism
 
-### One proxy. Every LLM API format. A 5 MB Windows binary with zero dependencies.
+### One proxy. Every LLM API format. A 5 MB binary with zero dependencies. Runs on Windows & macOS.
 
 Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama native APIs in real time. Native system tray, built-in web admin UI, model remapping, and full SSE streaming. Zero config.
 
 [![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/prism)
+[![macOS](https://img.shields.io/badge/platform-macOS-silver?logo=apple)](https://github.com/user/prism)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
@@ -47,6 +48,7 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 | **Provider-per-model routing** | ✅ | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
+| **macOS native** | ✅ System tray + admin UI | ❌ Requires Python |
 
 ## How it works
 
@@ -85,8 +87,15 @@ Prism accepts requests in **Anthropic Messages** format (`/v1/messages`), **Open
 
 ### 1. Run Prism
 
+**Windows:**
 ```powershell
 ./prism.exe
+```
+
+**macOS:**
+```bash
+open Prism.app
+# or from the DMG: drag Prism.app to /Applications, then open it
 ```
 
 That's it. Prism starts on `http://127.0.0.1:11434` and a system tray icon appears. A web admin UI is available at `http://127.0.0.1:8765/admin`.
@@ -100,7 +109,7 @@ Open the admin UI from the system tray (right-click → **Open Settings**) or na
 3. For Codex, click **Add Codex Account** to sign in with your OpenAI account
 4. Prism auto-restarts with the new config
 
-You can also configure via `%APPDATA%\prism\config.json` — see [Providers](#providers) below.
+You can also configure via the config file — `%APPDATA%\prism\config.json` on Windows or `~/Library/Application Support/prism/config.json` on macOS — see [Providers](#providers) below.
 
 ### 3. Connect your tools
 
@@ -180,8 +189,8 @@ When launched without arguments, Prism runs as a system tray application with th
 | **Add Codex Account** | Start Codex OAuth flow to link an OpenAI account |
 | **Refresh Usage** | Refresh credit usage for all connected Codex accounts |
 | **Open Settings** | Open the web admin UI in your browser |
-| **Open Folder** | Open the proxy directory in Explorer |
-| **Edit Model Config** | Open `model_remapping.json` in Notepad |
+| **Open Folder** | Open the proxy directory in Explorer / Finder |
+| **Edit Model Config** | Open `model_remapping.json` in Notepad / TextEdit |
 | **Show Logs** | Open a live log viewer console |
 | **Set API Key** | Open the web admin UI to set keys |
 | **Quit** | Stop proxy and exit |
@@ -222,7 +231,7 @@ The **Stats** tab surfaces every metric about your proxy usage:
 | **Recent Requests** | Timestamped log of the last 50 requests with model, client, token counts, TPS, and duration |
 | **Data Management** | One-click **Clear All Stats** button to wipe all persisted history |
 
-All request data and TPS snapshots are persisted to `%APPDATA%\prism\stats.db` (SQLite, WAL mode) so the dashboard survives proxy restarts and page refreshes. Charts are rendered with Chart.js and automatically adapt to light/dark theme.
+All request data and TPS snapshots are persisted to the stats database (`%APPDATA%\prism\stats.db` on Windows, `~/Library/Application Support/prism/stats.db` on macOS — SQLite, WAL mode) so the dashboard survives proxy restarts and page refreshes. Charts are rendered with Chart.js and automatically adapt to light/dark theme.
 
 ### Client detection
 
@@ -244,7 +253,7 @@ You can override detection by setting the `X-Client-Name` header on your request
 
 ## Providers
 
-Prism supports multiple upstream providers, configured via the admin UI or `%APPDATA%\prism\config.json`:
+Prism supports multiple upstream providers, configured via the admin UI or the config file (`%APPDATA%\prism\config.json` on Windows, `~/Library/Application Support/prism/config.json` on macOS):
 
 | Provider | Config key | Upstream format | Endpoint |
 |---|---|---|---|
@@ -326,7 +335,7 @@ API keys in the config file take priority. If empty, Prism falls back to these e
 
 Prism can remap model names on the fly — useful when clients send model names that don't exist on your upstream provider.
 
-Configured via the admin UI (**Models** tab) or `%APPDATA%\prism\model_remapping.json`.
+Configured via the admin UI (**Models** tab) or the model remapping file (`%APPDATA%\prism\model_remapping.json` on Windows, `~/Library/Application Support/prism/model_remapping.json` on macOS).
 
 ### Default model
 
@@ -591,11 +600,13 @@ All six routing paths support real-time SSE streaming with correct event transla
 
 Thinking/reasoning blocks, tool calls, and images are fully supported in all streaming paths.
 
-## Auto-start on Windows
+## Auto-start at Login
 
-Prism can start automatically when you log in to Windows. Toggle this from the admin UI (**Proxy** tab → **Start at Login**) or manually:
+Prism can start automatically when you log in. Toggle this from the admin UI (**Proxy** tab → **Start at Login**).
 
-The auto-start feature uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required.
+**Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required.
+
+**macOS:** Uses a LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) to launch Prism at login.
 
 ## Limitations
 
@@ -607,21 +618,29 @@ The following features are not supported by upstream providers and are handled g
 
 ## Building from source
 
+**Windows:**
 ```powershell
-go-winres make --in resource.rc --out resource.syso; go build -ldflags="-H windowsgui" -o prism.exe .
+go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .
 ```
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
 
 To run in console mode (for debugging), build without the flag:
-
 ```powershell
 go build -o prism.exe .
 ./prism.exe --serve
 ```
 
+**macOS:**
+```bash
+CGO_ENABLED=1 go build -o prism .
+# Or use the build script to create a signed .app bundle and DMG:
+./scripts/build-darwin.sh
+```
+
 ## Verification
 
+**Windows (PowerShell):**
 ```powershell
 # 1. Start Prism
 ./prism.exe
@@ -649,6 +668,36 @@ Invoke-RestMethod -Uri "http://127.0.0.1:11434/v1/models" -Headers @{"Authorizat
 
 # 6. Test admin UI
 Invoke-RestMethod -Uri "http://127.0.0.1:8765/admin/status"
+```
+
+**macOS / Linux (bash):**
+```bash
+# 1. Start Prism
+open Prism.app
+
+# 2. Test Anthropic endpoint
+curl -s http://127.0.0.1:11434/v1/messages \
+  -H "x-api-key: prism" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.1:cloud","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+
+# 3. Test OpenAI Chat Completions endpoint
+curl -s http://127.0.0.1:11434/v1/chat/completions \
+  -H "Authorization: Bearer prism" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.1:cloud","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+
+# 4. Test OpenAI Responses API endpoint
+curl -s http://127.0.0.1:11434/v1/responses \
+  -H "Authorization: Bearer prism" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.1:cloud","input":"hi"}'
+
+# 5. Test model listing
+curl -s http://127.0.0.1:11434/v1/models -H "Authorization: Bearer prism"
+
+# 6. Test admin UI
+curl -s http://127.0.0.1:8765/admin/status
 ```
 
 ---

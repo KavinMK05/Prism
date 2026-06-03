@@ -4,20 +4,25 @@ on:
   push:
     branches:
       - main
+      - feat/*
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
     paths:
       - '**.go'
       - 'go.mod'
       - 'go.sum'
       - 'rsrc/**'
+      - 'Info.plist'
       - '.github/workflows/release.yml'
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,3 +53,120 @@ jobs:
         with:
           generate_release_notes: true
           files: prism.exe
+
+  build-macos:
+    runs-on: macos-latest
+    env:
+      HAS_SIGNING: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
+      HAS_NOTARIZATION: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Import Apple Code Signing Certificate
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
+
+      - name: Generate .icns icon
+        run: |
+          mkdir -p logo_icon.iconset
+          sips -z 16 16     icon.png --out logo_icon.iconset/icon_16x16.png
+          sips -z 32 32     icon.png --out logo_icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     icon.png --out logo_icon.iconset/icon_32x32.png
+          sips -z 64 64     icon.png --out logo_icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   icon.png --out logo_icon.iconset/icon_128x128.png
+          sips -z 256 256   icon.png --out logo_icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   icon.png --out logo_icon.iconset/icon_256x256.png
+          sips -z 512 512   icon.png --out logo_icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   icon.png --out logo_icon.iconset/icon_512x512.png
+          sips -z 1024 1024 icon.png --out logo_icon.iconset/icon_512x512@2x.png
+          iconutil -c icns logo_icon.iconset -o logo_icon.icns
+
+      - name: Build
+        run: CGO_ENABLED=1 go build -o prism .
+
+      - name: Package and sign .app bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          mkdir -p Prism.app/Contents/MacOS
+          mkdir -p Prism.app/Contents/Resources
+          cp prism Prism.app/Contents/MacOS/prism
+          cp Info.plist Prism.app/Contents/Info.plist
+          cp logo_icon.icns Prism.app/Contents/Resources/prism.icns
+          echo -n "APPL????" > Prism.app/Contents/PkgInfo
+          chmod +x Prism.app/Contents/MacOS/prism
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            codesign --force --deep --options runtime \
+              --entitlements Prism.entitlements \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              --timestamp \
+              Prism.app
+            codesign --verify --deep --strict Prism.app
+          else
+            echo "No signing identity, performing ad-hoc signing"
+            codesign --force --deep -s - Prism.app
+          fi
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          create-dmg \
+            --volname "Prism" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Prism.app" 175 120 \
+            --hide-extension "Prism.app" \
+            --app-drop-link 425 120 \
+            Prism-macOS.dmg \
+            Prism.app
+
+      - name: Sign DMG
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp Prism-macOS.dmg
+
+      - name: Notarize DMG
+        if: ${{ env.HAS_NOTARIZATION == 'true' }}
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          # Decode API key to a temporary file
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > AuthKey.p8
+          # Submit to Apple for notarization
+          xcrun notarytool submit Prism-macOS.dmg \
+            --key AuthKey.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          # Clean up the sensitive key file immediately
+          rm -f AuthKey.p8
+          # Staple the notarization ticket
+          xcrun stapler staple Prism-macOS.dmg
+
+      - name: Upload artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Prism-macOS
+          path: Prism-macOS.dmg
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: Prism-macOS.dmg

@@ -1658,7 +1658,7 @@
       <h3>Start at Login</h3>
       <div class="toggle-row">
         <div>
-          <div class="toggle-label">Auto-start with Windows</div>
+          <div class="toggle-label" id="autoStartLabel">Auto-start at Login</div>
           <div class="toggle-desc">Launch Prism automatically when you log in</div>
         </div>
         <label class="toggle-switch">
@@ -2104,6 +2104,8 @@ async function loadAutoStart() {
   try {
     const data = await api('/autostart');
     document.getElementById('autoStartToggle').checked = data.enabled;
+    const label = document.getElementById('autoStartLabel');
+    if (label) label.textContent = /Mac|iPhone|iPad/.test(navigator.userAgent) ? 'Auto-start at Login' : 'Auto-start with Windows';
   } catch(e) {}
 }
 

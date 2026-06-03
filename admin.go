@@ -9,17 +9,14 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sys/windows/registry"
 )
 
 //go:embed admin.html
-//go:embed docs/icon.png
+//go:embed icon.png
 var adminFS embed.FS
 
 var (
@@ -317,7 +314,7 @@ func startAdminServer(cfg *Config, port string) {
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		icon, _ := adminFS.ReadFile("docs/icon.png")
+		icon, _ := adminFS.ReadFile("icon.png")
 		w.Write(icon)
 	})
 
@@ -773,38 +770,6 @@ func handleAutoStart(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
-}
-
-func isAutoStartEnabled() bool {
-	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.READ)
-	if err != nil {
-		return false
-	}
-	defer k.Close()
-	_, _, err = k.GetStringValue("Prism")
-	return err == nil
-}
-
-func setAutoStart(enable bool) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	if enable {
-		exePath, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		return k.SetStringValue("Prism", exePath)
-	}
-	return k.DeleteValue("Prism")
-}
-
-func openAdminUI(port string) {
-	url := fmt.Sprintf("http://127.0.0.1:%s/admin", port)
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	cmd.Start()
 }
 
 // notifyTrayConfigChanged signals the tray to reload config and update UI

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,12 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/windows"
 )
-
-//go:embed logo_icon.ico
-var iconFS embed.FS
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--serve" {
@@ -27,29 +21,22 @@ func main() {
 		return
 	}
 
-	// Single-instance guard for the tray process
-	mutexName, _ := windows.UTF16PtrFromString("PrismSingleInstance")
-	mutex, err := windows.CreateMutex(nil, false, mutexName)
+	cleanup, err := acquireInstanceLock()
 	if err != nil {
-		log.Fatalf("Failed to create mutex: %v", err)
-	}
-	defer windows.CloseHandle(mutex)
-
-	if windows.GetLastError() == windows.ERROR_ALREADY_EXISTS {
-		log.Println("Prism is already running")
+		log.Println(err)
 		return
 	}
 
-	iconData, err := embed.FS.ReadFile(iconFS, "logo_icon.ico")
+	iconData, err := loadIconData()
 	if err != nil {
 		log.Fatalf("Failed to load icon: %v", err)
 	}
-	runTray(iconData)
+	runTray(iconData, cleanup)
 }
 
 func runProxyServer() {
 	// Open log file directly instead of relying on stderr redirection
-	logDir := filepath.Join(os.Getenv("APPDATA"), "prism")
+	logDir := getLogDir()
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "proxy.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
