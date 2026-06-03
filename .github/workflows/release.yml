@@ -64,13 +64,11 @@ jobs:
           go-version-file: go.mod
 
       - name: Import Apple Code Signing Certificate
-        if: ${{ env.APPLE_CERT_P12_BASE64 != '' }}
+        if: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
-        env:
-          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
 
       - name: Generate .icns icon
         run: |
@@ -102,14 +100,12 @@ jobs:
           echo -n "APPL????" > Prism.app/Contents/PkgInfo
           chmod +x Prism.app/Contents/MacOS/prism
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
-            echo "Signing .app with Developer ID: $APPLE_SIGNING_IDENTITY"
             codesign --force --deep --options runtime \
               --entitlements Prism.entitlements \
               --sign "$APPLE_SIGNING_IDENTITY" \
               --timestamp \
               Prism.app
-            echo "Verifying .app signature..."
-            codesign --verify --deep --strict --verbose=2 Prism.app
+            codesign --verify --deep --strict Prism.app
           else
             echo "No signing identity, performing ad-hoc signing"
             codesign --force --deep -s - Prism.app
@@ -132,15 +128,14 @@ jobs:
             Prism.app
 
       - name: Sign DMG
-        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          echo "Signing DMG with Developer ID: $APPLE_SIGNING_IDENTITY"
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp Prism-macOS.dmg
 
       - name: Notarize DMG
-        if: ${{ env.APPLE_API_KEY_BASE64 != '' }}
+        if: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
