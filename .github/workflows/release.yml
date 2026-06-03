@@ -56,6 +56,9 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    env:
+      HAS_SIGNING: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
+      HAS_NOTARIZATION: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +67,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Import Apple Code Signing Certificate
-        if: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
+        if: ${{ env.HAS_SIGNING == 'true' }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
@@ -128,14 +131,14 @@ jobs:
             Prism.app
 
       - name: Sign DMG
-        if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ env.HAS_SIGNING == 'true' }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp Prism-macOS.dmg
 
       - name: Notarize DMG
-        if: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
+        if: ${{ env.HAS_NOTARIZATION == 'true' }}
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
