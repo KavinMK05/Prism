@@ -38,7 +38,13 @@ chmod +x Prism.app/Contents/MacOS/prism
 SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 if [ -n "$SIGNING_IDENTITY" ]; then
     echo "Signing with Developer ID: $SIGNING_IDENTITY"
-    codesign --force --deep --options runtime --entitlements Prism.entitlements --sign "$SIGNING_IDENTITY" Prism.app
+    codesign --force --deep --options runtime \
+        --entitlements Prism.entitlements \
+        --sign "$SIGNING_IDENTITY" \
+        --timestamp \
+        Prism.app
+    echo "Verifying signature..."
+    codesign --verify --deep --strict --verbose=2 Prism.app
 else
     echo "No signing identity set, performing ad-hoc signing"
     codesign --force --deep -s - Prism.app
