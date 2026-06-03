@@ -63,35 +63,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Create temporary keychain and import certificate
-        if: secrets.APPLE_CERTIFICATE != ''
+      - name: Import Apple Code Signing Certificate
+        if: ${{ env.APPLE_CERT_P12_BASE64 != '' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-        run: |
-          # Decode certificate from base64
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-
-          # Create a temporary keychain (isolated from system keychain)
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-
-          # Import certificate into the temporary keychain
-          security import certificate.p12 -k build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign
-
-          # Allow codesign to access the keychain without prompts
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" build.keychain
-
-          # Verify the identity was imported
-          security find-identity -v -p codesigning build.keychain
-
-          # Delete the certificate file immediately — no need to keep it on disk
-          rm -f certificate.p12
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
 
       - name: Generate .icns icon
         run: |
@@ -123,13 +102,13 @@ jobs:
           echo -n "APPL????" > Prism.app/Contents/PkgInfo
           chmod +x Prism.app/Contents/MacOS/prism
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
-            echo "Signing with Developer ID: $APPLE_SIGNING_IDENTITY"
+            echo "Signing .app with Developer ID: $APPLE_SIGNING_IDENTITY"
             codesign --force --deep --options runtime \
               --entitlements Prism.entitlements \
               --sign "$APPLE_SIGNING_IDENTITY" \
               --timestamp \
               Prism.app
-            echo "Verifying signature..."
+            echo "Verifying .app signature..."
             codesign --verify --deep --strict --verbose=2 Prism.app
           else
             echo "No signing identity, performing ad-hoc signing"
@@ -143,24 +122,33 @@ jobs:
           ln -s /Applications dmg_temp/Applications
           hdiutil create -volname "Prism" -srcfolder dmg_temp -ov -format UDZO Prism-macOS.dmg
 
-      - name: Notarize DMG
-        if: ${{ secrets.APPLE_ID != '' }}
+      - name: Sign DMG
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          xcrun notarytool submit Prism-macOS.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple Prism-macOS.dmg
+          echo "Signing DMG with Developer ID: $APPLE_SIGNING_IDENTITY"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp Prism-macOS.dmg
 
-      - name: Cleanup keychain
-        if: always() && secrets.APPLE_CERTIFICATE != ''
+      - name: Notarize DMG
+        if: ${{ env.APPLE_API_KEY_BASE64 != '' }}
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
-          security delete-keychain build.keychain 2>/dev/null || true
+          # Decode API key to a temporary file
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > AuthKey.p8
+          # Submit to Apple for notarization
+          xcrun notarytool submit Prism-macOS.dmg \
+            --key AuthKey.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          # Clean up the sensitive key file immediately
+          rm -f AuthKey.p8
+          # Staple the notarization ticket
+          xcrun stapler staple Prism-macOS.dmg
 
       - name: Upload artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
