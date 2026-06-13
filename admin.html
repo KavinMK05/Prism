@@ -314,38 +314,14 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    cursor: pointer;
+    cursor: default;
     transition: all 0.15s;
   }
   .provider-card:hover {
     border-color: var(--border-strong);
     background: var(--surface-hover);
   }
-  .provider-card.active {
-    border-color: var(--border-strong);
-    background: var(--surface-hover);
-  }
-  .provider-card .radio {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid var(--border-strong);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: border-color 0.15s;
-  }
-  .provider-card.active .radio {
-    border-color: var(--text);
-  }
-  .provider-card.active .radio::after {
-    content: '';
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--text);
-  }
+
   .provider-card .info { flex: 1; }
   .provider-card .info .name {
     font-size: 14px;
@@ -369,9 +345,10 @@
     margin-left: 8px;
     vertical-align: middle;
   }
+  .provider-card .edit-icon,
   .provider-card.custom-provider .delete-icon {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border-radius: var(--radius-sm);
     border: none;
     background: transparent;
@@ -380,21 +357,23 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0;
+    opacity: 1;
     transition: opacity 0.15s, color 0.15s, background 0.15s;
     flex-shrink: 0;
     margin-left: 4px;
   }
-  .provider-card.custom-provider:hover .delete-icon {
-    opacity: 1;
+  .provider-card .edit-icon svg,
+  .provider-card.custom-provider .delete-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .provider-card .edit-icon:hover {
+    color: var(--text);
+    background: var(--surface-hover);
   }
   .provider-card.custom-provider .delete-icon:hover {
     color: var(--danger);
     background: rgba(239,68,68,0.08);
-  }
-  .provider-card.custom-provider .delete-icon svg {
-    width: 16px;
-    height: 16px;
   }
 
   /* ── Modal / Dialog ── */
@@ -1116,6 +1095,100 @@
     to { transform: rotate(360deg); }
   }
 
+  /* ── Token Usage Heatmap ── */
+  .heatmap-card { padding-bottom: 20px; }
+  .heatmap-wrapper {
+    width: 100%;
+    overflow: visible;
+    padding-bottom: 4px;
+  }
+  .heatmap-grid {
+    display: grid;
+    grid-template-columns: repeat(53, 1fr);
+    grid-template-rows: repeat(7, 1fr);
+    gap: 3px;
+    width: 100%;
+  }
+  .heatmap-cell {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    border-radius: 2px;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.15s;
+    position: relative;
+  }
+  .heatmap-cell:hover {
+    transform: scale(1.15);
+    border-color: var(--text-tertiary);
+    z-index: 1;
+  }
+  /* Light theme */
+  .heatmap-cell.level-0 { background: var(--surface-hover); border-color: var(--border); }
+  .heatmap-cell.level-1 { background: rgba(139, 92, 246, 0.18); border-color: rgba(139, 92, 246, 0.18); }
+  .heatmap-cell.level-2 { background: rgba(139, 92, 246, 0.35); border-color: rgba(139, 92, 246, 0.3); }
+  .heatmap-cell.level-3 { background: rgba(139, 92, 246, 0.55); border-color: rgba(139, 92, 246, 0.45); }
+  .heatmap-cell.level-4 { background: rgba(139, 92, 246, 0.75); border-color: rgba(139, 92, 246, 0.6); }
+  .heatmap-cell.level-5 { background: rgba(139, 92, 246, 0.95); border-color: rgba(139, 92, 246, 0.85); }
+  /* Dark theme */
+  [data-theme="dark"] .heatmap-cell.level-0 { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.08); }
+  [data-theme="dark"] .heatmap-cell.level-1 { background: rgba(139, 92, 246, 0.25); border-color: rgba(139, 92, 246, 0.25); }
+  [data-theme="dark"] .heatmap-cell.level-2 { background: rgba(139, 92, 246, 0.42); border-color: rgba(139, 92, 246, 0.4); }
+  [data-theme="dark"] .heatmap-cell.level-3 { background: rgba(139, 92, 246, 0.62); border-color: rgba(139, 92, 246, 0.55); }
+  [data-theme="dark"] .heatmap-cell.level-4 { background: rgba(139, 92, 246, 0.82); border-color: rgba(139, 92, 246, 0.75); }
+  [data-theme="dark"] .heatmap-cell.level-5 { background: rgba(139, 92, 246, 1); border-color: rgba(139, 92, 246, 0.9); }
+
+  .heatmap-tooltip {
+    position: fixed;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    z-index: 9999;
+  }
+  .heatmap-tooltip.visible { opacity: 1; }
+  .heatmap-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--border-strong);
+  }
+  .heatmap-tooltip.above::after {
+    top: 100%;
+    border-top-color: var(--border-strong);
+    border-bottom-color: transparent;
+  }
+  .heatmap-tooltip.below::after {
+    top: auto;
+    bottom: 100%;
+    border-top-color: transparent;
+    border-bottom-color: var(--border-strong);
+  }
+  .heatmap-tooltip-date {
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .heatmap-tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .heatmap-tooltip-label { color: var(--text-secondary); }
+  .heatmap-tooltip-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
   .client-card-header {
     display: flex;
     align-items: flex-start;
@@ -1301,11 +1374,11 @@
 
     <div class="card" id="customProviderEditCard" style="display:none">
       <h3 id="customEditTitle">Edit Provider</h3>
-      <div class="field">
+      <div class="field" id="customEditNameField">
         <label>Name</label>
         <input type="text" id="customEditName" placeholder="My Provider">
       </div>
-      <div class="field">
+      <div class="field" id="customEditBaseURLField">
         <label>Base URL</label>
         <input type="text" id="customEditBaseURL" placeholder="https://api.example.com">
       </div>
@@ -1320,7 +1393,7 @@
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="saveEditCustomProvider()">Save Changes</button>
-        <button class="btn btn-danger" onclick="deleteCustomProvider()">Delete Provider</button>
+        <button class="btn btn-danger" id="customEditDeleteBtn" onclick="deleteCustomProvider()">Delete Provider</button>
       </div>
     </div>
 
@@ -1474,6 +1547,16 @@
     <div class="stats-filter-bar" id="statsFilterBar">
       <div class="filter-row center">
         <div class="filter-group">
+          <div class="stats-filter-label">Time Range</div>
+          <select id="statsTimeRange" onchange="onStatsTimeRangeChange()">
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+            <option value="90">Last 90 Days</option>
+            <option value="all">All Time</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div class="filter-group">
           <div class="stats-filter-label">Provider</div>
           <select id="statsFilterProvider" onchange="loadStatsHistory()"><option value="">All Providers</option></select>
         </div>
@@ -1486,7 +1569,7 @@
           <select id="statsFilterClient" onchange="loadStatsHistory()"><option value="">All Clients</option></select>
         </div>
       </div>
-      <div class="filter-row between">
+      <div class="filter-row between" id="statsDateRow" style="display:none">
         <div style="display:flex;gap:12px;align-items:center;">
           <div class="filter-group">
             <div class="stats-filter-label">From</div>
@@ -1502,8 +1585,17 @@
         </button>
       </div>
     </div>
-
     <div class="stats-layout">
+      <!-- Token Usage Heatmap -->
+      <div class="card heatmap-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Token Usage Heatmap</span>
+        </div>
+        <div class="heatmap-wrapper" id="heatmapWrapper">
+          <div class="heatmap-grid" id="heatmapGrid"></div>
+        </div>
+      </div>
+
       <!-- Token Usage -->
       <div class="chart-card">
         <div class="chart-card-header">
@@ -1576,12 +1668,6 @@
             <div class="client-card-title">Usage by Client</div>
             <div class="client-card-subtitle">Track API usage across your clients and tools.</div>
           </div>
-          <select class="client-time-select" id="clientTimeRange" onchange="onClientTimeRangeChange()">
-            <option value="7">Last 7 Days</option>
-            <option value="30">Last 30 Days</option>
-            <option value="90">Last 90 Days</option>
-            <option value="all">All Time</option>
-          </select>
         </div>
         <div class="client-summary-row">
           <div class="client-summary-item">
@@ -1824,6 +1910,13 @@ function renderProviderCards() {
 
   const container = document.getElementById('providerCards');
   container.innerHTML = providers.map(p => {
+    const editBtn = `
+      <button type="button" class="edit-icon" onclick="event.stopPropagation(); openEditProvider('${p.id}')" title="Edit provider">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+        </svg>
+      </button>
+    `;
     const deleteBtn = p.isCustom ? `
       <button type="button" class="delete-icon" onclick="event.stopPropagation(); promptDeleteProvider('${p.id}')" title="Delete provider">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1832,30 +1925,18 @@ function renderProviderCards() {
       </button>
     ` : '';
     return `
-    <div class="provider-card ${c.default_provider === p.id ? 'active' : ''} ${p.isCustom ? 'custom-provider' : ''}" onclick="selectProvider('${p.id}')">
-      <div class="radio"></div>
+    <div class="provider-card ${p.isCustom ? 'custom-provider' : ''}">
       <div class="info">
         <div class="name">${esc(p.name)}</div>
         <div class="url">${esc(p.url)}</div>
       </div>
+      ${editBtn}
       ${deleteBtn}
     </div>
   `;
   }).join('');
 
-  // Show edit card if a custom provider is active
-  const activeCustom = (c.custom_providers || []).find(p => p.id === c.default_provider);
-  const editCard = document.getElementById('customProviderEditCard');
-  if (activeCustom) {
-    editCard.style.display = '';
-    document.getElementById('customEditTitle').textContent = 'Edit: ' + activeCustom.name;
-    document.getElementById('customEditName').value = activeCustom.name;
-    document.getElementById('customEditBaseURL').value = activeCustom.base_url || '';
-    document.getElementById('customEditAPIKey').value = '';
-    document.getElementById('customEditAPIKey').placeholder = activeCustom.api_key ? 'Leave blank to keep current key' : 'Enter API key';
-  } else {
-    editCard.style.display = 'none';
-  }
+  document.getElementById('customProviderEditCard').style.display = 'none';
 }
 
 function renderAPIKey() {
@@ -1896,19 +1977,24 @@ function maskKey(k) {
   return k.slice(0,4) + '…' + k.slice(-4);
 }
 
-async function selectProvider(id) {
-  currentConfig.default_provider = id;
-  try {
-    await api('/config', {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(currentConfig)
-    });
-    toast('Provider switched');
-  } catch(e) {
-    toast('Failed to switch provider: ' + e.message, 'error');
-  }
-  loadConfig();
+let editingProviderId = null;
+
+function openEditProvider(id) {
+  const provider = getProviderById(id);
+  if (!provider) return;
+  editingProviderId = id;
+
+  const isBuiltIn = id === 'ollama_cloud' || id === 'opencode_go';
+  document.getElementById('customEditNameField').style.display = isBuiltIn ? 'none' : '';
+  document.getElementById('customEditBaseURLField').style.display = isBuiltIn ? 'none' : '';
+  document.getElementById('customEditDeleteBtn').style.display = isBuiltIn ? 'none' : '';
+
+  document.getElementById('customEditTitle').textContent = 'Edit: ' + provider.name;
+  document.getElementById('customEditName').value = provider.name;
+  document.getElementById('customEditBaseURL').value = provider.base_url || '';
+  document.getElementById('customEditAPIKey').value = '';
+  document.getElementById('customEditAPIKey').placeholder = provider.api_key ? 'Leave blank to keep current key' : 'Enter API key';
+  document.getElementById('customProviderEditCard').style.display = '';
 }
 
 function normalizeURL(url) {
@@ -1929,6 +2015,9 @@ async function addCustomProvider() {
   if (!baseURL) { toast('Base URL is required', 'error'); return; }
 
   const id = 'custom_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') + '_' + Math.random().toString(36).substr(2, 6);
+
+  const originalProviders = (currentConfig.custom_providers || []).slice();
+  const originalActive = currentConfig.default_provider;
 
   if (!currentConfig.custom_providers) currentConfig.custom_providers = [];
   currentConfig.custom_providers.push({
@@ -1951,32 +2040,32 @@ async function addCustomProvider() {
     document.getElementById('addProviderName').value = '';
     document.getElementById('addProviderBaseURL').value = '';
     document.getElementById('addProviderAPIKey').value = '';
+    await loadConfig();
   } catch(e) {
     toast('Failed to add provider: ' + e.message, 'error');
-    // Revert the local change
-    currentConfig.custom_providers = currentConfig.custom_providers.filter(p => p.id !== id);
-    currentConfig.default_provider = 'ollama_cloud';
+    currentConfig.custom_providers = originalProviders;
+    currentConfig.default_provider = originalActive;
   }
-  loadConfig();
 }
 
 async function saveEditCustomProvider() {
-  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.default_provider);
-  if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
+  const provider = getProviderById(editingProviderId);
+  if (!provider) { toast('No provider selected', 'error'); return; }
 
-  const newName = document.getElementById('customEditName').value.trim();
-  const newBaseURL = normalizeURL(document.getElementById('customEditBaseURL').value.trim());
+  const isBuiltIn = editingProviderId === 'ollama_cloud' || editingProviderId === 'opencode_go';
+  const newName = isBuiltIn ? provider.name : document.getElementById('customEditName').value.trim();
+  const newBaseURL = isBuiltIn ? provider.base_url : normalizeURL(document.getElementById('customEditBaseURL').value.trim());
   const newAPIKey = document.getElementById('customEditAPIKey').value.trim();
 
-  if (!newName) { toast('Provider name is required', 'error'); return; }
+  if (!isBuiltIn && !newName) { toast('Provider name is required', 'error'); return; }
 
-  // Save original values for revert
-  const origName = activeCustom.name;
-  const origBaseURL = activeCustom.base_url;
+  const origName = provider.name;
+  const origBaseURL = provider.base_url;
+  const origAPIKey = provider.api_key;
 
-  activeCustom.name = newName;
-  activeCustom.base_url = newBaseURL;
-  if (newAPIKey) activeCustom.api_key = newAPIKey;
+  provider.name = newName;
+  provider.base_url = newBaseURL;
+  if (newAPIKey) provider.api_key = newAPIKey;
 
   try {
     await api('/config', {
@@ -1985,13 +2074,15 @@ async function saveEditCustomProvider() {
       body: JSON.stringify(currentConfig)
     });
     toast('Provider updated');
+    editingProviderId = null;
+    document.getElementById('customProviderEditCard').style.display = 'none';
+    await loadConfig();
   } catch(e) {
     toast('Failed to update provider: ' + e.message, 'error');
-    // Revert
-    activeCustom.name = origName;
-    activeCustom.base_url = origBaseURL;
+    provider.name = origName;
+    provider.base_url = origBaseURL;
+    provider.api_key = origAPIKey;
   }
-  loadConfig();
 }
 
 let pendingDeleteProviderId = null;
@@ -2044,13 +2135,18 @@ async function confirmDeleteCustomProvider() {
     currentConfig.custom_providers = originalProviders;
     currentConfig.default_provider = originalActive;
   }
-  loadConfig();
+  pendingDeleteProviderId = null;
+  editingProviderId = null;
+  document.getElementById('customProviderEditCard').style.display = 'none';
+  await loadConfig();
 }
 
 async function deleteCustomProvider() {
-  const activeCustom = (currentConfig.custom_providers || []).find(p => p.id === currentConfig.default_provider);
-  if (!activeCustom) { toast('No custom provider selected', 'error'); return; }
-  promptDeleteProvider(activeCustom.id);
+  const provider = getProviderById(editingProviderId);
+  if (!provider) { toast('No provider selected', 'error'); return; }
+  promptDeleteProvider(provider.id);
+  editingProviderId = null;
+  document.getElementById('customProviderEditCard').style.display = 'none';
 }
 
 async function saveAPIKey() {
@@ -2915,6 +3011,8 @@ function initStatsFilters() {
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   document.getElementById('statsFilterFrom').value = fmtLocalDate(sevenDaysAgo);
   document.getElementById('statsFilterTo').value = fmtLocalDate(now);
+  document.getElementById('statsTimeRange').value = '7';
+  document.getElementById('statsDateRow').style.display = 'none';
   loadStatsFilters();
 }
 
@@ -2981,9 +3079,186 @@ async function loadStatsHistory() {
     renderMonthlyChart(data.monthly_tokens || []);
     renderTPSHistory(data.tps_history || [], data.by_model || []);
     renderClientStats(data.by_client || null, false);
+    renderHeatmap(data.heatmap_tokens || []);
   } catch(e) {
     console.error('Failed to load stats history:', e);
   }
+}
+
+function renderHeatmap(data) {
+  const grid = document.getElementById('heatmapGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  // Use a single global tooltip element so it's never clipped by the wrapper.
+  let tooltip = document.getElementById('heatmapGlobalTooltip');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'heatmapGlobalTooltip';
+    tooltip.className = 'heatmap-tooltip';
+    document.body.appendChild(tooltip);
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const endDate = new Date(today);
+  endDate.setDate(endDate.getDate() + 1); // include today
+  const rawStart = new Date(endDate);
+  rawStart.setDate(rawStart.getDate() - 365);
+
+  // Align start to the previous Sunday so the top row is always Sundays
+  const startDate = new Date(rawStart);
+  startDate.setDate(startDate.getDate() - startDate.getDay());
+
+  // Build a map of YYYY-MM-DD -> {input, output, total}
+  const map = {};
+  data.forEach(d => {
+    if (!d.date) return;
+    map[d.date] = {
+      input: Number(d.input) || 0,
+      output: Number(d.output) || 0,
+      total: Number(d.total) || (Number(d.input || 0) + Number(d.output || 0))
+    };
+  });
+
+  // Generate sequential days from aligned Sunday through today
+  const allDays = [];
+  for (let d = new Date(startDate); d < endDate; d.setDate(d.getDate() + 1)) {
+    const iso = fmtLocalDate(d);
+    allDays.push({ date: iso, ...(map[iso] || { input: 0, output: 0, total: 0 }) });
+  }
+
+  // Compute relative intensity based on the max day in the visible window
+  const maxTotal = Math.max(...allDays.map(d => d.total), 1);
+
+  // Organize into weeks (each week = 7 days, Sunday first)
+  const weeks = [];
+  for (let i = 0; i < allDays.length; i += 7) {
+    weeks.push(allDays.slice(i, i + 7));
+  }
+  while (weeks.length < 53) weeks.push([]);
+
+  // Render in row-major order: all Sundays across weeks, then Mondays, etc.
+  for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+    for (let weekIdx = 0; weekIdx < 53; weekIdx++) {
+      const day = weeks[weekIdx][dayIdx];
+      if (!day) {
+        const empty = document.createElement('div');
+        empty.className = 'heatmap-cell level-0';
+        empty.style.visibility = 'hidden';
+        empty.style.pointerEvents = 'none';
+        grid.appendChild(empty);
+        continue;
+      }
+      const level = getHeatmapLevel(day.total, maxTotal);
+      const cell = document.createElement('div');
+      cell.className = 'heatmap-cell level-' + level;
+      cell.style.background = getHeatmapColor(level);
+      cell.style.borderColor = getHeatmapBorderColor(level);
+      cell.dataset.date = day.date;
+      cell.dataset.total = day.total;
+      cell.dataset.input = day.input;
+      cell.dataset.output = day.output;
+      cell.addEventListener('mouseenter', () => showHeatmapTooltip(tooltip, cell, day));
+      cell.addEventListener('mouseleave', () => hideHeatmapTooltip(tooltip));
+      cell.addEventListener('mousemove', () => positionHeatmapTooltip(tooltip, cell));
+      grid.appendChild(cell);
+    }
+  }
+}
+
+function showHeatmapTooltip(tooltip, cell, day) {
+  tooltip.innerHTML = `
+    <div class="heatmap-tooltip-date">${esc(formatHeatmapDate(day.date))}</div>
+    <div class="heatmap-tooltip-row"><span class="heatmap-tooltip-label">Total</span><span class="heatmap-tooltip-value">${formatNumber(day.total)}</span></div>
+    <div class="heatmap-tooltip-row"><span class="heatmap-tooltip-label">Input</span><span class="heatmap-tooltip-value input-color">${formatNumber(day.input)}</span></div>
+    <div class="heatmap-tooltip-row"><span class="heatmap-tooltip-label">Output</span><span class="heatmap-tooltip-value output-color">${formatNumber(day.output)}</span></div>
+  `;
+  tooltip.classList.add('visible');
+  positionHeatmapTooltip(tooltip, cell);
+}
+
+function hideHeatmapTooltip(tooltip) {
+  tooltip.classList.remove('visible');
+}
+
+function positionHeatmapTooltip(tooltip, cell) {
+  const rect = cell.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const margin = 8;
+  let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+  let top = rect.top - tooltipRect.height - margin;
+  let placement = 'above';
+
+  // Flip below if not enough space above
+  if (top < margin) {
+    top = rect.bottom + margin;
+    placement = 'below';
+  }
+
+  // Clamp horizontally within viewport
+  left = Math.max(margin, Math.min(left, window.innerWidth - tooltipRect.width - margin));
+
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+  tooltip.classList.remove('above', 'below');
+  tooltip.classList.add(placement);
+}
+
+function getHeatmapLevel(total, maxTotal) {
+  total = Number(total) || 0;
+  if (total <= 0 || maxTotal <= 0) return 0;
+  const ratio = total / maxTotal;
+  if (ratio <= 0.05) return 1;   // up to 5% of max
+  if (ratio <= 0.20) return 2;  // up to 20% of max
+  if (ratio <= 0.45) return 3;  // up to 45% of max
+  if (ratio <= 0.75) return 4;  // up to 75% of max
+  return 5;                     // top quartile
+}
+
+function getHeatmapColor(level) {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const colors = isDark ? [
+    'rgba(255,255,255,0.06)',
+    'rgba(139, 92, 246, 0.25)',
+    'rgba(139, 92, 246, 0.42)',
+    'rgba(139, 92, 246, 0.62)',
+    'rgba(139, 92, 246, 0.82)',
+    'rgba(139, 92, 246, 1)'
+  ] : [
+    'var(--surface-hover)',
+    'rgba(139, 92, 246, 0.18)',
+    'rgba(139, 92, 246, 0.35)',
+    'rgba(139, 92, 246, 0.55)',
+    'rgba(139, 92, 246, 0.75)',
+    'rgba(139, 92, 246, 0.95)'
+  ];
+  return colors[level] || colors[0];
+}
+
+function getHeatmapBorderColor(level) {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const borders = isDark ? [
+    'rgba(255,255,255,0.08)',
+    'rgba(139, 92, 246, 0.25)',
+    'rgba(139, 92, 246, 0.4)',
+    'rgba(139, 92, 246, 0.55)',
+    'rgba(139, 92, 246, 0.75)',
+    'rgba(139, 92, 246, 0.9)'
+  ] : [
+    'var(--border)',
+    'rgba(139, 92, 246, 0.18)',
+    'rgba(139, 92, 246, 0.3)',
+    'rgba(139, 92, 246, 0.45)',
+    'rgba(139, 92, 246, 0.6)',
+    'rgba(139, 92, 246, 0.85)'
+  ];
+  return borders[level] || borders[0];
+}
+
+function formatHeatmapDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function renderDailyChart(data) {
@@ -3141,7 +3416,7 @@ function renderTPSHistory(tpsData, byModel) {
       const color = chartColors[i % chartColors.length];
       return `<tr>
         <td><span class="model-dot" style="background:${color}"></span>${esc(m.model)}</td>
-        <td>${esc(m.provider)}</td>
+        <td>${esc(getProviderDisplayName(m.provider))}</td>
         <td>${m.avg_tps.toFixed(1)}</td>
         <td>${m.max_tps.toFixed(1)}</td>
       </tr>`;
@@ -3232,8 +3507,14 @@ async function confirmClearStats() {
 
 // ── Client Stats ──
 
-function onClientTimeRangeChange() {
-  const range = document.getElementById('clientTimeRange').value;
+function onStatsTimeRangeChange() {
+  const range = document.getElementById('statsTimeRange').value;
+  const dateRow = document.getElementById('statsDateRow');
+  if (range === 'custom') {
+    dateRow.style.display = '';
+    return;
+  }
+  dateRow.style.display = 'none';
   const now = new Date();
   let fromDate;
   if (range === 'all') {

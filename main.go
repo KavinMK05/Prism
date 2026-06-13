@@ -79,6 +79,17 @@ func runProxyServer() {
 	// Start the admin UI server in the tray process
 	// (not in the --serve proxy process)
 	mux := http.NewServeMux()
+
+	// Internal endpoint to hot-reload model remapping without restarting the process
+	mux.HandleFunc("/__reload_model_remap__", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		router.ReloadModelRemapping()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/", loggingMiddleware(handleRoot))
 	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, router.HandleMessages)))
 	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(proxyAPIKey, handleCountTokens)))

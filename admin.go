@@ -314,7 +314,12 @@ func startAdminServer(cfg *Config, port string) {
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		icon, _ := adminFS.ReadFile("icon.png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		icon, err := adminFS.ReadFile("icon.png")
+		if err != nil {
+			http.Error(w, "icon not found", http.StatusNotFound)
+			return
+		}
 		w.Write(icon)
 	})
 
@@ -605,13 +610,19 @@ func startAdminServer(cfg *Config, port string) {
 		byModel, _ := getModelHistory(fromUnix, toUnix, provider, model, client)
 		byClient, _ := getClientHistory(fromUnix, toUnix, provider, model, client)
 
+		// Heatmap always shows the last 365 days, filtered by provider/model/client
+		heatmapTo := now.Add(24 * time.Hour).Unix()
+		heatmapFrom := now.AddDate(0, 0, -365).Unix()
+		heatmap, _ := getDailyTokens(heatmapFrom, heatmapTo, provider, model, client)
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"daily_tokens":   daily,
-			"monthly_tokens": monthly,
-			"tps_history":    tpsHist,
-			"by_model":       byModel,
-			"by_client":      byClient,
+			"daily_tokens":    daily,
+			"monthly_tokens":  monthly,
+			"tps_history":     tpsHist,
+			"by_model":        byModel,
+			"by_client":       byClient,
+			"heatmap_tokens":  heatmap,
 		})
 	})
 
@@ -795,15 +806,26 @@ func notifyTrayConfigChanged() {
 	}
 }
 
-// reloadProxyModelRemap reloads the model remapping into the running proxy
+// reloadProxyModelRemap signals the running proxy process to hot-reload the model remapping.
 func reloadProxyModelRemap() {
-	// The proxy process will pick up changes on next restart
-	if isProxyRunning() {
-		stopProxyProcess()
-		time.Sleep(500 * time.Millisecond)
-		startProxyProcess()
-		time.Sleep(500 * time.Millisecond)
-		updateMenu(isProxyRunning())
+	if !isProxyRunning() {
+		return
+	}
+
+	port := os.Getenv("PRISM_PORT")
+	if port == "" {
+		port = "11434"
+	}
+
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%s/__reload_model_remap__", port), "application/json", nil)
+	if err != nil {
+		log.Printf("Failed to signal model remap reload: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Model remap reload returned status %d", resp.StatusCode)
 	}
 }
 

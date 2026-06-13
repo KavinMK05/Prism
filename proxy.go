@@ -8,26 +8,37 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 type ProviderRouter struct {
 	cfg        *Config
-	modelRemap *ModelRemapping
+	modelRemap atomic.Pointer[ModelRemapping]
 	client     *http.Client
 }
 
 func NewProviderRouter(cfg *Config, modelRemap *ModelRemapping) *ProviderRouter {
-	return &ProviderRouter{
-		cfg:        cfg,
-		modelRemap: modelRemap,
-		client:     &http.Client{Timeout: 10 * time.Minute},
+	pr := &ProviderRouter{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 10 * time.Minute},
 	}
+	pr.modelRemap.Store(modelRemap)
+	return pr
+}
+
+// ReloadModelRemapping reloads the model remapping from disk.
+func (pr *ProviderRouter) ReloadModelRemapping() {
+	pr.modelRemap.Store(loadModelRemapping())
+}
+
+func (pr *ProviderRouter) getModelRemap() *ModelRemapping {
+	return pr.modelRemap.Load()
 }
 
 // resolveProviderForModel resolves a requested model to a provider and returns the provider info
 func (pr *ProviderRouter) resolveProviderForModel(requestedModel string) (*ResolvedProvider, string, error) {
-	resolvedModel, providerID := resolveModelProvider(pr.cfg, pr.modelRemap, requestedModel)
+	resolvedModel, providerID := resolveModelProvider(pr.cfg, pr.getModelRemap(), requestedModel)
 	providerInfo, err := pr.cfg.getProviderByID(providerID)
 	if err != nil {
 		return nil, resolvedModel, err
@@ -63,10 +74,11 @@ func (pr *ProviderRouter) resolveProviderForModel(requestedModel string) (*Resol
 
 // isModelReasoning returns true if the model is marked as a reasoning model in the remap
 func (pr *ProviderRouter) isModelReasoning(model string) bool {
-	if pr.modelRemap == nil {
+	mr := pr.getModelRemap()
+	if mr == nil {
 		return false
 	}
-	for _, m := range pr.modelRemap.KnownModels {
+	for _, m := range mr.KnownModels {
 		if m.ID == model || strings.HasPrefix(model, m.ID+":") || strings.HasPrefix(model, m.ID+"[") {
 			return m.Reasoning
 		}
@@ -83,10 +95,11 @@ func (pr *ProviderRouter) validateReasoningEffort(model string, effort string) s
 	if effort == "" {
 		return ""
 	}
-	if pr.modelRemap == nil {
+	mr := pr.getModelRemap()
+	if mr == nil {
 		return ""
 	}
-	for _, m := range pr.modelRemap.KnownModels {
+	for _, m := range mr.KnownModels {
 		if m.ID == model || strings.HasPrefix(model, m.ID+":") || strings.HasPrefix(model, m.ID+"[") {
 			if !m.Reasoning {
 				return ""

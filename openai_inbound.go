@@ -497,20 +497,21 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 		return obj
 	}
 
-	if pr.modelRemap != nil {
-		for _, m := range pr.modelRemap.KnownModels {
+	mr := pr.getModelRemap()
+	if mr != nil {
+		for _, m := range mr.KnownModels {
 			if !seen[m.ID] {
 				seen[m.ID] = true
 				providerName := pr.cfg.getProviderName(m.Provider)
 				models = append(models, buildModelObj(m.ID, m, providerName))
 			}
 		}
-		for _, target := range pr.modelRemap.Aliases {
+		for _, target := range mr.Aliases {
 			if !seen[target] {
 				seen[target] = true
 				// Find the ModelEntry for the target model
 				entry := ModelEntry{}
-				for _, km := range pr.modelRemap.KnownModels {
+				for _, km := range mr.KnownModels {
 					if km.ID == target {
 						entry = km
 						break
@@ -523,12 +524,12 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 				models = append(models, buildModelObj(target, entry, providerName))
 			}
 		}
-		for alias := range pr.modelRemap.Aliases {
+		for alias := range mr.Aliases {
 			if !seen[alias] {
 				seen[alias] = true
-				target := pr.modelRemap.Aliases[alias]
+				target := mr.Aliases[alias]
 				entry := ModelEntry{}
-				for _, km := range pr.modelRemap.KnownModels {
+				for _, km := range mr.KnownModels {
 					if km.ID == target {
 						entry = km
 						break

@@ -382,60 +382,9 @@ func getModelRemappingPath() string {
 
 func defaultModelRemapping() *ModelRemapping {
 	return &ModelRemapping{
-		DefaultModel: "glm-5.1:cloud",
-		KnownModels: []ModelEntry{
-			{
-				ID:              "glm-5.1:cloud",
-				Provider:        "ollama_cloud",
-				Reasoning:       true,
-				ReasoningEffort: []string{"low", "medium", "high"},
-				ContextLength:   128000,
-				MaxOutputTokens: 16384,
-				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true, Vision: true},
-			},
-			{
-				ID:              "deepseek-v4-flash:cloud",
-				Provider:        "ollama_cloud",
-				Reasoning:       true,
-				ReasoningEffort: []string{"low", "medium", "high"},
-				ContextLength:   128000,
-				MaxOutputTokens: 16384,
-				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
-			},
-			{
-				ID:              "opencode/deepseek-v4-flash",
-				Provider:        "opencode_go",
-				Reasoning:       true,
-				ReasoningEffort: []string{"low", "medium", "high"},
-				ContextLength:   128000,
-				MaxOutputTokens: 16384,
-				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
-			},
-			{
-				ID:              "deepseek-v4-flash",
-				Provider:        "ollama_cloud",
-				Reasoning:       true,
-				ReasoningEffort: []string{"low", "medium", "high"},
-				ContextLength:   128000,
-				MaxOutputTokens: 16384,
-				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
-			},
-			{
-				ID:              "deepseek-v4-pro:cloud",
-				Provider:        "ollama_cloud",
-				Reasoning:       true,
-				ReasoningEffort: []string{"low", "medium", "high", "max"},
-				ContextLength:   128000,
-				MaxOutputTokens: 16384,
-				Capabilities:    &ModelCapabilities{ToolCalling: true, StructuredOutputs: true},
-			},
-		},
-		Aliases: map[string]string{
-			"claude-3-5-haiku":            "deepseek-v4-flash:cloud",
-			"claude-3-5-haiku-20241022":   "deepseek-v4-flash:cloud",
-			"claude-3-haiku-20240307":     "deepseek-v4-flash:cloud",
-			"claude-haiku-3-5-20241022":   "deepseek-v4-flash:cloud",
-		},
+		DefaultModel: "",
+		KnownModels:  []ModelEntry{},
+		Aliases:      map[string]string{},
 	}
 }
 
@@ -480,9 +429,6 @@ func loadModelRemapping() *ModelRemapping {
 		}
 	}
 
-	if remap.DefaultModel == "" {
-		remap.DefaultModel = "glm-5.1:cloud"
-	}
 	if remap.KnownModels == nil {
 		remap.KnownModels = []ModelEntry{}
 	}
