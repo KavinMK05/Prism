@@ -25,6 +25,9 @@ var (
 	providerOpenCode *systray.MenuItem
 	providerCustom   *systray.MenuItem
 	oauthMenu        *systray.MenuItem
+	versionItem      *systray.MenuItem
+	checkUpdateItem  *systray.MenuItem
+	updateAvailItem  *systray.MenuItem
 	providerCustomSlots []*systray.MenuItem
 	providerCustomIDs   []string
 	providerCustomIDsMu sync.RWMutex
@@ -36,6 +39,9 @@ var (
 	proxyPID         int
 	proxyCmd         *exec.Cmd
 	proxyRunningMu   sync.Mutex
+	updateState      UpdateState
+	updateInfo       *UpdateInfo
+	updateMu         sync.Mutex
 )
 
 const maxCustomProviders = 10
@@ -60,6 +66,11 @@ func runTray(iconData []byte, cleanup func()) {
 		systray.SetTooltip("Prism")
 
 		running := isProxyRunning()
+
+		versionItem = systray.AddMenuItem("Prism "+version, "Current version")
+		versionItem.Disable()
+
+		systray.AddSeparator()
 
 		statusItem = systray.AddMenuItem("● Checking...", "Proxy status")
 		statusItem.Disable()
@@ -114,6 +125,12 @@ func runTray(iconData []byte, cleanup func()) {
 
 		systray.AddSeparator()
 
+		checkUpdateItem = systray.AddMenuItem("Check for Updates", "Check for newer versions")
+		updateAvailItem = systray.AddMenuItem("", "Install update")
+		updateAvailItem.Hide()
+
+		systray.AddSeparator()
+
 		quitItem := systray.AddMenuItem("Quit", "Quit tray (stops proxy too)")
 
 		updateMenu(running)
@@ -127,6 +144,9 @@ func runTray(iconData []byte, cleanup func()) {
 
 		// Start background usage refresh for OAuth accounts
 		startUsageRefreshLoop()
+
+		// Start background update checker
+		startUpdateCheckLoop()
 
 		go func() {
 			for {
@@ -214,6 +234,10 @@ func runTray(iconData []byte, cleanup func()) {
 				case <-setKeyItem.ClickedCh:
 					// Open web settings for API key management
 					openAdminUI(getAdminPort())
+				case <-checkUpdateItem.ClickedCh:
+					go manualUpdateCheck()
+				case <-updateAvailItem.ClickedCh:
+					go installUpdate()
 				case <-quitItem.ClickedCh:
 					stopProxyProcess()
 					closeLogFile()
@@ -505,4 +529,113 @@ func closeLogFileLocked() {
 
 func getLogFilePath() string {
 	return filepath.Join(getLogDir(), "proxy.log")
+}
+
+func startUpdateCheckLoop() {
+	go func() {
+		// Check on startup (after a brief delay)
+		time.Sleep(10 * time.Second)
+		doUpdateCheck()
+
+		// Then check every 24 hours
+		ticker := time.NewTicker(updateCheckInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			doUpdateCheck()
+		}
+	}()
+}
+
+func doUpdateCheck() {
+	updateMu.Lock()
+	if updateState == UpdateDownloading || updateState == UpdateReady || updateState == UpdateChecking {
+		updateMu.Unlock()
+		return
+	}
+	updateState = UpdateChecking
+	updateMu.Unlock()
+
+	checkUpdateItem.SetTitle("Checking for updates...")
+	checkUpdateItem.Disable()
+
+	info, err := checkForUpdate()
+
+	updateMu.Lock()
+	defer updateMu.Unlock()
+
+	if err != nil {
+		updateState = UpdateIdle
+		updateInfo = nil
+		updateAvailItem.Hide()
+		checkUpdateItem.SetTitle("Check for Updates")
+		checkUpdateItem.Enable()
+		log.Printf("[Update] Check failed: %v", err)
+		return
+	}
+
+	if info == nil {
+		updateState = UpdateIdle
+		updateInfo = nil
+		updateAvailItem.Hide()
+		checkUpdateItem.SetTitle("Up to date (" + version + ")")
+		checkUpdateItem.Enable()
+		return
+	}
+
+	updateState = UpdateAvailable
+	updateInfo = info
+	updateAvailItem.SetTitle("Update Available: " + info.Version)
+	updateAvailItem.SetTooltip("Click to download and install version " + info.Version)
+	updateAvailItem.Show()
+	checkUpdateItem.SetTitle("Check for Updates")
+	checkUpdateItem.Enable()
+
+	showUpdateNotification(info.Version)
+}
+
+func manualUpdateCheck() {
+	updateMu.Lock()
+	if updateState == UpdateDownloading || updateState == UpdateChecking {
+		updateMu.Unlock()
+		return
+	}
+	updateMu.Unlock()
+
+	doUpdateCheck()
+}
+
+func installUpdate() {
+	updateMu.Lock()
+	if updateInfo == nil {
+		updateMu.Unlock()
+		return
+	}
+	info := updateInfo
+
+	if updateState == UpdateDownloading {
+		updateMu.Unlock()
+		return
+	}
+	updateState = UpdateDownloading
+	updateMu.Unlock()
+
+	updateAvailItem.SetTitle("Downloading update... 0%")
+	updateAvailItem.Disable()
+	checkUpdateItem.Disable()
+
+	progressFn := func(percent int) {
+		updateAvailItem.SetTitle(fmt.Sprintf("Downloading update... %d%%", percent))
+	}
+
+	err := performUpdate(info, progressFn)
+
+	if err != nil {
+		updateMu.Lock()
+		updateState = UpdateFailed
+		updateMu.Unlock()
+		updateAvailItem.SetTitle("Update failed - click to retry")
+		updateAvailItem.Enable()
+		checkUpdateItem.Enable()
+		log.Printf("[Update] Install failed: %v", err)
+	}
 }

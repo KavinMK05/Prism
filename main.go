@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--serve" {
 		runProxyServer()
@@ -26,6 +28,8 @@ func main() {
 		log.Println(err)
 		return
 	}
+
+	cleanupOldBinary()
 
 	iconData, err := loadIconData()
 	if err != nil {
@@ -309,7 +313,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok","service":"prism","version":"1.0.0"}`))
+	w.Write([]byte(fmt.Sprintf(`{"status":"ok","service":"prism","version":"%s"}`, version)))
 }
 
 func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
