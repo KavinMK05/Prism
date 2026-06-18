@@ -325,22 +325,30 @@ func translateResponseToolsToChatCompletions(tools []interface{}) []OpenAITool {
 			continue
 		}
 		toolType, _ := toolMap["type"].(string)
-		if toolType != "function" {
-			continue
+		if toolType == "function" {
+			// Internally tagged: {type, name, description, parameters}
+			name, _ := toolMap["name"].(string)
+			description, _ := toolMap["description"].(string)
+			parameters := toolMap["parameters"]
+			result = append(result, OpenAITool{
+				Type: "function",
+				Function: OpenAIToolDef{
+					Name:        name,
+					Description: description,
+					Parameters:  parameters,
+				},
+			})
+		} else {
+			// Pass through non-function tools (apply_patch, web_search, etc.)
+			// so the upstream (Codex/OpenAI) can handle them
+			result = append(result, OpenAITool{
+				Type: toolType,
+				Function: OpenAIToolDef{
+					Name:        toolType,
+					Description: toolType,
+				},
+			})
 		}
-		// Internally tagged: {type, name, description, parameters}
-		name, _ := toolMap["name"].(string)
-		description, _ := toolMap["description"].(string)
-		parameters := toolMap["parameters"]
-
-		result = append(result, OpenAITool{
-			Type: "function",
-			Function: OpenAIToolDef{
-				Name:        name,
-				Description: description,
-				Parameters:  parameters,
-			},
-		})
 	}
 	return result
 }
@@ -418,12 +426,9 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 		Stream:   req.Stream,
 	}
 
-	// Handle tools (filter out built-in tools for Ollama)
+	// Handle tools (Ollama only understands function tools)
 	if len(req.Tools) > 0 {
-		filtered := filterFunctionToolsOnly(req.Tools)
-		if len(filtered) > 0 {
-			ollamaReq.Tools = translateResponseToolsToOllama(filtered)
-		}
+		ollamaReq.Tools = translateResponseToolsToOllama(req.Tools)
 	}
 
 	// Handle options
@@ -661,4 +666,46 @@ func filterFunctionToolsOnly(tools []interface{}) []interface{} {
 		}
 	}
 	return result
+}
+
+// buildToolTypeMap extracts a mapping from tool name to tool type from the request's tools array.
+// Used to preserve original tool types (apply_patch, web_search, etc.) so responses emit
+// the correct output type (custom_tool_call, web_search_call, etc.).
+func buildToolTypeMap(tools []interface{}) map[string]string {
+	result := map[string]string{}
+	for _, tool := range tools {
+		toolMap, ok := tool.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		toolType, _ := toolMap["type"].(string)
+		if toolType == "" {
+			continue
+		}
+		// Extract name from function.name or name field
+		name := toolType
+		if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+			if fnName, ok := fn["name"].(string); ok && fnName != "" {
+				name = fnName
+			}
+		} else if n, ok := toolMap["name"].(string); ok && n != "" {
+			name = n
+		}
+		result[name] = toolType
+	}
+	return result
+}
+
+// resolveToolOutputType returns the correct Responses API output item type for a tool call
+// based on the original tool type from the request.
+func resolveToolOutputType(name string, toolTypes map[string]string) string {
+	if toolType, ok := toolTypes[name]; ok {
+		if toolType == "apply_patch" {
+			return "custom_tool_call"
+		}
+		if strings.HasPrefix(toolType, "web_search") {
+			return "web_search_call"
+		}
+	}
+	return "function_call"
 }

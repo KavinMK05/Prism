@@ -34,34 +34,37 @@ func (pr *ProviderRouter) HandleResponsesAPI(w http.ResponseWriter, r *http.Requ
 	globalStats.StartRequest(respReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 
+	// Extract tool type mapping for preserving built-in tool types in responses
+	toolTypes := buildToolTypeMap(respReq.Tools)
+
 	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
 	// don't have api.responses.write scope, so /v1/responses returns 401)
 	if rp.ProviderType == "codex" {
 		if respReq.Stream {
-			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp)
+			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp, toolTypes)
 		} else {
-			pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp)
+			pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp, toolTypes)
 		}
 		return
 	}
 
 	if respReq.Stream {
 		if rp.ProviderType == "openai" {
-			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp)
+			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp, toolTypes)
 		} else {
-			pr.handleResponsesAPIOllamaStreaming(w, r, &respReq, rp)
+			pr.handleResponsesAPIOllamaStreaming(w, r, &respReq, rp, toolTypes)
 		}
 		return
 	}
 
 	if rp.ProviderType == "openai" {
-		pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp)
+		pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp, toolTypes)
 	} else {
-		pr.handleResponsesAPIToOllama(w, r, &respReq, rp)
+		pr.handleResponsesAPIToOllama(w, r, &respReq, rp, toolTypes)
 	}
 }
 
-func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
+func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
@@ -108,7 +111,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 		return
 	}
 
-	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq)
+	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq, toolTypes)
 
 	globalStats.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
 
@@ -117,7 +120,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 	json.NewEncoder(w).Encode(responsesResp)
 }
 
-func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
+func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
 	reqStart := time.Now()
 
 	ollamaReq := translateResponsesAPIToOllama(respReq)
@@ -161,7 +164,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *h
 		return
 	}
 
-	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq)
+	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq, toolTypes)
 
 	globalStats.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
 

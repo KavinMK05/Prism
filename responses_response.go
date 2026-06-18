@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *ResponsesAPIRequest) *ResponsesAPIResponse {
+func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string) *ResponsesAPIResponse {
 	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
 	createdAt := time.Now().Unix()
 	output := []interface{}{}
@@ -82,16 +82,17 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 	}
 	output = append(output, msgItem)
 
-	// Handle tool calls -> function_call items (always after message)
+	// Handle tool calls -> function_call/custom_tool_call/web_search_call items (always after message)
 	if len(msg.ToolCalls) > 0 {
 		for _, tc := range msg.ToolCalls {
+			outputType := resolveToolOutputType(tc.Function.Name, toolTypes)
 			funcCall := ResponsesAPIFunctionCallItem{
-				ID:         generateID("fc_"),
-				Type:       "function_call",
-				CallID:     tc.ID,
-				Name:       tc.Function.Name,
-				Arguments:   tc.Function.Arguments,
-				Status:     "completed",
+				ID:        generateID("fc_"),
+				Type:      outputType,
+				CallID:    tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+				Status:    "completed",
 			}
 			output = append(output, funcCall)
 		}
@@ -114,11 +115,11 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 	}
 }
 
-func translateOllamaToResponsesAPI(ollama *OllamaChatResponse, req *ResponsesAPIRequest) *ResponsesAPIResponse {
+func translateOllamaToResponsesAPI(ollama *OllamaChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string) *ResponsesAPIResponse {
 	// Chain: Ollama -> OpenAI Chat Completions -> Responses API
 	chatReq := &OpenAIChatRequest{Model: ollama.Model}
 	openAIResp := translateOllamaToOpenAI(ollama, chatReq)
-	return translateChatCompletionsToResponsesAPI(&openAIResp, req)
+	return translateChatCompletionsToResponsesAPI(&openAIResp, req, toolTypes)
 }
 
 func translateOpenAIUsageToResponses(usage OpenAIUsage) ResponsesAPIUsage {

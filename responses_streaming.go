@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
+func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
@@ -73,6 +73,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	var funcCallItemID string
 	var funcCallCallID string
 	var funcCallName string
+	var funcCallOutputType string
 	var accumulatedText string
 	var accumulatedArgs string
 	var outputTokens int
@@ -272,7 +273,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 						})
 						fcItem := map[string]interface{}{
 							"id":        funcCallItemID,
-							"type":      "function_call",
+							"type":      funcCallOutputType,
 							"call_id":   funcCallCallID,
 							"name":      funcCallName,
 							"arguments": accumulatedArgs,
@@ -290,13 +291,14 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					funcCallItemID = generateID("fc_")
 					funcCallCallID = tc.ID
 					funcCallName = tc.Function.Name
+					funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
 					accumulatedArgs = ""
 					emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
 						"type":         "response.output_item.added",
 						"output_index": outputIndex,
 						"item": map[string]interface{}{
 							"id":        funcCallItemID,
-							"type":      "function_call",
+							"type":      funcCallOutputType,
 							"call_id":   tc.ID,
 							"name":      tc.Function.Name,
 							"arguments": "",
@@ -452,7 +454,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				})
 				fcItem := map[string]interface{}{
 					"id":        funcCallItemID,
-					"type":      "function_call",
+					"type":      funcCallOutputType,
 					"call_id":   funcCallCallID,
 					"name":      funcCallName,
 					"arguments": accumulatedArgs,
@@ -534,7 +536,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		if funcCallItemID != "" {
 			fcItem := map[string]interface{}{
 				"id":        funcCallItemID,
-				"type":      "function_call",
+				"type":      funcCallOutputType,
 				"call_id":   funcCallCallID,
 				"name":      funcCallName,
 				"arguments": accumulatedArgs,
@@ -602,7 +604,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	}
 }
 
-func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider) {
+func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
 	reqStart := time.Now()
 
 	ollamaReq := translateResponsesAPIToOllama(respReq)
@@ -655,6 +657,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	var funcCallItemID string
 	var funcCallCallID string
 	var funcCallName string
+	var funcCallOutputType string
 	var outputTokens int
 	var inputTokens int
 	client := detectClient(r)
@@ -842,6 +845,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				funcCallItemID = generateID("fc_")
 				funcCallCallID = fmt.Sprintf("call_%s_%s", toolName, funcCallItemID)
 				funcCallName = toolName
+				funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
 
 				argsJSON, _ := json.Marshal(tc.Function.Arguments)
 
@@ -850,7 +854,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"output_index": outputIndex,
 					"item": map[string]interface{}{
 						"id":        funcCallItemID,
-						"type":      "function_call",
+						"type":      funcCallOutputType,
 						"call_id":   funcCallCallID,
 						"name":      toolName,
 						"arguments": string(argsJSON),
@@ -867,7 +871,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 				fcItem := map[string]interface{}{
 					"id":        funcCallItemID,
-					"type":      "function_call",
+					"type":      funcCallOutputType,
 					"call_id":   funcCallCallID,
 					"name":      toolName,
 					"arguments": string(argsJSON),
@@ -1004,7 +1008,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			if funcCallItemID != "" {
 				fcItem := map[string]interface{}{
 					"id":        funcCallItemID,
-					"type":      "function_call",
+					"type":      funcCallOutputType,
 					"call_id":   funcCallCallID,
 					"name":      funcCallName,
 					"arguments": "{}",
@@ -1123,7 +1127,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		if funcCallItemID != "" {
 			fcItem := map[string]interface{}{
 				"id":        funcCallItemID,
-				"type":      "function_call",
+				"type":      funcCallOutputType,
 				"call_id":   funcCallCallID,
 				"name":      funcCallName,
 				"arguments": "{}",
