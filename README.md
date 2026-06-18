@@ -46,6 +46,7 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 | **Per-model capabilities** | ✅ Tools / Vision / Struct | ❌ |
 | **models.dev auto-lookup** | ✅ | ❌ |
 | **Provider-per-model routing** | ✅ | ❌ |
+| **Codex Desktop model selector** | ✅ | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
 | **macOS native** | ✅ System tray + admin UI | ❌ Requires Python |
@@ -157,6 +158,34 @@ Point your client to `http://127.0.0.1:11434/v1` with any API key. Prism accepts
 </details>
 
 <details>
+<summary><strong>Setting up with Codex Desktop</strong></summary>
+
+Prism integrates with Codex Desktop's native model selector. When enabled, all your Prism models appear directly in Codex Desktop's model picker — no need to manually configure each model.
+
+**How it works:** Prism writes a managed provider block to `~/.codex/config.toml` and generates a model catalog JSON file. Codex Desktop reads these on launch and populates its model picker with your Prism models. Requests flow through Prism's Responses API endpoint (`/v1/responses`), which translates them to your configured upstream provider.
+
+**To enable:**
+
+1. Open the admin UI at `http://127.0.0.1:8765/admin`
+2. Go to the **Proxy** tab
+3. Click **Setup** under "Codex Desktop Integration"
+4. The status will change to "Active — models synced to Codex Desktop"
+5. Restart Codex Desktop — your models will appear in the model picker
+
+**To disable:** Click **Restore** in the same section. This removes Prism's managed blocks from `~/.codex/config.toml` and restores any previous settings.
+
+**Automatic sync:** Prism also auto-syncs the catalog on every proxy startup if Codex Desktop is detected (`~/.codex/config.toml` exists), so new models added to your remapping are picked up automatically.
+
+**How it works under the hood:**
+
+- Prism generates a `codex_catalog.json` in its config directory with your models in Codex Desktop's expected catalog format (slug, display name, context window, reasoning levels, capabilities, etc.)
+- A `[model_providers.prism]` block is added to `~/.codex/config.toml` pointing to Prism's Responses API at `127.0.0.1:11434`
+- Codex Desktop uses the `model_catalog_json` key to load models from the generated catalog
+- The `wire_api = "responses"` setting tells Codex Desktop to use the Responses API format
+
+</details>
+
+<details>
 <summary><strong>Setting up with OpenAI SDK (Responses API)</strong></summary>
 
 Set the base URL to `http://127.0.0.1:11434/v1`. Prism accepts OpenAI Responses API requests at `/v1/responses` and translates them to the configured upstream provider — including streaming, tool calls, and reasoning.
@@ -209,7 +238,7 @@ The admin UI provides:
 | **OAuth** | Manage Codex (OpenAI) accounts — sign in, view usage credits, activate, or remove accounts |
 | **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. Includes **models.dev** search and auto-fill for model info. |
 | **Stats** | Live and historical performance dashboard (see below) |
-| **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
+| **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login; **Codex Desktop integration** (setup/restore model selector) |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -699,6 +728,12 @@ curl -s http://127.0.0.1:11434/v1/models -H "Authorization: Bearer prism"
 # 6. Test admin UI
 curl -s http://127.0.0.1:8765/admin/status
 ```
+
+---
+
+### Acknowledgments
+
+The **Codex Desktop integration** (native model selector support) was inspired by and reverse-engineered from [codex-shim](https://github.com/sybil-solutions/codex-shim) by [Sybil Solutions](https://github.com/sybil-solutions). Their work on the Responses API translation layer, `custom_model_catalog.json` format, `config.toml` managed blocks, and the ASAR patch for the model picker provided the blueprint for Prism's Codex Desktop support. If you need a standalone Python-based shim with additional features (Cursor passthrough, ChatGPT passthrough, auto-router, web picker UI), check out their project.
 
 ---
 
