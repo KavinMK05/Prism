@@ -70,6 +70,9 @@ func runProxyServer() {
 
 	modelRemap := loadModelRemapping()
 
+	// Sync Codex Desktop config if installed
+	SyncCodexDesktop(parseIntOr(port, 11434))
+
 	router := NewProviderRouter(cfg, modelRemap)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {

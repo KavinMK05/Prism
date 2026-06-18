@@ -507,6 +507,58 @@ func startAdminServer(cfg *Config, port string) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	// API: Codex Desktop integration
+	mux.HandleFunc("/admin/codex-desktop/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"installed": isCodexDesktopInstalled(),
+			"active":    isCodexDesktopActive(),
+		})
+	})
+
+	mux.HandleFunc("/admin/codex-desktop/setup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		if !isCodexDesktopInstalled() {
+			writeJSONError(w, "Codex Desktop is not installed (~/.codex/config.toml not found)", 404)
+			return
+		}
+		remap := loadModelRemapping()
+		if err := writeCodexCatalog(remap); err != nil {
+			writeJSONError(w, "failed to write catalog: "+err.Error(), 500)
+			return
+		}
+		proxyPort := os.Getenv("PRISM_PORT")
+		if proxyPort == "" {
+			proxyPort = "11434"
+		}
+		if err := installCodexConfig(parseIntOr(proxyPort, 11434)); err != nil {
+			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/admin/codex-desktop/restore", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		if err := restoreCodexConfig(); err != nil {
+			writeJSONError(w, "failed to restore config: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
 	// API: Logs
 	mux.HandleFunc("/admin/autostart", handleAutoStart)
 

@@ -82,6 +82,8 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	flusher, canFlush := w.(http.Flusher)
 	respID := fmt.Sprintf("chatcmpl-%s", openAIReq.Model)
 
+	createdAt := time.Now().Unix()
+
 	state := &ollamaStreamState{
 		w:      w,
 		flusher: flusher,
@@ -97,9 +99,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	}()
 
 	state.writeOpenAISSE(OpenAIStreamChunk{
-		ID:     respID,
-		Object: "chat.completion.chunk",
-		Model:  openAIReq.Model,
+		ID:      respID,
+		Object:  "chat.completion.chunk",
+		Created: createdAt,
+		Model:   openAIReq.Model,
 		Choices: []OpenAIStreamChoice{
 			{
 				Index: 0,
@@ -139,9 +142,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 			globalStats.AddTokens(1)
 			thinking := chunk.Message.Thinking
 			state.writeOpenAISSE(OpenAIStreamChunk{
-				ID:     respID,
-				Object: "chat.completion.chunk",
-				Model:  openAIReq.Model,
+				ID:      respID,
+				Object:  "chat.completion.chunk",
+				Created: createdAt,
+				Model:   openAIReq.Model,
 				Choices: []OpenAIStreamChoice{
 					{
 						Index: 0,
@@ -163,9 +167,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 				pending := state.pendingContent
 				state.pendingContent = ""
 				state.writeOpenAISSE(OpenAIStreamChunk{
-					ID:     respID,
-					Object: "chat.completion.chunk",
-					Model:  openAIReq.Model,
+					ID:      respID,
+					Object:  "chat.completion.chunk",
+					Created: createdAt,
+					Model:   openAIReq.Model,
 					Choices: []OpenAIStreamChoice{
 						{
 							Index: 0,
@@ -215,9 +220,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 				}
 
 				state.writeOpenAISSE(OpenAIStreamChunk{
-					ID:     respID,
-					Object: "chat.completion.chunk",
-					Model:  openAIReq.Model,
+					ID:      respID,
+					Object:  "chat.completion.chunk",
+					Created: createdAt,
+					Model:   openAIReq.Model,
 					Choices: []OpenAIStreamChoice{
 						{
 							Index: 0,
@@ -251,9 +257,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 				state.closeToolCalls()
 				content := chunk.Message.Content
 				state.writeOpenAISSE(OpenAIStreamChunk{
-					ID:     respID,
-					Object: "chat.completion.chunk",
-					Model:  openAIReq.Model,
+					ID:      respID,
+					Object:  "chat.completion.chunk",
+					Created: createdAt,
+					Model:   openAIReq.Model,
 					Choices: []OpenAIStreamChoice{
 						{
 							Index: 0,
@@ -267,14 +274,14 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 		}
 
 		if chunk.Done {
-			// Flush any remaining buffered content from thinking phase
 			if state.pendingContent != "" {
 				pending := state.pendingContent
 				state.pendingContent = ""
 				state.writeOpenAISSE(OpenAIStreamChunk{
-					ID:     respID,
-					Object: "chat.completion.chunk",
-					Model:  openAIReq.Model,
+					ID:      respID,
+					Object:  "chat.completion.chunk",
+					Created: createdAt,
+					Model:   openAIReq.Model,
 					Choices: []OpenAIStreamChoice{
 						{
 							Index: 0,
@@ -302,9 +309,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 			}
 
 			state.writeOpenAISSE(OpenAIStreamChunk{
-				ID:     respID,
-				Object: "chat.completion.chunk",
-				Model:  openAIReq.Model,
+				ID:      respID,
+				Object:  "chat.completion.chunk",
+				Created: createdAt,
+				Model:   openAIReq.Model,
 				Choices: []OpenAIStreamChoice{
 					{
 						Index:        0,

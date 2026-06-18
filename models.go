@@ -226,11 +226,12 @@ type OpenAIUsage struct {
 }
 
 type OpenAIStreamChunk struct {
-	ID      string                `json:"id"`
-	Object  string                `json:"object"`
-	Model   string                `json:"model"`
-	Choices []OpenAIStreamChoice  `json:"choices"`
-	Usage   *OpenAIStreamUsage    `json:"usage,omitempty"`
+	ID       string               `json:"id"`
+	Object   string               `json:"object"`
+	Created  int64                `json:"created"`
+	Model    string               `json:"model"`
+	Choices  []OpenAIStreamChoice `json:"choices"`
+	Usage    *OpenAIStreamUsage   `json:"usage,omitempty"`
 }
 
 type OpenAIStreamUsage struct {

@@ -1763,14 +1763,24 @@
       </div>
     </div>
 
-    <div class="card">
-      <h3>Logs</h3>
-      <div class="log-view" id="logView">Loading...</div>
-      <div class="btn-row">
-        <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
+      <div class="card">
+        <h3>Logs</h3>
+        <div class="log-view" id="logView">Loading...</div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Codex Desktop Integration</h3>
+        <p class="card-description">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
+        <div id="codexDesktopStatus" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="setupCodexDesktop()">Setup</button>
+          <button class="btn btn-ghost" onclick="restoreCodexDesktop()">Restore</button>
+        </div>
       </div>
     </div>
-  </div>
 </div>
 
 <div class="modal-overlay" id="deleteModal" onclick="if(event.target===this)closeDeleteModal()">
@@ -3599,6 +3609,54 @@ function renderClientStats(data, isLive) {
   listBody.innerHTML = html;
 }
 
+// ── Codex Desktop ──
+async function checkCodexDesktopStatus() {
+  try {
+    const res = await api('/codex-desktop/status');
+    const el = document.getElementById('codexDesktopStatus');
+    if (!res.installed) {
+      el.innerHTML = '<span style="color:var(--text-secondary)">Codex Desktop not detected</span>';
+    } else if (res.active) {
+      el.innerHTML = '<span style="color:var(--color-success)">Active — models synced to Codex Desktop</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--color-warning)">Installed but not configured</span>';
+    }
+  } catch(e) {
+    document.getElementById('codexDesktopStatus').innerHTML = '<span style="color:var(--text-secondary)">Status unavailable</span>';
+  }
+}
+
+async function setupCodexDesktop() {
+  try {
+    const res = await fetch('/admin/codex-desktop/setup', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Setup failed', 'error');
+      return;
+    }
+    showToast('Codex Desktop configured successfully');
+    checkCodexDesktopStatus();
+  } catch(e) {
+    showToast('Setup failed: ' + e.message, 'error');
+  }
+}
+
+async function restoreCodexDesktop() {
+  if (!confirm('Remove Prism configuration from Codex Desktop?')) return;
+  try {
+    const res = await fetch('/admin/codex-desktop/restore', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Restore failed', 'error');
+      return;
+    }
+    showToast('Codex Desktop configuration restored');
+    checkCodexDesktopStatus();
+  } catch(e) {
+    showToast('Restore failed: ' + e.message, 'error');
+  }
+}
+
 // ── Init ──
 initTheme();
 loadConfig();
@@ -3608,6 +3666,7 @@ updateStatus();
 loadOAuthAccounts();
 initStatsFilters();
 startStatsPolling();
+checkCodexDesktopStatus();
 </script>
 </body>
 </html>
