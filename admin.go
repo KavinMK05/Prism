@@ -1026,8 +1026,6 @@ func notifyTrayConfigChanged() {
 
 	// Update the global tray config
 	cfg = newCfg
-	updateProviderMenu()
-	updateAPIKeyDisplay()
 
 	// Restart the proxy so it picks up config changes (e.g. active provider, API keys)
 	if isProxyRunning() {

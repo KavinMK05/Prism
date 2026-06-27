@@ -274,14 +274,11 @@ When launched without arguments, Prism runs as a system tray application with th
 | Menu item | Action |
 |---|---|
 | **Start / Stop / Restart Proxy** | Control the proxy server process |
-| **Provider** → Ollama Cloud / OpenCode Go / Custom providers | Switch upstream provider on the fly |
-| **Add Codex Account** | Start Codex OAuth flow to link an OpenAI account |
-| **Refresh Usage** | Refresh session/weekly usage for all connected Codex accounts |
 | **Open Settings** | Open the web admin UI in your browser |
 | **Open Folder** | Open the proxy directory in Explorer / Finder |
 | **Edit Model Config** | Open `model_remapping.json` in Notepad / TextEdit |
 | **Show Logs** | Open a live log viewer console |
-| **Set API Key** | Open the web admin UI to set keys |
+| **Check for Updates** | Check for newer versions of Prism |
 | **Quit** | Stop proxy and exit |
 
 ## Admin Web UI
