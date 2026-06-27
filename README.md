@@ -4,9 +4,9 @@
 
 # Prism
 
-### One proxy. Every LLM API format. A 5 MB binary with zero dependencies. Runs on Windows & macOS.
+### One proxy. Every agent. Every protocol. A 5 MB binary with zero dependencies. Runs on Windows & macOS.
 
-Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama native APIs in real time. Native system tray, built-in web admin UI, model remapping, and full SSE streaming. Zero config.
+Prism is a universal LLM proxy that connects any AI agent — Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode, Cursor, and more — to any provider through any protocol. It translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama APIs in real time, with built-in one-click integrations that auto-configure your agents. Native system tray, web admin UI, model auto-discovery, and full SSE streaming. Zero config.
 
 [![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/prism)
 [![macOS](https://img.shields.io/badge/platform-macOS-silver?logo=apple)](https://github.com/user/prism)
@@ -21,9 +21,9 @@ Prism translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Res
 
 ## Why Prism?
 
-Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API format — but cloud providers don't all speak the same language. Prism sits in between, translating requests and responses on the fly so you can point any client at any provider.
+Every AI agent speaks a different protocol. Every provider expects a different format. Every model has different capabilities. Prism sits in between, translating requests and responses on the fly — and with one-click integrations, it auto-configures your agents so they just work.
 
-**One proxy. Every format. No Python.**
+**One proxy. Every agent. Every protocol. No Python.**
 
 | | Prism | LiteLLM |
 |---|---|---|
@@ -44,9 +44,13 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 | **Image support** | ✅ | ✅ |
 | **Structured outputs** | ✅ | ⚠️ partial |
 | **Per-model capabilities** | ✅ Tools / Vision / Struct | ❌ |
-| **models.dev auto-lookup** | ✅ | ❌ |
+| **Auto model config (models.dev)** | ✅ Zero-config | ❌ |
 | **Provider-per-model routing** | ✅ | ❌ |
-| **Codex Desktop & CLI model selector** | ✅ | ❌ |
+| **Claude Code integration** | ✅ One-click | ❌ |
+| **Codex Desktop & CLI integration** | ✅ One-click | ❌ |
+| **Factory Droid integration** | ✅ One-click | ❌ |
+| **OpenCode integration** | ✅ One-click | ❌ |
+| **ZCode integration** | ✅ One-click | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
 | **macOS native** | ✅ System tray + admin UI | ❌ Requires Python |
@@ -54,35 +58,42 @@ Claude Desktop, Cursor, Continue, and other AI tools each expect a specific API 
 ## How it works
 
 ```
-  Your tools                              Cloud providers
+  Your agents                              Cloud providers
   ─────────                               ────────────────
 
-  Claude Desktop ──┐
+  Claude Code ─────┐
   (Anthropic API)  │                       ┌──────────────┐
                    │    ┌───────────┐       │  Ollama Cloud │
-  Cursor ──────────┼───→│   Prism   │──────→│  /api/chat    │
-  (OpenAI API)     │    │  :11434   │       └──────────────┘
+  Codex Desktop ───┼───→│   Prism   │──────→│  /api/chat    │
+  (Responses API)  │    │  :11434   │       └──────────────┘
                    │    └───────────┘       ┌──────────────┐
-  Continue ────────┤         │              │  OpenCode Go  │
-  (OpenAI API)     │         │              │  /v1/chat/... │
+  Factory Droid ───┤         │              │  OpenCode Go  │
+  (Chat Completions)│         │              │  /v1/chat/... │
                    │         │              └──────────────┘
-  OpenAI SDK ──────┘         │              ┌──────────────┐
-  (Responses API)            ├──────────────→│  Custom       │
-                             │              │  /v1/chat/... │
-                             │              └──────────────┘
-                             │
-                        ┌────┴────┐
-                        │ Admin UI │
-                        │  :8765  │
-                        └─────────┘
+  OpenCode ────────┤         │              ┌──────────────┐
+  (Chat Completions)│         ├──────────────→│  Custom       │
+                   │         │              │  /v1/chat/... │
+  ZCode ───────────┤         │              └──────────────┘
+  (Chat Completions)│         │
+                   │         │              ┌────────────────────┐
+  Cursor ──────────┤         └──────────────→│  Codex (via OAuth) │
+  (OpenAI API)     │                        │  /backend-api/...  │
+                   │                        └────────────────────┘
+  Continue ────────┤
+  (OpenAI API)     │              ┌────────────────────┐
+                   │              │  Codex (via OAuth) │── Sign in with OpenAI
+  OpenAI SDK ──────┘              │  /backend-api/...  │   account — no API key
+  (Responses API)                 └────────────────────┘   needed
 
-                    ┌────────────────────┐
-                    │  Codex (via OAuth) │── Sign in with OpenAI
-                    │  /v1/chat/...      │   account — no API key
-                    └────────────────────┘   needed
+                            ┌────────────────────┐
+                            │  Admin UI          │
+                            │  :8765             │
+                            └────────────────────┘
 ```
 
-Prism accepts requests in **Anthropic Messages** format (`/v1/messages`), **OpenAI Chat Completions** format (`/v1/chat/completions`), or **OpenAI Responses** format (`/v1/responses`), translates them to whatever your upstream provider speaks, and translates responses back. Streaming works seamlessly in all directions.
+Prism accepts requests in **four protocol formats** — **Anthropic Messages** (`/v1/messages`), **OpenAI Chat Completions** (`/v1/chat/completions`), **OpenAI Responses** (`/v1/responses`), and **Ollama Native** (`/api/chat`) — translates them to whatever your upstream provider speaks, and translates responses back. For Codex (OpenAI) accounts, Prism routes directly to the ChatGPT backend API, including Chat Completions ↔ Responses API translation so any agent can use your OAuth account regardless of its protocol. Streaming works seamlessly in all directions.
+
+For integrated agents, Prism writes the right config files automatically — environment variables, provider blocks, model catalogs — so your agents see Prism's models without any manual setup.
 
 ## Quick start
 
@@ -112,7 +123,13 @@ Open the admin UI from the system tray (right-click → **Open Settings**) or na
 
 You can also configure via the config file — `%APPDATA%\prism\config.json` on Windows or `~/Library/Application Support/prism/config.json` on macOS — see [Providers](#providers) below.
 
-### 3. Connect your tools
+### 3. Add your models
+
+In the **Models** tab, just type a model name and Prism auto-fetches all the details — context length, max output tokens, reasoning support, tool calling, vision, structured outputs, and reasoning effort levels — from [models.dev](https://models.dev). No manual configuration needed. Select your provider, search for the model, and click to auto-fill everything.
+
+### 4. Connect your agents
+
+Go to the **Agents** tab in the admin UI. Prism auto-detects which agents are installed and shows their status. Click **Setup** next to any agent to configure it with one click. See [Agent integrations](#agent-integrations) for details on each agent.
 
 <details>
 <summary><strong>Setting up with Claude Desktop</strong></summary>
@@ -136,7 +153,11 @@ Edit your Claude Desktop config:
 <details>
 <summary><strong>Setting up with Claude Code</strong></summary>
 
-Edit `~/.claude/settings.json`:
+Prism integrates with Claude Code by setting environment variables and per-tier model mappings in `~/.claude/settings.json`. You can choose which Prism model fills each tier (opus, sonnet, haiku, subagent).
+
+**One-click setup:** Go to the **Agents** tab in the admin UI, select your tier models, and click **Setup**. Prism backs up your existing config and writes the right environment variables.
+
+**Manual setup:** Edit `~/.claude/settings.json`:
 
 ```json
 {
@@ -151,37 +172,57 @@ Edit `~/.claude/settings.json`:
 </details>
 
 <details>
-<summary><strong>Setting up with Cursor / Continue / other OpenAI clients</strong></summary>
-
-Point your client to `http://127.0.0.1:11434/v1` with any API key. Prism accepts OpenAI Chat Completions requests and translates them to the configured upstream provider.
-
-</details>
-
-<details>
 <summary><strong>Setting up with Codex Desktop & CLI</strong></summary>
 
 Prism integrates with Codex Desktop and Codex CLI's native model selector. When enabled, all your Prism models appear directly in the model picker — no need to manually configure each model.
 
-**How it works:** Prism writes a managed provider block to `~/.codex/config.toml` and generates a model catalog JSON file. Codex Desktop/CLI reads these on launch and populates its model picker with your Prism models. Requests flow through Prism's Responses API endpoint (`/v1/responses`), which translates them to your configured upstream provider.
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Codex Desktop Integration".
 
-**To enable:**
+**How it works:** Prism writes a managed provider block to `~/.codex/config.toml` and generates a model catalog JSON file. Codex Desktop/CLI reads these on launch and populates its model picker with your Prism models. Requests flow through Prism's Responses API endpoint, which translates them to your configured upstream provider.
 
-1. Open the admin UI at `http://127.0.0.1:8765/admin`
-2. Go to the **Proxy** tab
-3. Click **Setup** under "Codex Desktop Integration"
-4. The status will change to "Active — models synced to Codex Desktop"
-5. Restart Codex Desktop/CLI — your models will appear in the model picker
+**Automatic sync:** Prism auto-syncs the catalog on every startup if Codex Desktop/CLI is detected (`~/.codex/config.toml` exists), so new models added to your remapping are picked up automatically.
 
-**To disable:** Click **Restore** in the same section. This removes Prism's managed blocks from `~/.codex/config.toml` and restores any previous settings.
+**To disable:** Click **Restore** in the Agents tab. This removes Prism's managed blocks and restores any previous settings.
 
-**Automatic sync:** Prism also auto-syncs the catalog on every proxy startup if Codex Desktop/CLI is detected (`~/.codex/config.toml` exists), so new models added to your remapping are picked up automatically.
+</details>
 
-**How it works under the hood:**
+<details>
+<summary><strong>Setting up with Factory Droid</strong></summary>
 
-- Prism generates a `codex_catalog.json` in its config directory with your models in Codex's expected catalog format (slug, display name, context window, reasoning levels, capabilities, etc.)
-- A `[model_providers.prism]` block is added to `~/.codex/config.toml` pointing to Prism's Responses API at `127.0.0.1:11434`
-- Codex uses the `model_catalog_json` key to load models from the generated catalog
-- The `wire_api = "responses"` setting tells Codex to use the Responses API format
+Prism adds your models as `[Prism]` custom entries in `~/.factory/settings.json`. Codex OAuth models are routed through `/v1/responses`, all others through `/v1/chat/completions`.
+
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Factory Droid". Prism backs up your existing config and injects all your Prism models.
+
+**To disable:** Click **Restore** to remove all Prism-tagged entries.
+
+</details>
+
+<details>
+<summary><strong>Setting up with OpenCode</strong></summary>
+
+Prism registers two providers in `~/.config/opencode/opencode.json`: `prism` (for non-Codex models via `/v1/chat/completions`) and `prism-codex` (for Codex OAuth models via `/v1/responses`). The first available Prism model is set as the default.
+
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "OpenCode". Prism backs up your existing config and writes the provider blocks.
+
+**To disable:** Click **Restore** to remove the Prism providers and default model references.
+
+</details>
+
+<details>
+<summary><strong>Setting up with ZCode</strong></summary>
+
+Prism writes a provider block to `~/.zcode/v2/config.json` with your Prism base URL and API key. Each model entry includes context/output limits, modalities, and optional reasoning configuration.
+
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "ZCode". Prism backs up your existing config and writes the provider block.
+
+**To disable:** Click **Restore** to remove the Prism provider.
+
+</details>
+
+<details>
+<summary><strong>Setting up with Cursor / Continue / other OpenAI clients</strong></summary>
+
+Point your client to `http://127.0.0.1:11434/v1` with any API key. Prism accepts OpenAI Chat Completions requests and translates them to the configured upstream provider.
 
 </details>
 
@@ -207,6 +248,25 @@ response = client.responses.create(
 
 </details>
 
+## Agent integrations
+
+Prism includes built-in, one-click integrations for popular AI coding agents. Each integration auto-detects whether the agent is installed, writes the right config files, and keeps them in sync when your models change.
+
+| Agent | What it does | Config location |
+|---|---|---|
+| **Claude Code** | Sets `ANTHROPIC_BASE_URL` + per-tier model mappings | `~/.claude/settings.json` |
+| **Codex Desktop & CLI** | Injects models into native model picker | `~/.codex/config.toml` + catalog JSON |
+| **Factory Droid** | Adds `[Prism]` custom models with smart routing | `~/.factory/settings.json` |
+| **OpenCode** | Registers `prism` + `prism-codex` providers | `~/.config/opencode/opencode.json` |
+| **ZCode** | Registers `prism` provider with model list | `~/.zcode/v2/config.json` |
+
+**How it works:**
+
+1. **Auto-detection** — Prism checks if each agent's config file or binary exists on disk. The Agents tab shows which agents are installed and active.
+2. **One-click setup** — Click **Setup** to back up the agent's existing config and write Prism's configuration. Click **Restore** to revert to the backup.
+3. **Auto-sync** — Prism syncs all agent configs on startup and whenever you add or remove models, so newly added models appear automatically.
+4. **Smart routing** — Codex OAuth models are routed through `/v1/responses`, all others through `/v1/chat/completions`. Each agent gets the right endpoint for its protocol.
+
 ## System tray
 
 When launched without arguments, Prism runs as a system tray application with these options:
@@ -216,7 +276,7 @@ When launched without arguments, Prism runs as a system tray application with th
 | **Start / Stop / Restart Proxy** | Control the proxy server process |
 | **Provider** → Ollama Cloud / OpenCode Go / Custom providers | Switch upstream provider on the fly |
 | **Add Codex Account** | Start Codex OAuth flow to link an OpenAI account |
-| **Refresh Usage** | Refresh credit usage for all connected Codex accounts |
+| **Refresh Usage** | Refresh session/weekly usage for all connected Codex accounts |
 | **Open Settings** | Open the web admin UI in your browser |
 | **Open Folder** | Open the proxy directory in Explorer / Finder |
 | **Edit Model Config** | Open `model_remapping.json` in Notepad / TextEdit |
@@ -235,10 +295,11 @@ The admin UI provides:
 | Tab | Features |
 |---|---|
 | **Provider** | Select default provider, set API keys, add/edit/remove custom providers |
-| **OAuth** | Manage Codex (OpenAI) accounts — sign in, view usage credits, activate, or remove accounts |
-| **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. Includes **models.dev** search and auto-fill for model info. |
+| **OAuth** | Manage Codex (OpenAI) accounts — sign in, view session/weekly usage percentages, activate, or remove accounts |
+| **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. **Auto-fill from models.dev** — type a model name, search, and click to populate all fields automatically. |
+| **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, and ZCode. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
-| **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login; **Codex Desktop & CLI integration** (setup/restore model selector) |
+| **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -289,7 +350,7 @@ Prism supports multiple upstream providers, configured via the admin UI or the c
 | **Ollama Cloud** | `ollama_cloud` | Ollama Native | `/api/chat` |
 | **OpenCode Go** | `opencode_go` | OpenAI | `/v1/chat/completions` |
 | **Custom providers** | `custom_providers[]` | OpenAI | `/v1/chat/completions` |
-| **Codex (via OAuth)** | `oauth_accounts[]` | OpenAI | `/v1/chat/completions` |
+| **Codex (via OAuth)** | `oauth_accounts[]` | OpenAI | `chatgpt.com/backend-api/codex/responses` |
 
 ### Provider-per-model routing
 
@@ -305,7 +366,9 @@ You can add multiple custom providers (e.g. OpenRouter, Groq, Together AI) — e
 
 ### Codex OAuth accounts
 
-Prism supports signing in with your OpenAI account via OAuth (no API key needed). Click **Add Codex Account** in the admin UI **OAuth** tab or system tray, and your browser will open for authentication. Once connected, Prism uses your account token automatically, including token refresh and credit usage tracking.
+Prism supports signing in with your OpenAI account via OAuth (no API key needed). Click **Add Codex Account** in the admin UI **OAuth** tab or system tray, and your browser will open for authentication. Once connected, Prism uses your account token automatically, including token refresh and usage tracking.
+
+Codex requests route directly to `chatgpt.com/backend-api/codex/responses` — not through `api.openai.com` — which avoids Cloudflare restrictions on bearer tokens. Prism also extracts the `chatgpt-account-id` from your JWT token automatically, so you don't need to configure it manually.
 
 Switch providers from the system tray, admin UI, or by changing the `default_provider` field — no restart required when using the tray/UI.
 
@@ -347,7 +410,15 @@ Switch providers from the system tray, admin UI, or by changing the `default_pro
       "plan_tier": "plus",
       "active": true
     }
-  ]
+  ],
+  "agent_integrations": {
+    "claude_code_tiers": {
+      "opus": "deepseek-v4-pro:cloud",
+      "sonnet": "deepseek-v4-flash:cloud",
+      "haiku": "glm-5.1:cloud",
+      "subagent": "deepseek-v4-flash:cloud"
+    }
+  }
 }
 ```
 
@@ -366,13 +437,24 @@ Prism can remap model names on the fly — useful when clients send model names 
 
 Configured via the admin UI (**Models** tab) or the model remapping file (`%APPDATA%\prism\model_remapping.json` on Windows, `~/Library/Application Support/prism/model_remapping.json` on macOS).
 
+### Auto model configuration
+
+Instead of manually filling in context lengths, token limits, and capabilities, just type a model name in the **Models** tab and click **Search**. Prism queries [models.dev](https://models.dev) and auto-fills:
+
+- Context length
+- Max output tokens
+- Reasoning toggle and allowed effort levels
+- Tool calling, structured output, and vision capabilities
+
+The search is scoped to your selected provider so you get accurate results. No manual configuration needed — search, select, and you're done.
+
 ### Default model
 
 When an unknown model is requested, Prism falls back to this model. Select it from the dropdown in the admin UI or set `default_model`.
 
 ### Known models
 
-Known models are now rich entries — not just strings — with per-model provider assignment, reasoning toggle, capabilities, and token limits. Each entry includes:
+Known models are rich entries — not just strings — with per-model provider assignment, reasoning toggle, capabilities, and token limits. Each entry includes:
 
 | Field | Type | Description |
 |---|---|---|
@@ -390,7 +472,7 @@ Models matching a known entry pass through without remapping. A model that doesn
 
 ### Reasoning toggle & effort validation
 
-Prism now validates `reasoning_effort` against each model's capabilities:
+Prism validates `reasoning_effort` against each model's capabilities:
 
 - **Non-reasoning models**: `reasoning_effort` is automatically stripped from requests.
 - **Reasoning models**: Invalid effort values are normalized to the model's first allowed effort (e.g. `"invalid"` → `"medium"`), with a warning logged.
@@ -407,20 +489,7 @@ Map incoming model names to different upstream models.
 | **Aliases** | Map model names (e.g. `claude-3-5-haiku` → `deepseek-v4-flash:cloud`) |
 | **Default model** | Fallback when a requested model isn't recognized |
 | **Known models** | Rich entries with per-model provider, reasoning, and capabilities |
-
-### models.dev auto-lookup
-
-The admin UI integrates with [models.dev](https://models.dev) to auto-fill model information. When adding or editing a model:
-
-1. Start typing a model ID — a search dropdown appears with results from models.dev, scoped to the selected provider.
-2. Click **Fetch** or select a search result to auto-fill:
-   - Context length
-   - Max output tokens
-   - Reasoning toggle and allowed effort levels
-   - Tool calling, structured output, and vision capabilities
-3. The lookup runs directly from the admin server (not through the proxy) so it works even when the proxy is stopped.
-
-The search is scoped to the selected provider (Ollama Cloud, OpenCode Go, or custom) — results are fuzzy-matched against models.dev provider keys.
+| **Auto config** | Search models.dev and auto-fill all fields |
 
 <details>
 <summary><strong>Full remapping example</strong></summary>
@@ -592,9 +661,10 @@ Prism translates the OpenAI Responses API (`/v1/responses`) to the upstream form
 | Responses API | Chat Completions / Ollama | Notes |
 |---|---|---|
 | `input` (string) | `messages[].role=user` | Simple string input → user message |
-| `input` (array of items) | `messages[]` | `message`, `function_call`, `function_call_output` items mapped |
+| `input` (array of items) | `messages[]` | `message`, `function_call`, `function_call_output`, `custom_tool_call_output` items mapped |
 | `instructions` | `messages[].role=system` | System prompt |
-| `tools` (function type) | `tools` | Only `type: function` tools forwarded |
+| `tools` (function type) | `tools` | `type: function` tools forwarded as-is |
+| `tools` (built-in type) | `tools` | Codex built-in tools (apply_patch, local_shell, web_search, etc.) rewrapped as function tools with preserved type mapping |
 | `reasoning` | `reasoning_effort` / `think` | Reasoning config → thinking mode |
 | `text.format` | `response_format` / `format` | Structured output / JSON schema |
 | `max_output_tokens` | `max_tokens` / `options.num_predict` | |
@@ -606,17 +676,30 @@ Prism translates the OpenAI Responses API (`/v1/responses`) to the upstream form
 |---|---|---|
 | `message.content` | `output[].message.content[].output_text` | Text content → output parts |
 | `message.reasoning_content` | `output[].reasoning` | Reasoning → reasoning item |
-| `message.tool_calls` | `output[].function_call` | Tool calls → function call items |
+| `message.tool_calls` | `output[].function_call` or `output[].custom_tool_call` | Tool calls mapped back to correct output type |
 | `finish_reason: stop` | `status: completed` | |
 | `finish_reason: length` | `status: incomplete` | |
 
-**Streaming:** Full Responses API streaming event sequence is emitted — `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.output_text.done`, `response.content_part.added/done`, `response.output_item.done`, `response.function_call_arguments.delta/done`, and `response.completed`.
+**Built-in tool type preservation:** Prism maps Codex built-in tools (apply_patch, local_shell, web_search, computer_use) to function tools for the upstream model, preserving the original type so responses translate back correctly — e.g., `apply_patch` → `custom_tool_call` with `input` field instead of `arguments`.
+
+**Streaming:** Full Responses API streaming event sequence is emitted — `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.output_text.done`, `response.content_part.added/done`, `response.output_item.done`, `response.function_call_arguments.delta/done`, `response.custom_tool_call_input.done`, and `response.completed`.
+
+</details>
+
+<details>
+<summary><strong>Codex OAuth direct passthrough</strong></summary>
+
+For Codex (OpenAI) OAuth accounts, Prism routes Responses API requests directly to `chatgpt.com/backend-api/codex/responses` — bypassing `api.openai.com` entirely. This avoids Cloudflare restrictions on bearer tokens and provides native Codex tool support.
+
+For Chat Completions clients (like Factory Droid, OpenCode) that need to reach Codex, Prism translates Chat Completions → Responses API format before forwarding to the Codex backend, so any agent can use your OAuth account regardless of its protocol.
+
+Prism automatically extracts the `chatgpt-account-id` from your JWT token and includes it as a header, so no manual configuration is needed.
 
 </details>
 
 ## Streaming
 
-All six routing paths support real-time SSE streaming with correct event translation:
+All routing paths support real-time SSE streaming with correct event translation:
 
 | Inbound | Upstream | Streaming |
 |---|---|---|
@@ -624,8 +707,10 @@ All six routing paths support real-time SSE streaming with correct event transla
 | Anthropic | OpenAI | ✅ OpenAI SSE → Anthropic SSE |
 | OpenAI Chat | Ollama | ✅ Newline-delimited JSON → OpenAI SSE |
 | OpenAI Chat | OpenAI | ✅ Pass-through with model remapping |
+| OpenAI Chat | Codex (OAuth) | ✅ Chat Completions → Codex Responses SSE |
 | OpenAI Responses | Ollama | ✅ Newline-delimited JSON → Responses API SSE events |
 | OpenAI Responses | OpenAI | ✅ OpenAI SSE → Responses API SSE events |
+| OpenAI Responses | Codex (OAuth) | ✅ Direct passthrough to Codex backend |
 
 Thinking/reasoning blocks, tool calls, and images are fully supported in all streaming paths.
 
@@ -662,7 +747,7 @@ go build -o prism.exe .
 
 **macOS:**
 ```bash
-CGO_ENABLED=1 go build -o prism .
+CGO_ENABLED=1 go build -ldflags="-X main.version=dev" -o prism .
 # Or use the build script to create a signed .app bundle and DMG:
 ./scripts/build-darwin.sh
 ```
@@ -739,8 +824,6 @@ The **Codex Desktop & CLI integration** (native model selector support) was insp
 
 <div align="center">
 
-*Prism — translate, proxy, stream.*
+*Prism — connect any agent. route any model. stream any protocol.*
 
 </div>
-
-
