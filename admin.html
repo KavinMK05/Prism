@@ -1363,6 +1363,7 @@
     <button class="tab" data-tab="oauth">OAuth</button>
     <button class="tab" data-tab="models">Models</button>
     <button class="tab" data-tab="stats">Stats</button>
+    <button class="tab" data-tab="agents">Agents</button>
     <button class="tab" data-tab="proxy">Proxy</button>
   </div>
 
@@ -1739,7 +1740,65 @@
   </div>
 
   <!-- Proxy Tab -->
-  <div class="panel" id="panel-proxy">
+  <!-- Agents Tab -->
+<div class="panel" id="panel-agents">
+    <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Agent Integrations</h3>
+    <div class="card">
+      <h3>Codex Desktop Integration</h3>
+      <p class="card-description">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
+      <div id="codexDesktopStatus" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupCodexDesktop()">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreCodexDesktop()">Restore</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Claude Code</h3>
+      <p class="card-description">Routes Claude Code through Prism by setting ANTHROPIC_BASE_URL and per-tier model mappings in ~/.claude/settings.json. Requires Claude Code to be installed.</p>
+      <div id="agent-status-claude-code" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="field"><label>Opus tier model</label><select id="claude-code-tier-opus"></select></div>
+      <div class="field"><label>Sonnet tier model</label><select id="claude-code-tier-sonnet"></select></div>
+      <div class="field"><label>Haiku tier model</label><select id="claude-code-tier-haiku"></select></div>
+      <div class="field"><label>Subagent model</label><select id="claude-code-tier-subagent"></select></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('claude-code')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('claude-code')">Restore</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Factory Droid</h3>
+      <p class="card-description">Adds your Prism models as [Prism] custom models in ~/.factory/settings.json so they appear in Droid's /model picker. Requires Factory Droid to be installed.</p>
+      <div id="agent-status-factory-droid" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('factory-droid')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('factory-droid')">Restore</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>OpenCode</h3>
+      <p class="card-description">Registers a prism provider with your Prism base URL in ~/.config/opencode/opencode.json so OpenCode can use your local models. Requires OpenCode to be installed.</p>
+      <div id="agent-status-opencode" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('opencode')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('opencode')">Restore</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>ZCode</h3>
+      <p class="card-description">Registers a prism provider in ~/.zcode/v2/config.json so ZCode can use your local models via Prism. Requires ZCode to be installed.</p>
+      <div id="agent-status-zcode" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('zcode')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('zcode')">Restore</button>
+      </div>
+    </div>
+</div>
+
+<div class="panel" id="panel-proxy">
     <div class="card">
       <h3>Start at Login</h3>
       <div class="toggle-row">
@@ -1768,16 +1827,6 @@
         <div class="log-view" id="logView">Loading...</div>
         <div class="btn-row">
           <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Codex Desktop Integration</h3>
-        <p class="card-description">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
-        <div id="codexDesktopStatus" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
-        <div class="btn-row">
-          <button class="btn btn-primary" onclick="setupCodexDesktop()">Setup</button>
-          <button class="btn btn-ghost" onclick="restoreCodexDesktop()">Restore</button>
         </div>
       </div>
     </div>
@@ -1850,6 +1899,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'proxy') refreshLogs();
+    if (tab.dataset.tab === 'agents') {
+      checkCodexDesktopStatus();
+      checkAgentStatus('claude-code');
+      checkAgentStatus('factory-droid');
+      checkAgentStatus('opencode');
+      checkAgentStatus('zcode');
+    }
     if (tab.dataset.tab === 'stats') {
       startStatsPolling();
       refreshStats();
@@ -2245,6 +2301,7 @@ function renderModelConfig() {
 
   renderKnownModels();
   renderAliases();
+  populateClaudeCodeTiers();
 }
 
 function buildModelOptions(selectedValue) {
@@ -2674,12 +2731,19 @@ function loadOAuthAccounts() {
       accounts.forEach(a => {
         const activeClass = a.active ? ' active' : '';
         const tokenStatus = a.token_valid ? '<span style="color:var(--success)">Valid</span>' : '<span style="color:var(--danger)">Expired</span>';
-        let planLabel = a.plan_tier ? esc(a.plan_tier.charAt(0).toUpperCase() + a.plan_tier.slice(1)) : '';
-        if (!planLabel || planLabel === 'Unknown') planLabel = 'Codex';
+        let rawPlan = a.plan_tier || '';
+        let planLabel = '';
+        if (rawPlan === 'prolite') planLabel = 'Pro 5x';
+        else if (rawPlan === 'pro') planLabel = 'Pro 20x';
+        else if (rawPlan === 'plus') planLabel = 'Plus';
+        else if (rawPlan === 'team') planLabel = 'Team';
+        else if (rawPlan === 'free') planLabel = 'Free';
+        else if (rawPlan && rawPlan !== 'Unknown' && rawPlan !== 'codex') planLabel = esc(rawPlan.charAt(0).toUpperCase() + rawPlan.slice(1));
+        if (!planLabel) planLabel = 'ChatGPT';
         html += `<div class="oauth-account${activeClass}">
           <div class="oauth-account-info">
             <div class="oauth-account-email">${esc(a.email || a.label || a.id)}</div>
-            <div class="oauth-account-meta">${planLabel} ┬╖ Token: ${tokenStatus}${a.token_expiry ? ' ┬╖ Expires: ' + esc(a.token_expiry) : ''}</div>
+            <div class="oauth-account-meta">${planLabel} &middot; Token: ${tokenStatus}${a.token_expiry ? ' &middot; Expires: ' + esc(a.token_expiry) : ''}</div>
           </div>
           <div class="oauth-account-actions">
             <button class="btn btn-secondary" onclick="activateOAuthAccount('${esc(a.id)}')" ${a.active ? 'disabled' : ''}>${a.active ? 'Active' : 'Activate'}</button>
@@ -2711,33 +2775,84 @@ function renderOAuthUsage(accounts) {
 
   if (activeAccount.usage_unavailable) {
     barContainer.innerHTML = `
-      <div style="padding:8px 0; color:var(--text-secondary); font-size:13px;">
-        Usage data is not available for this account type.
+      <div style="padding:12px 0; color:var(--text-secondary); font-size:13px; line-height:1.5;">
+        Usage data is temporarily unavailable. The ChatGPT usage endpoint may be rate-limited or the token may need refreshing.
       </div>
     `;
     const refreshBtn = document.getElementById('oauthUsageRefreshBtn');
-    if (refreshBtn) refreshBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = '';
     return;
   }
 
   const refreshBtn = document.getElementById('oauthUsageRefreshBtn');
   if (refreshBtn) refreshBtn.style.display = '';
 
-  const pctUsed = activeAccount.percent_used || 0;
-  let fillClass = 'low';
-  if (pctUsed > 80) fillClass = 'high';
-  else if (pctUsed > 50) fillClass = 'medium';
+  function fmtReset(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const diff = d - now;
+    if (diff <= 0) return 'resetting soon';
+    const hrs = Math.floor(diff / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    if (hrs > 24) return 'resets in ' + Math.floor(hrs / 24) + 'd ' + (hrs % 24) + 'h';
+    if (hrs > 0) return 'resets in ' + hrs + 'h ' + mins + 'm';
+    return 'resets in ' + mins + 'm';
+  }
 
-  const creditsUsed = activeAccount.credits_used ? activeAccount.credits_used.toFixed(1) : '?';
-  const creditsTotal = activeAccount.credits_total ? activeAccount.credits_total.toFixed(1) : '?';
+  function barHTML(label, pct, resetTs, period) {
+    const cl = pct > 80 ? 'high' : pct > 50 ? 'medium' : 'low';
+    const resetTxt = fmtReset(resetTs);
+    return `
+      <div style="margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <span style="font-size:13px; font-weight:500;">${label}</span>
+          <span style="font-size:11px; color:var(--text-secondary);">${resetTxt || period || ''}</span>
+        </div>
+        <div class="usage-bar-bg" onclick="refreshOAuthUsage()" title="Click to refresh usage" style="cursor:pointer;">
+          <div class="usage-bar-fill ${cl}" style="width:${Math.min(pct, 100)}%"></div>
+          <div class="usage-bar-label">${pct.toFixed(0)}% used</div>
+        </div>
+      </div>
+    `;
+  }
 
-  barContainer.innerHTML = `
-    <div class="usage-bar-bg" onclick="refreshOAuthUsage()" title="Click to refresh usage">
-      <div class="usage-bar-fill ${fillClass}" style="width:${pctUsed}%"></div>
-      <div class="usage-bar-label">${pctUsed.toFixed(1)}% used</div>
-    </div>
-    <div class="usage-detail">Credits: ${creditsUsed} / ${creditsTotal}${activeAccount.weekly_reset_at ? ' ┬╖ Resets: ' + new Date(activeAccount.weekly_reset_at * 1000).toLocaleDateString() : ''}</div>
-  `;
+  let html = '';
+
+  // Session bar (5h window)
+  if (activeAccount.session_percent != null && activeAccount.session_percent > 0) {
+    html += barHTML('Session (5h)', activeAccount.session_percent, activeAccount.session_reset_at, '5h window');
+  }
+
+  // Weekly bar (7d window)
+  if (activeAccount.weekly_percent != null && activeAccount.weekly_percent > 0) {
+    html += barHTML('Weekly (7d)', activeAccount.weekly_percent, activeAccount.weekly_reset_at, '7d window');
+  }
+
+  // Code review bar (if present)
+  if (activeAccount.review_percent != null && activeAccount.review_percent > 0) {
+    html += barHTML('Code Reviews', activeAccount.review_percent, null, '7d window');
+  }
+
+  // If no bars at all, show zero state
+  if (!html) {
+    html = '<div style="padding:8px 0; color:var(--text-secondary); font-size:13px;">No usage data yet. Usage will appear after your first API call.</div>';
+  }
+
+  // Credits and rate limit resets as text lines
+  const detailParts = [];
+  if (activeAccount.credits_balance != null && activeAccount.credits_balance > 0) {
+    const usd = (activeAccount.credits_balance * 0.04).toFixed(2);
+    detailParts.push(`Credits: $${usd} &middot; ${Math.floor(activeAccount.credits_balance)} credits`);
+  }
+  if (activeAccount.rate_limit_resets != null && activeAccount.rate_limit_resets > 0) {
+    detailParts.push(`${activeAccount.rate_limit_resets} rate limit reset${activeAccount.rate_limit_resets > 1 ? 's' : ''} available`);
+  }
+  if (detailParts.length > 0) {
+    html += `<div class="usage-detail" style="margin-top:8px;">${detailParts.join(' &middot; ')}</div>`;
+  }
+
+  barContainer.innerHTML = html;
 }
 
 function startCodexOAuth() {
@@ -3631,13 +3746,13 @@ async function setupCodexDesktop() {
     const res = await fetch('/admin/codex-desktop/setup', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
-      showToast(data.error || 'Setup failed', 'error');
+      toast(data.error || 'Setup failed', 'error');
       return;
     }
-    showToast('Codex Desktop configured successfully');
+    toast('Codex Desktop configured successfully');
     checkCodexDesktopStatus();
   } catch(e) {
-    showToast('Setup failed: ' + e.message, 'error');
+    toast('Setup failed: ' + e.message, 'error');
   }
 }
 
@@ -3647,13 +3762,89 @@ async function restoreCodexDesktop() {
     const res = await fetch('/admin/codex-desktop/restore', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
-      showToast(data.error || 'Restore failed', 'error');
+      toast(data.error || 'Restore failed', 'error');
       return;
     }
-    showToast('Codex Desktop configuration restored');
+    toast('Codex Desktop configuration restored');
     checkCodexDesktopStatus();
   } catch(e) {
-    showToast('Restore failed: ' + e.message, 'error');
+    toast('Restore failed: ' + e.message, 'error');
+  }
+}
+
+// ── Agent integrations (Claude Code, Factory Droid, OpenCode) ──
+let claudeCodeSavedTiers = null;
+
+function populateClaudeCodeTiers() {
+  if (!currentRemap) return;
+  const tiers = claudeCodeSavedTiers || {};
+  ['opus', 'sonnet', 'haiku', 'subagent'].forEach(k => {
+    const sel = document.getElementById('claude-code-tier-' + k);
+    if (!sel) return;
+    sel.innerHTML = buildModelOptions(tiers[k] || '');
+  });
+}
+
+async function checkAgentStatus(id) {
+  const el = document.getElementById('agent-status-' + id);
+  if (!el) return;
+  try {
+    const res = await api('/agent/status?id=' + encodeURIComponent(id));
+    if (id === 'claude-code' && res.tiers) {
+      claudeCodeSavedTiers = res.tiers;
+      populateClaudeCodeTiers();
+    }
+    if (!res.installed) {
+      el.innerHTML = '<span style="color:var(--text-secondary)">' + (res.displayName || id) + ' not detected</span>';
+    } else if (res.active) {
+      el.innerHTML = '<span style="color:var(--color-success)">Active — routed through Prism</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--color-warning)">Installed but not configured</span>';
+    }
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--text-secondary)">Status unavailable</span>';
+  }
+}
+
+async function setupAgent(id) {
+  try {
+    const opts = { method: 'POST' };
+    if (id === 'claude-code') {
+      const tiers = {
+        opus: document.getElementById('claude-code-tier-opus').value,
+        sonnet: document.getElementById('claude-code-tier-sonnet').value,
+        haiku: document.getElementById('claude-code-tier-haiku').value,
+        subagent: document.getElementById('claude-code-tier-subagent').value,
+      };
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify({ tiers });
+    }
+    const res = await fetch('/admin/agent/setup?id=' + encodeURIComponent(id), opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || 'Setup failed', 'error');
+      return;
+    }
+    toast((data.displayName || id) + ' configured successfully');
+    checkAgentStatus(id);
+  } catch(e) {
+    toast('Setup failed: ' + e.message, 'error');
+  }
+}
+
+async function restoreAgent(id) {
+  if (!confirm('Remove Prism configuration from ' + id + '?')) return;
+  try {
+    const res = await fetch('/admin/agent/restore?id=' + encodeURIComponent(id), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || 'Restore failed', 'error');
+      return;
+    }
+    toast(id + ' configuration restored');
+    checkAgentStatus(id);
+  } catch(e) {
+    toast('Restore failed: ' + e.message, 'error');
   }
 }
 
@@ -3667,6 +3858,10 @@ loadOAuthAccounts();
 initStatsFilters();
 startStatsPolling();
 checkCodexDesktopStatus();
+checkAgentStatus('claude-code');
+checkAgentStatus('factory-droid');
+checkAgentStatus('opencode');
+checkAgentStatus('zcode');
 </script>
 </body>
 </html>

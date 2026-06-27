@@ -20,12 +20,20 @@ type ProviderConfig struct {
 	APIKey  string `json:"api_key"`
 }
 
+type AgentIntegrationsConfig struct {
+	// ClaudeCodeTiers maps Claude Code model tiers ("opus", "sonnet", "haiku",
+	// "subagent") to a Prism model id. Empty values resolve to the first Prism
+	// model at sync time.
+	ClaudeCodeTiers map[string]string `json:"claude_code_tiers,omitempty"`
+}
+
 type Config struct {
-	DefaultProvider  string            `json:"default_provider"`
-	OllamaCloud      *ProviderConfig   `json:"ollama_cloud"`
-	OpenCodeGo       *ProviderConfig   `json:"opencode_go"`
-	CustomProviders  []*ProviderConfig `json:"custom_providers"`
-	OAuthAccounts    []*OAuthAccount   `json:"oauth_accounts"`
+	DefaultProvider   string                   `json:"default_provider"`
+	OllamaCloud       *ProviderConfig          `json:"ollama_cloud"`
+	OpenCodeGo        *ProviderConfig          `json:"opencode_go"`
+	CustomProviders   []*ProviderConfig        `json:"custom_providers"`
+	OAuthAccounts     []*OAuthAccount          `json:"oauth_accounts"`
+	AgentIntegrations *AgentIntegrationsConfig `json:"agent_integrations,omitempty"`
 }
 
 // clone returns a deep copy of the Config, safe for mutation without affecting the original
@@ -90,10 +98,11 @@ type ProviderInfo struct {
 
 // ResolvedProvider holds per-request resolved provider details
 type ResolvedProvider struct {
-	BaseURL      string
-	APIKey       string
-	ProviderType string
-	ProviderID   string // e.g. "ollama_cloud", "opencode_go", custom ID, or OAuth account ID
+	BaseURL           string
+	APIKey            string
+	ProviderType      string
+	ProviderID        string // e.g. "ollama_cloud", "opencode_go", custom ID, or OAuth account ID
+	ChatGPTAccountID  string // for Codex OAuth: the chatgpt-account-id header value
 }
 
 // chatCompletionsURL returns the full URL for /chat/completions, handling
@@ -111,13 +120,26 @@ func (rp *ResolvedProvider) apiChatURL() string {
 	return rp.BaseURL + "/api/chat"
 }
 
+// responsesURL returns the full URL for the Responses API endpoint.
+// For Codex providers, the base URL already points to chatgpt.com/backend-api/codex,
+// so we just append /responses. For other OpenAI-compatible providers, we use /v1/responses.
+func (rp *ResolvedProvider) responsesURL() string {
+	if rp.ProviderType == "codex" {
+		return rp.BaseURL + "/responses"
+	}
+	if strings.HasSuffix(rp.BaseURL, "/v1") || strings.Contains(rp.BaseURL, "/v1/") {
+		return rp.BaseURL + "/responses"
+	}
+	return rp.BaseURL + "/v1/responses"
+}
+
 func getConfigPath() string {
 	return filepath.Join(getConfigDir(), "config.json")
 }
 
 // rawConfig is used for migration from old formats
 type rawConfig struct {
-	ActiveProvider   string            `json:"active_provider"`
+	ActiveProvider  string            `json:"active_provider"`
 	DefaultProvider string            `json:"default_provider"`
 	OllamaCloud     *ProviderConfig   `json:"ollama_cloud"`
 	OpenCodeGo      *ProviderConfig   `json:"opencode_go"`
@@ -189,6 +211,14 @@ func loadConfig() *Config {
 	if cfg.OAuthAccounts == nil {
 		cfg.OAuthAccounts = []*OAuthAccount{}
 	}
+	if cfg.AgentIntegrations == nil {
+		cfg.AgentIntegrations = &AgentIntegrationsConfig{
+			ClaudeCodeTiers: map[string]string{},
+		}
+	}
+	if cfg.AgentIntegrations.ClaudeCodeTiers == nil {
+		cfg.AgentIntegrations.ClaudeCodeTiers = map[string]string{}
+	}
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "ollama_cloud"
 	}
@@ -222,6 +252,9 @@ func defaultConfig() *Config {
 		},
 		CustomProviders: []*ProviderConfig{},
 		OAuthAccounts:   []*OAuthAccount{},
+		AgentIntegrations: &AgentIntegrationsConfig{
+			ClaudeCodeTiers: map[string]string{},
+		},
 	}
 }
 
@@ -231,7 +264,7 @@ func (c *Config) getProviderByID(id string) (*ProviderInfo, error) {
 	for _, a := range c.OAuthAccounts {
 		if a.ID == id {
 			return &ProviderInfo{
-				BaseURL:      codexAPIBase,
+				BaseURL:      codexChatGPTBase + "/backend-api/codex",
 				APIKey:       a.AccessToken,
 				ProviderType: "codex",
 				Name:         a.Label + " (" + a.Email + ")",
@@ -286,6 +319,18 @@ func (c *Config) getProviderName(id string) string {
 		return id
 	}
 	return info.Name
+}
+
+// isCodexProviderID returns true if the provider ID corresponds to a Codex OAuth account.
+// Checks both exact matches against configured OAuth accounts and the "codex_" prefix
+// (in case the account was removed/re-added with a new ID but the model still references the old one).
+func (c *Config) isCodexProviderID(providerID string) bool {
+	for _, a := range c.OAuthAccounts {
+		if a.ID == providerID {
+			return true
+		}
+	}
+	return strings.HasPrefix(providerID, "codex_")
 }
 
 // resolveModel resolves a requested model name to (resolvedModel, providerID)

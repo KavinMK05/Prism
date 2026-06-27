@@ -365,9 +365,11 @@ func updateProviderMenu() {
 				label += " (" + a.PlanTier + ")"
 			}
 			// Add usage percentage if available
-			if a.CreditsTotal > 0 {
-				pct := (a.CreditsUsed / a.CreditsTotal) * 100
-				label += fmt.Sprintf(" [%.0f%% used]", pct)
+			if a.SessionPercent > 0 {
+				label += fmt.Sprintf(" [%.0f%% session]", a.SessionPercent)
+				if a.WeeklyPercent > 0 {
+					label += fmt.Sprintf(" [%.0f%% weekly]", a.WeeklyPercent)
+				}
 			}
 			oauthSlots[i].SetTitle(label)
 			oauthSlots[i].SetTooltip("Switch to " + a.Email)

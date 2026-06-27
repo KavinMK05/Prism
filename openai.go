@@ -170,6 +170,12 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 				ToolID:  tr.id,
 			})
 		}
+		if len(textParts) > 0 {
+			messages = append(messages, OpenAIChatMessage{
+				Role:    "user",
+				Content: joinStrings(textParts),
+			})
+		}
 		return messages
 	}
 

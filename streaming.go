@@ -12,26 +12,27 @@ import (
 )
 
 type streamState struct {
-	w                  http.ResponseWriter
-	flusher            http.Flusher
-	canFlush           bool
-	contentBlockIndex  int
-	hasContentBlock    bool
-	thinkingBlockOpen  bool
-	textBlockOpen      bool
-	toolUseBlockOpen   bool
-	toolCallIndex      int
-	totalOutputTokens  int
-	totalPromptTokens  int
-	msgID              string
+	w                 http.ResponseWriter
+	flusher           http.Flusher
+	canFlush          bool
+	contentBlockIndex int
+	hasContentBlock   bool
+	thinkingBlockOpen bool
+	textBlockOpen     bool
+	toolUseBlockOpen  bool
+	toolCallIndex     int
+	totalOutputTokens int
+	totalPromptTokens int
+	msgID             string
+	stopSent          bool
 }
 
 func newStreamState(w http.ResponseWriter, flusher http.Flusher, canFlush bool, msgID string) *streamState {
 	return &streamState{
-		w:         w,
-		flusher:   flusher,
-		canFlush:  canFlush,
-		msgID:     msgID,
+		w:        w,
+		flusher:  flusher,
+		canFlush: canFlush,
+		msgID:    msgID,
 	}
 }
 
@@ -93,8 +94,19 @@ func (s *streamState) openTextBlock() {
 }
 
 func (s *streamState) openToolUseBlock(toolName string) {
+	s.openToolUseBlockWithID(toolName, "")
+}
+
+// openToolUseBlockWithID opens a tool_use block. If id is non-empty it is used
+// as the tool_use ID (e.g. preserving an upstream-provided ID); otherwise a
+// globally-unique ID is generated so it cannot collide with tool_use IDs from
+// earlier turns in the same conversation.
+func (s *streamState) openToolUseBlockWithID(toolName, id string) {
 	if s.hasOpenBlock() {
 		s.closeBlock("tool_use")
+	}
+	if id == "" {
+		id = generateToolUseID(toolName)
 	}
 	log.Printf("[STREAM] Opening tool_use block at index %d", s.contentBlockIndex)
 	s.writeSSE("content_block_start", map[string]interface{}{
@@ -102,7 +114,7 @@ func (s *streamState) openToolUseBlock(toolName string) {
 		"index": s.contentBlockIndex,
 		"content_block": map[string]interface{}{
 			"type":  "tool_use",
-			"id":    fmt.Sprintf("toolu_%s_%d", toolName, s.toolCallIndex),
+			"id":    id,
 			"name":  toolName,
 			"input": map[string]interface{}{},
 		},
@@ -145,6 +157,10 @@ func (s *streamState) sendEmptyTextBlock() {
 }
 
 func (s *streamState) sendStopReason(stopReason string, outputTokens int) {
+	if s.stopSent {
+		return
+	}
+	s.stopSent = true
 	log.Printf("[STREAM] Sending message_delta with stop_reason=%s, output_tokens=%d", stopReason, outputTokens)
 	s.writeSSE("message_delta", map[string]interface{}{
 		"type": "message_delta",
@@ -215,11 +231,11 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	state.writeSSE("message_start", map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
-			"id":         msgID,
-			"type":       "message",
-			"role":       "assistant",
-			"model":      anthroReq.Model,
-			"content":    []interface{}{},
+			"id":          msgID,
+			"type":        "message",
+			"role":        "assistant",
+			"model":       anthroReq.Model,
+			"content":     []interface{}{},
 			"stop_reason": nil,
 			"usage": map[string]interface{}{
 				"input_tokens":  0,
@@ -343,13 +359,16 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	}
 
 	// If the stream ended without a Done chunk, close any remaining blocks
-	// and send an empty text block as fallback.
+	// and send an empty text block as fallback. We must still terminate the
+	// SSE stream with message_delta + message_stop so clients don't hang
+	// waiting for a terminal event.
 	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
 		state.closeAllBlocks()
 	}
 	if !state.hasContentBlock {
 		state.sendEmptyTextBlock()
 	}
+	state.sendStopReason("end_turn", state.totalOutputTokens)
 }
 
 func writeSSE(w io.Writer, flusher http.Flusher, canFlush bool, event string, data interface{}) {

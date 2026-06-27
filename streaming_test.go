@@ -113,9 +113,9 @@ func makeOpenAIChunkWithRole(model string, content string, reasoningContent stri
 		delta["role"] = ""
 	}
 	chunk := map[string]interface{}{
-		"id":      "chatcmpl-test",
-		"object":  "chat.completion.chunk",
-		"model":   model,
+		"id":     "chatcmpl-test",
+		"object": "chat.completion.chunk",
+		"model":  model,
 		"choices": []map[string]interface{}{
 			{
 				"index": 0,
@@ -211,14 +211,14 @@ func TestOllamaStreaming_ThinkingThenText(t *testing.T) {
 	// Should have: message_start, thinking start, thinking delta x2, thinking stop, text start, text delta x2, text stop, message_delta, message_stop
 	expected := []string{
 		"message_start",
-		"content_block_start",   // thinking block
-		"content_block_delta",  // thinking "Let me think"
-		"content_block_delta",  // thinking " more thoughts"
-		"content_block_stop",   // thinking block closes when text arrives
-		"content_block_start",  // text block
-		"content_block_delta",  // text "Hello"
-		"content_block_delta",  // text " world"
-		"content_block_stop",   // text block closes
+		"content_block_start", // thinking block
+		"content_block_delta", // thinking "Let me think"
+		"content_block_delta", // thinking " more thoughts"
+		"content_block_stop",  // thinking block closes when text arrives
+		"content_block_start", // text block
+		"content_block_delta", // text "Hello"
+		"content_block_delta", // text " world"
+		"content_block_stop",  // text block closes
 		"message_delta",
 		"message_stop",
 	}
@@ -268,13 +268,13 @@ func TestOllamaStreaming_ThinkingWithEmptyChunks(t *testing.T) {
 	// It should only close when non-thinking content arrives
 	expected := []string{
 		"message_start",
-		"content_block_start",   // thinking block opens
-		"content_block_delta",  // thinking "thinking step 1"
+		"content_block_start", // thinking block opens
+		"content_block_delta", // thinking "thinking step 1"
 		// empty chunk is skipped entirely (no thinking, no content)
-		"content_block_delta",  // thinking "thinking step 2"
-		"content_block_stop",   // thinking closes when "final answer" arrives
-		"content_block_start",  // text block
-		"content_block_delta",  // text "final answer"
+		"content_block_delta", // thinking "thinking step 2"
+		"content_block_stop",  // thinking closes when "final answer" arrives
+		"content_block_start", // text block
+		"content_block_delta", // text "final answer"
 		"content_block_stop",
 		"message_delta",
 		"message_stop",
@@ -372,13 +372,13 @@ func TestOpenAIStreaming_ThinkingThenText(t *testing.T) {
 
 	expected := []string{
 		"message_start",
-		"content_block_start",   // thinking
-		"content_block_delta",  // thinking "Let me think"
-		"content_block_delta",  // thinking " more thinking"
-		"content_block_stop",   // thinking ends when content starts
-		"content_block_start",  // text
-		"content_block_delta",  // "Hello"
-		"content_block_delta",  // " world"
+		"content_block_start", // thinking
+		"content_block_delta", // thinking "Let me think"
+		"content_block_delta", // thinking " more thinking"
+		"content_block_stop",  // thinking ends when content starts
+		"content_block_start", // text
+		"content_block_delta", // "Hello"
+		"content_block_delta", // " world"
 		"content_block_stop",
 		"message_delta",
 		"message_stop",
@@ -422,7 +422,7 @@ func TestOllamaStreaming_EmptyResponse(t *testing.T) {
 
 	expected := []string{
 		"message_start",
-		"content_block_start",  // empty text block
+		"content_block_start", // empty text block
 		"content_block_stop",
 		"message_delta",
 		"message_stop",
@@ -558,7 +558,7 @@ func TestOllamaStreaming_ToolCalls(t *testing.T) {
 				},
 			},
 		},
-		"done":        false,
+		"done": false,
 	}
 
 	var upstreamBody string
@@ -679,7 +679,7 @@ func TestOpenAIStreaming_MultipleToolCalls(t *testing.T) {
 	// Chunk 4: finish_reason=tool_calls
 	toolCall1 := map[string]interface{}{
 		"id":   "call_abc123",
-		"type":  "function",
+		"type": "function",
 		"function": map[string]interface{}{
 			"name":      "get_weather",
 			"arguments": "{\"ci",
@@ -693,7 +693,7 @@ func TestOpenAIStreaming_MultipleToolCalls(t *testing.T) {
 	}
 	toolCall2 := map[string]interface{}{
 		"id":   "call_def456",
-		"type":  "function",
+		"type": "function",
 		"function": map[string]interface{}{
 			"name":      "get_time",
 			"arguments": "{\"tz\":\"UTC\"}",
@@ -900,12 +900,12 @@ func TestOllamaStreaming_ToolCallsThenText(t *testing.T) {
 	// Tool calls should close before text opens
 	expected := []string{
 		"message_start",
-		"content_block_start",   // tool_use
-		"content_block_delta",  // tool args
-		"content_block_stop",   // tool_use closes
-		"content_block_start",  // text
-		"content_block_delta",  // text content
-		"content_block_stop",   // text closes
+		"content_block_start", // tool_use
+		"content_block_delta", // tool args
+		"content_block_stop",  // tool_use closes
+		"content_block_start", // text
+		"content_block_delta", // text content
+		"content_block_stop",  // text closes
 		"message_delta",
 		"message_stop",
 	}
@@ -924,7 +924,7 @@ func TestOllamaStreaming_ToolCallsThenText(t *testing.T) {
 func TestOpenAIStreaming_ToolCallsThenText(t *testing.T) {
 	toolCall := map[string]interface{}{
 		"id":   "call_abc123",
-		"type":  "function",
+		"type": "function",
 		"function": map[string]interface{}{
 			"name":      "get_weather",
 			"arguments": "{\"city\":\"London\"}",
@@ -933,7 +933,6 @@ func TestOpenAIStreaming_ToolCallsThenText(t *testing.T) {
 
 	var upstreamBody string
 	upstreamBody += makeOpenAIChunkWithRole("test-model", "", "", "", []map[string]interface{}{toolCall}, true)
-	upstreamBody += makeOpenAIChunkWithRole("test-model", "", "", "tool_calls", nil, false)
 	upstreamBody += makeOpenAIChunkWithRole("test-model", "The weather is sunny", "", "", nil, false)
 	upstreamBody += makeOpenAIChunkWithRole("test-model", "", "", "stop", nil, false)
 	upstreamBody += "data: [DONE]\n"
@@ -960,17 +959,16 @@ func TestOpenAIStreaming_ToolCallsThenText(t *testing.T) {
 		eventTypes = append(eventTypes, e.Event)
 	}
 
-	// Tool calls should close before text opens
+	// Tool calls should close before text opens; a single terminating
+	// message_delta + message_stop is emitted at finish_reason.
 	expected := []string{
 		"message_start",
-		"content_block_start",   // tool_use
-		"content_block_delta",  // tool args
-		"content_block_stop",   // tool_use closes
-		"message_delta",
-		"message_stop",
-		"content_block_start",  // text
-		"content_block_delta",  // text content
-		"content_block_stop",   // text closes
+		"content_block_start", // tool_use
+		"content_block_delta", // tool args
+		"content_block_stop",  // tool_use closes
+		"content_block_start", // text
+		"content_block_delta", // text content
+		"content_block_stop",  // text closes
 		"message_delta",
 		"message_stop",
 	}
@@ -1190,10 +1188,208 @@ func TestOllamaStreaming_ToolCallsWithStopDoneReason(t *testing.T) {
 			if delta, ok := data["delta"].(map[string]interface{}); ok {
 				if stopReason, ok := delta["stop_reason"].(string); ok {
 					if stopReason != "tool_use" {
-							t.Errorf("expected stop_reason 'tool_use', got '%s'", stopReason)
-						}
+						t.Errorf("expected stop_reason 'tool_use', got '%s'", stopReason)
+					}
 				}
 			}
 		}
+	}
+}
+
+// Test that a premature stream end (no done chunk) still terminates the SSE
+// stream with message_delta + message_stop so clients don't hang.
+func TestOllamaStreaming_ConnectionDropSendsMessageStop(t *testing.T) {
+	upstreamBody := makeOllamaChunk("test-model", "Hello", "", false, "")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(upstreamBody))
+		flusher.Flush()
+		// Connection drops - no done chunk
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
+
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+	eventTypes := []string{}
+	for _, e := range events {
+		eventTypes = append(eventTypes, e.Event)
+	}
+
+	if len(eventTypes) == 0 || eventTypes[len(eventTypes)-1] != "message_stop" {
+		t.Fatalf("expected stream to end with message_stop, got %v", eventTypes)
+	}
+	if len(eventTypes) < 2 || eventTypes[len(eventTypes)-2] != "message_delta" {
+		t.Errorf("expected message_delta before message_stop, got %v", eventTypes)
+	}
+
+	// Verify stop_reason defaults to end_turn on premature end
+	for _, e := range events {
+		if e.Event == "message_delta" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if delta, ok := data["delta"].(map[string]interface{}); ok {
+				if sr, ok := delta["stop_reason"].(string); ok && sr != "end_turn" {
+					t.Errorf("expected stop_reason 'end_turn' on drop, got '%s'", sr)
+				}
+			}
+		}
+	}
+}
+
+// Test that an OpenAI upstream stream ending without finish_reason still
+// terminates with message_delta + message_stop.
+func TestOpenAIStreaming_ConnectionDropSendsMessageStop(t *testing.T) {
+	var upstreamBody string
+	upstreamBody += makeOpenAIChunk("test-model", "Hello", "", "", nil)
+	// No finish_reason, no [DONE] - connection drops
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(upstreamBody))
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
+
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+	eventTypes := []string{}
+	for _, e := range events {
+		eventTypes = append(eventTypes, e.Event)
+	}
+
+	if len(eventTypes) == 0 || eventTypes[len(eventTypes)-1] != "message_stop" {
+		t.Fatalf("expected stream to end with message_stop, got %v", eventTypes)
+	}
+	if len(eventTypes) < 2 || eventTypes[len(eventTypes)-2] != "message_delta" {
+		t.Errorf("expected message_delta before message_stop, got %v", eventTypes)
+	}
+}
+
+// Test that [DONE] without a finish_reason still terminates the stream.
+func TestOpenAIStreaming_DoneWithoutFinishReason(t *testing.T) {
+	var upstreamBody string
+	upstreamBody += makeOpenAIChunk("test-model", "Hello", "", "", nil)
+	upstreamBody += "data: [DONE]\n"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
+
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+	eventTypes := []string{}
+	for _, e := range events {
+		eventTypes = append(eventTypes, e.Event)
+	}
+
+	if len(eventTypes) == 0 || eventTypes[len(eventTypes)-1] != "message_stop" {
+		t.Fatalf("expected stream to end with message_stop, got %v", eventTypes)
+	}
+
+	for _, e := range events {
+		if e.Event == "message_delta" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if delta, ok := data["delta"].(map[string]interface{}); ok {
+				if sr, ok := delta["stop_reason"].(string); ok && sr != "end_turn" {
+					t.Errorf("expected stop_reason 'end_turn', got '%s'", sr)
+				}
+			}
+		}
+	}
+}
+
+// Test that the usage-only final chunk (choices:[] + usage) from OpenAI
+// streaming with include_usage=true is captured and reported in message_delta.
+func TestOpenAIStreaming_UsageOnlyChunk(t *testing.T) {
+	contentChunk := makeOpenAIChunk("test-model", "Hello", "", "", nil)
+	finishChunk := makeOpenAIChunk("test-model", "", "", "stop", nil)
+
+	usageOnly := map[string]interface{}{
+		"id":      "chatcmpl-test",
+		"object":  "chat.completion.chunk",
+		"model":   "test-model",
+		"choices": []interface{}{},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     7,
+			"completion_tokens": 12,
+			"total_tokens":      19,
+		},
+	}
+	usageJSON, _ := json.Marshal(usageOnly)
+
+	var upstreamBody string
+	upstreamBody += contentChunk
+	upstreamBody += finishChunk
+	upstreamBody += "data: " + string(usageJSON) + "\n"
+	upstreamBody += "data: [DONE]\n"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
+
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+
+	var outputTokens interface{}
+	var foundDelta bool
+	for _, e := range events {
+		if e.Event == "message_delta" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if usage, ok := data["usage"].(map[string]interface{}); ok {
+				outputTokens = usage["output_tokens"]
+				foundDelta = true
+			}
+		}
+	}
+	if !foundDelta {
+		t.Fatal("expected message_delta event with usage")
+	}
+	if outputTokens != float64(12) {
+		t.Errorf("expected output_tokens=12 from usage-only chunk, got %v", outputTokens)
 	}
 }

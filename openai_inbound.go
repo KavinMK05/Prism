@@ -47,6 +47,14 @@ func (pr *ProviderRouter) HandleOpenAIChatCompletions(w http.ResponseWriter, r *
 	globalStats.StartRequest(openAIReq.Model, rp.ProviderID, client)
 	defer globalStats.EndRequest()
 
+	// Codex provider: translate Chat Completions to Responses API and forward
+	// to chatgpt.com/backend-api/codex/responses (Chat Completions endpoint is
+	// Cloudflare-blocked for bearer tokens)
+	if rp.ProviderType == "codex" {
+		pr.handleCodexChatCompletions(w, r, &openAIReq, rp)
+		return
+	}
+
 	if openAIReq.Stream {
 		if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
 			pr.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq, rp)
@@ -407,7 +415,7 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 			argsJSON, _ := json.Marshal(tc.Function.Arguments)
 			id := tc.ID
 			if id == "" {
-				id = fmt.Sprintf("call_%s_%d", tc.Function.Name, i)
+				id = generateToolUseID(tc.Function.Name)
 			}
 			toolCalls[i] = OpenAIToolCall{
 				ID:   id,
@@ -502,7 +510,7 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 		for _, m := range mr.KnownModels {
 			if !seen[m.ID] {
 				seen[m.ID] = true
-				providerName := pr.cfg.getProviderName(m.Provider)
+				providerName := pr.getConfig().getProviderName(m.Provider)
 				models = append(models, buildModelObj(m.ID, m, providerName))
 			}
 		}
@@ -517,9 +525,9 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
-				providerName := pr.cfg.getProviderName(entry.Provider)
+				providerName := pr.getConfig().getProviderName(entry.Provider)
 				if providerName == "" {
-					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
+					providerName = pr.getConfig().getProviderName(pr.getConfig().DefaultProvider)
 				}
 				models = append(models, buildModelObj(target, entry, providerName))
 			}
@@ -535,9 +543,9 @@ func (pr *ProviderRouter) HandleModels(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
-				providerName := pr.cfg.getProviderName(entry.Provider)
+				providerName := pr.getConfig().getProviderName(entry.Provider)
 				if providerName == "" {
-					providerName = pr.cfg.getProviderName(pr.cfg.DefaultProvider)
+					providerName = pr.getConfig().getProviderName(pr.getConfig().DefaultProvider)
 				}
 				models = append(models, buildModelObj(alias, entry, providerName))
 			}

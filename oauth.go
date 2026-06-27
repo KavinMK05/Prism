@@ -33,6 +33,13 @@ type OAuthAccount struct {
 	CreditsRemaining    float64 `json:"credits_remaining"`
 	WeeklyResetAt       int64   `json:"weekly_reset_at"`
 	LastUsageCheck      int64   `json:"last_usage_check"`
+	SessionPercent      float64 `json:"session_percent,omitempty"`
+	SessionResetAt      int64   `json:"session_reset_at,omitempty"`
+	WeeklyPercent       float64 `json:"weekly_percent,omitempty"`
+	ReviewPercent       float64 `json:"review_percent,omitempty"`
+	CreditsBalance      float64 `json:"credits_balance,omitempty"`
+	RateLimitResets     int     `json:"rate_limit_resets,omitempty"`
+	PercentUsed         float64 `json:"percent_used,omitempty"`
 }
 
 // IsTokenExpired returns true if the access token has expired

@@ -3,8 +3,41 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 )
+
+// extractCustomToolInput parses the JSON arguments string from a chat-completions
+// function call and extracts the raw input value for a custom_tool_call item.
+// Custom tools (like apply_patch) use an `input` field (raw string), not
+// `arguments` (JSON string). The model emits {"patch": "..."} as arguments;
+// we extract the "patch" value to use as the `input`. If parsing fails or the
+// field is missing, we fall back to the raw arguments string.
+func extractCustomToolInput(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" || arguments == "{}" {
+		return ""
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		// Not valid JSON — use raw string as input
+		return arguments
+	}
+	// Try common field names: "patch" (apply_patch), "input", "command" (local_shell)
+	for _, key := range []string{"patch", "input", "command"} {
+		if val, ok := parsed[key]; ok {
+			if s, ok := val.(string); ok {
+				return s
+			}
+			// Non-string value — marshal it back
+			b, _ := json.Marshal(val)
+			return string(b)
+		}
+	}
+	// No known field — return the raw arguments
+	return arguments
+}
 
 func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string) *ResponsesAPIResponse {
 	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
@@ -86,15 +119,34 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 	if len(msg.ToolCalls) > 0 {
 		for _, tc := range msg.ToolCalls {
 			outputType := resolveToolOutputType(tc.Function.Name, toolTypes)
-			funcCall := ResponsesAPIFunctionCallItem{
-				ID:        generateID("fc_"),
-				Type:      outputType,
-				CallID:    tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-				Status:    "completed",
+			log.Printf("[RESP] tool call: name=%s resolved_type=%s toolTypes=%v", tc.Function.Name, outputType, toolTypes)
+			itemID := tc.ID
+			if itemID == "" {
+				itemID = generateID("fc_")
 			}
-			output = append(output, funcCall)
+			// For custom_tool_call, use `input` (raw string) instead of `arguments` (JSON string).
+			// The model emits {"patch": "..."} as arguments; we extract the raw patch text.
+			if outputType == "custom_tool_call" {
+				rawInput := extractCustomToolInput(tc.Function.Arguments)
+				output = append(output, map[string]interface{}{
+					"id":     itemID,
+					"type":   "custom_tool_call",
+					"call_id": itemID,
+					"name":   tc.Function.Name,
+					"input":  rawInput,
+					"status": "completed",
+				})
+			} else {
+				funcCall := ResponsesAPIFunctionCallItem{
+					ID:        itemID,
+					Type:      outputType,
+					CallID:    itemID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+					Status:    "completed",
+				}
+				output = append(output, funcCall)
+			}
 		}
 	}
 

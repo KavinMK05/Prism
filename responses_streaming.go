@@ -12,10 +12,108 @@ import (
 	"time"
 )
 
+// buildToolCallItem builds the output item map for a completed tool call.
+// For custom_tool_call (e.g. apply_patch), it uses the `input` field with the
+// raw extracted text instead of `arguments` (JSON string).
+func buildToolCallItem(itemID, outputType, callID, name, arguments, status string) map[string]interface{} {
+	if outputType == "custom_tool_call" {
+		return map[string]interface{}{
+			"id":     itemID,
+			"type":   "custom_tool_call",
+			"call_id": callID,
+			"name":   name,
+			"input":  extractCustomToolInput(arguments),
+			"status": status,
+		}
+	}
+	return map[string]interface{}{
+		"id":        itemID,
+		"type":      outputType,
+		"call_id":   callID,
+		"name":      name,
+		"arguments": arguments,
+		"status":    status,
+	}
+}
+
+// buildToolCallAddedItem builds the output_item.added item for a new tool call.
+// For custom_tool_call, uses `input` instead of `arguments`.
+func buildToolCallAddedItem(itemID, outputType, callID, name string) map[string]interface{} {
+	if outputType == "custom_tool_call" {
+		return map[string]interface{}{
+			"id":     itemID,
+			"type":   "custom_tool_call",
+			"call_id": callID,
+			"name":   name,
+			"input":  "",
+			"status": "in_progress",
+		}
+	}
+	return map[string]interface{}{
+		"id":        itemID,
+		"type":      outputType,
+		"call_id":   callID,
+		"name":      name,
+		"arguments": "",
+		"status":    "in_progress",
+	}
+}
+
+// emitToolCallDoneEvent emits the appropriate "done" event for a tool call.
+// For custom_tool_call, emits response.custom_tool_call_input.done with `input`.
+// For function_call, emits response.function_call_arguments.done with `arguments`.
+func emitToolCallDoneEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool, outputType, callID string, arguments string, outputIndex int) {
+	if outputType == "custom_tool_call" {
+		emitResponsesEvent(w, flusher, canFlush, "response.custom_tool_call_input.done", map[string]interface{}{
+			"type":         "response.custom_tool_call_input.done",
+			"output_index": outputIndex,
+			"item_id":      callID,
+			"input":        extractCustomToolInput(arguments),
+		})
+	} else {
+		emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.done", map[string]interface{}{
+			"type":         "response.function_call_arguments.done",
+			"output_index": outputIndex,
+			"call_id":      callID,
+			"arguments":    arguments,
+		})
+	}
+}
+
+// emitToolCallDeltaEvent emits the appropriate delta event for streaming tool arguments.
+// For custom_tool_call, deltas are SKIPPED because the upstream chat-completions
+// model streams JSON fragments (e.g. {"patch": "..."}) which are not the raw
+// tool input. Emitting them as custom_tool_call_input.delta would cause Codex
+// Desktop to accumulate JSON fragments as the input, producing invalid patch
+// text. Instead, we only emit the done event with the fully extracted input.
+// For function_call, emits response.function_call_arguments.delta as normal.
+func emitToolCallDeltaEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool, outputType, callID string, delta string, outputIndex int) {
+	if outputType == "custom_tool_call" {
+		// Skip delta events for custom_tool_call — the done event carries
+		// the correct extracted input.
+		return
+	}
+	emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
+		"type":         "response.function_call_arguments.delta",
+		"output_index": outputIndex,
+		"call_id":      callID,
+		"delta":        delta,
+	})
+}
+
 func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
+
+	// Log tools being sent upstream for debugging
+	if len(chatReq.Tools) > 0 {
+		for _, t := range chatReq.Tools {
+			log.Printf("[REQ] streaming tool upstream: type=%s name=%s", t.Type, t.Function.Name)
+		}
+	} else {
+		log.Printf("[REQ] streaming: no tools in request (original tools count: %d)", len(respReq.Tools))
+	}
 
 	// Validate reasoning_effort for the model
 	chatReq.ReasoningEffort = pr.validateReasoningEffort(chatReq.Model, chatReq.ReasoningEffort)
@@ -265,20 +363,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				if tc.ID != "" && tc.Function.Name != "" {
 					// Close previous function call if any
 					if funcCallItemID != "" {
-						emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.done", map[string]interface{}{
-							"type":         "response.function_call_arguments.done",
-							"output_index": outputIndex,
-							"call_id":      funcCallCallID,
-							"arguments":    accumulatedArgs,
-						})
-						fcItem := map[string]interface{}{
-							"id":        funcCallItemID,
-							"type":      funcCallOutputType,
-							"call_id":   funcCallCallID,
-							"name":      funcCallName,
-							"arguments": accumulatedArgs,
-							"status":    "completed",
-						}
+						emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, accumulatedArgs, outputIndex)
+						fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
 						emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 							"type":         "response.output_item.done",
 							"output_index": outputIndex,
@@ -287,23 +373,20 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 						completedOutput = append(completedOutput, fcItem)
 					}
 
-					outputIndex++
-					funcCallItemID = generateID("fc_")
-					funcCallCallID = tc.ID
-					funcCallName = tc.Function.Name
-					funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
-					accumulatedArgs = ""
+				outputIndex++
+				funcCallCallID = tc.ID
+				if funcCallCallID == "" {
+					funcCallCallID = generateID("fc_")
+				}
+				funcCallItemID = funcCallCallID
+				funcCallName = tc.Function.Name
+				funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
+				log.Printf("[RESP] streaming tool call: name=%s resolved_type=%s toolTypes=%v", funcCallName, funcCallOutputType, toolTypes)
+				accumulatedArgs = ""
 					emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
 						"type":         "response.output_item.added",
 						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":        funcCallItemID,
-							"type":      funcCallOutputType,
-							"call_id":   tc.ID,
-							"name":      tc.Function.Name,
-							"arguments": "",
-							"status":    "in_progress",
-						},
+						"item":         buildToolCallAddedItem(funcCallItemID, funcCallOutputType, tc.ID, tc.Function.Name),
 					})
 				}
 
@@ -312,12 +395,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					liveOutputTokens++
 					globalStats.AddTokens(1)
 					if tc.Function.Arguments != "{}" {
-						emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
-							"type":         "response.function_call_arguments.delta",
-							"output_index": outputIndex,
-							"call_id":      funcCallCallID,
-							"delta":        tc.Function.Arguments,
-						})
+						emitToolCallDeltaEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, tc.Function.Arguments, outputIndex)
 					}
 				}
 			}
@@ -446,20 +524,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 			// Close function call if active
 			if funcCallItemID != "" {
-				emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.done", map[string]interface{}{
-					"type":         "response.function_call_arguments.done",
-					"output_index": outputIndex,
-					"call_id":      funcCallCallID,
-					"arguments":    accumulatedArgs,
-				})
-				fcItem := map[string]interface{}{
-					"id":        funcCallItemID,
-					"type":      funcCallOutputType,
-					"call_id":   funcCallCallID,
-					"name":      funcCallName,
-					"arguments": accumulatedArgs,
-					"status":    "completed",
-				}
+				emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, accumulatedArgs, outputIndex)
+				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
@@ -534,14 +600,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		}
 
 		if funcCallItemID != "" {
-			fcItem := map[string]interface{}{
-				"id":        funcCallItemID,
-				"type":      funcCallOutputType,
-				"call_id":   funcCallCallID,
-				"name":      funcCallName,
-				"arguments": accumulatedArgs,
-				"status":    "completed",
-			}
+			fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
@@ -841,42 +900,24 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 				globalStats.AddTokens(1)
 
-				outputIndex++
-				funcCallItemID = generateID("fc_")
-				funcCallCallID = fmt.Sprintf("call_%s_%s", toolName, funcCallItemID)
-				funcCallName = toolName
-				funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
+			outputIndex++
+			funcCallCallID = fmt.Sprintf("call_%s_%d", toolName, outputIndex)
+			funcCallItemID = funcCallCallID
+			funcCallName = toolName
+			funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
 
-				argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			argsStr := string(argsJSON)
 
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
-					"type":         "response.output_item.added",
-					"output_index": outputIndex,
-					"item": map[string]interface{}{
-						"id":        funcCallItemID,
-						"type":      funcCallOutputType,
-						"call_id":   funcCallCallID,
-						"name":      toolName,
-						"arguments": string(argsJSON),
-						"status":    "completed",
-					},
-				})
+			emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				"type":         "response.output_item.added",
+				"output_index": outputIndex,
+				"item":         buildToolCallAddedItem(funcCallItemID, funcCallOutputType, funcCallCallID, toolName),
+			})
 
-				emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.done", map[string]interface{}{
-					"type":         "response.function_call_arguments.done",
-					"output_index": outputIndex,
-					"call_id":      funcCallCallID,
-					"arguments":    string(argsJSON),
-				})
+				emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, argsStr, outputIndex)
 
-				fcItem := map[string]interface{}{
-					"id":        funcCallItemID,
-					"type":      funcCallOutputType,
-					"call_id":   funcCallCallID,
-					"name":      toolName,
-					"arguments": string(argsJSON),
-					"status":    "completed",
-				}
+				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, toolName, argsStr, "completed")
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
@@ -1006,14 +1047,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 			// Close function call if active
 			if funcCallItemID != "" {
-				fcItem := map[string]interface{}{
-					"id":        funcCallItemID,
-					"type":      funcCallOutputType,
-					"call_id":   funcCallCallID,
-					"name":      funcCallName,
-					"arguments": "{}",
-					"status":    "completed",
-				}
+				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, "{}", "completed")
 				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
@@ -1125,14 +1159,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		}
 
 		if funcCallItemID != "" {
-			fcItem := map[string]interface{}{
-				"id":        funcCallItemID,
-				"type":      funcCallOutputType,
-				"call_id":   funcCallCallID,
-				"name":      funcCallName,
-				"arguments": "{}",
-				"status":    "completed",
-			}
+			fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, "{}", "completed")
 			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,

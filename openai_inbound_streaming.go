@@ -213,11 +213,11 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 				}
 				idx := state.toolCallIndex
 
-				// Use Ollama's native ID if available, otherwise generate one
-				toolCallID := tc.ID
-				if toolCallID == "" {
-					toolCallID = fmt.Sprintf("call_%s_%d", toolName, idx)
-				}
+			// Use Ollama's native ID if available, otherwise generate a unique one
+			toolCallID := tc.ID
+			if toolCallID == "" {
+				toolCallID = generateToolUseID(toolName)
+			}
 
 				state.writeOpenAISSE(OpenAIStreamChunk{
 					ID:      respID,

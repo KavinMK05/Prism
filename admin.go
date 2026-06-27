@@ -102,9 +102,9 @@ func fetchModelsDevModel(modelID, prismProvider string) (*modelsDevResult, error
 		return nil, fmt.Errorf("failed to parse models.dev response")
 	}
 	type modelInfo struct {
-		Name            string `json:"name"`
-		ID              string `json:"id"`
-		Limit           struct {
+		Name  string `json:"name"`
+		ID    string `json:"id"`
+		Limit struct {
 			Context int `json:"context"`
 			Output  int `json:"output"`
 		} `json:"limit"`
@@ -449,6 +449,9 @@ func startAdminServer(cfg *Config, port string) {
 			}
 			// Reload into running proxy
 			reloadProxyModelRemap()
+			// Sync agent configs so newly added models appear in Claude Code,
+			// Factory Droid, and OpenCode
+			SyncAgents(proxyPortFromEnv())
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		default:
@@ -557,6 +560,184 @@ func startAdminServer(cfg *Config, port string) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// API: Agent integrations (Claude Code, Factory Droid, OpenCode)
+	// Generic handlers dispatch by ?id=. Setup/Restore return 501 in Phase 1
+	// until each agent's writer lands in its own phase.
+	mux.HandleFunc("/admin/agent/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if !isSupportedAgent(id) {
+			writeJSONError(w, "unknown agent", 400)
+			return
+		}
+		resp := map[string]interface{}{
+			"id":          id,
+			"displayName": agentDisplayName(id),
+			"installed":   agentInstalled(id),
+			"active":      isAgentActive(id),
+		}
+		// Expose persisted Claude Code tier mappings so the UI can pre-select.
+		if id == "claude-code" {
+			tiers := map[string]string{}
+			if cfg := loadConfig(); cfg.AgentIntegrations != nil && cfg.AgentIntegrations.ClaudeCodeTiers != nil {
+				tiers = cfg.AgentIntegrations.ClaudeCodeTiers
+			}
+			resp["tiers"] = tiers
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("/admin/agent/setup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if !isSupportedAgent(id) {
+			writeJSONError(w, "unknown agent", 400)
+			return
+		}
+		if !agentInstalled(id) {
+			writeJSONError(w, agentDisplayName(id)+" is not installed", 404)
+			return
+		}
+		switch id {
+		case "claude-code":
+			// Optional body: { "tiers": { "opus": "...", "sonnet": "...", "haiku": "...", "subagent": "..." } }
+			var body struct {
+				Tiers map[string]string `json:"tiers"`
+			}
+			if r.ContentLength != 0 {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+					return
+				}
+			}
+			cfg := loadConfig()
+			if cfg.AgentIntegrations == nil {
+				cfg.AgentIntegrations = &AgentIntegrationsConfig{ClaudeCodeTiers: map[string]string{}}
+			}
+			if cfg.AgentIntegrations.ClaudeCodeTiers == nil {
+				cfg.AgentIntegrations.ClaudeCodeTiers = map[string]string{}
+			}
+			if len(body.Tiers) > 0 {
+				for k, v := range body.Tiers {
+					cfg.AgentIntegrations.ClaudeCodeTiers[k] = v
+				}
+				if err := saveConfig(cfg); err != nil {
+					writeJSONError(w, "failed to save config: "+err.Error(), 500)
+					return
+				}
+			}
+			if err := installClaudeCodeConfig(proxyPortFromEnv(), cfg.AgentIntegrations.ClaudeCodeTiers); err != nil {
+				writeJSONError(w, "failed to install config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"tiers":  cfg.AgentIntegrations.ClaudeCodeTiers,
+			})
+		case "factory-droid":
+			remap := loadModelRemapping()
+			if len(remap.KnownModels) == 0 {
+				writeJSONError(w, "no Prism models configured", 400)
+				return
+			}
+			if err := installFactoryDroidConfig(proxyPortFromEnv(), remap); err != nil {
+				writeJSONError(w, "failed to install config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"models": len(remap.KnownModels),
+			})
+		case "opencode":
+			remap := loadModelRemapping()
+			if len(remap.KnownModels) == 0 {
+				writeJSONError(w, "no Prism models configured", 400)
+				return
+			}
+			if err := installOpencodeConfig(proxyPortFromEnv(), remap); err != nil {
+				writeJSONError(w, "failed to install config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"models": len(remap.KnownModels),
+			})
+		case "zcode":
+			remap := loadModelRemapping()
+			if len(remap.KnownModels) == 0 {
+				writeJSONError(w, "no Prism models configured", 400)
+				return
+			}
+			if err := installZcodeConfig(proxyPortFromEnv(), remap); err != nil {
+				writeJSONError(w, "failed to install config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"models": len(remap.KnownModels),
+			})
+		default:
+			// Phase 1 scaffold: per-agent setup for factory-droid/opencode lands in Phases 3-4.
+			writeJSONError(w, agentDisplayName(id)+" setup is not yet implemented", 501)
+		}
+	})
+
+	mux.HandleFunc("/admin/agent/restore", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if !isSupportedAgent(id) {
+			writeJSONError(w, "unknown agent", 400)
+			return
+		}
+		switch id {
+		case "claude-code":
+			if err := restoreClaudeCodeConfig(); err != nil {
+				writeJSONError(w, "failed to restore: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case "factory-droid":
+			if err := restoreFactoryDroidConfig(); err != nil {
+				writeJSONError(w, "failed to restore: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case "opencode":
+			if err := restoreOpencodeConfig(); err != nil {
+				writeJSONError(w, "failed to restore: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case "zcode":
+			if err := restoreZcodeConfig(); err != nil {
+				writeJSONError(w, "failed to restore: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		default:
+			// Phase 1 scaffold: per-agent restore for factory-droid/opencode lands in Phases 3-4.
+			writeJSONError(w, agentDisplayName(id)+" restore is not yet implemented", 501)
+		}
 	})
 
 	// API: Logs
@@ -669,12 +850,12 @@ func startAdminServer(cfg *Config, port string) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"daily_tokens":    daily,
-			"monthly_tokens":  monthly,
-			"tps_history":     tpsHist,
-			"by_model":        byModel,
-			"by_client":       byClient,
-			"heatmap_tokens":  heatmap,
+			"daily_tokens":   daily,
+			"monthly_tokens": monthly,
+			"tps_history":    tpsHist,
+			"by_model":       byModel,
+			"by_client":      byClient,
+			"heatmap_tokens": heatmap,
 		})
 	})
 
@@ -754,17 +935,17 @@ func startAdminServer(cfg *Config, port string) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"found":             true,
-			"id":                result.ID,
-			"name":              result.Name,
-			"provider_id":       result.ProviderID,
-			"context_length":    result.ContextLength,
-			"max_output_tokens": result.MaxOutputTokens,
-			"reasoning":         result.Reasoning,
-			"tool_calling":      result.ToolCall,
+			"found":              true,
+			"id":                 result.ID,
+			"name":               result.Name,
+			"provider_id":        result.ProviderID,
+			"context_length":     result.ContextLength,
+			"max_output_tokens":  result.MaxOutputTokens,
+			"reasoning":          result.Reasoning,
+			"tool_calling":       result.ToolCall,
 			"structured_outputs": result.StructuredOutput,
-			"vision":            result.Vision,
-			"reasoning_effort":  result.ReasoningEffort,
+			"vision":             result.Vision,
+			"reasoning_effort":   result.ReasoningEffort,
 		})
 	})
 
@@ -942,21 +1123,27 @@ func handleOAuthAccounts(w http.ResponseWriter, r *http.Request) {
 
 	// Return accounts with masked tokens
 	type safeAccount struct {
-		ID                 string  `json:"id"`
-		Provider           string  `json:"provider"`
-		Label              string  `json:"label"`
-		Email              string  `json:"email"`
-		PlanTier           string  `json:"plan_tier"`
-		Active             bool    `json:"active"`
-		TokenExpiry        string  `json:"token_expiry"`
-		TokenValid         bool    `json:"token_valid"`
-		CreditsUsed        float64 `json:"credits_used"`
-		CreditsTotal       float64 `json:"credits_total"`
-		CreditsRemaining   float64 `json:"credits_remaining"`
-		PercentUsed        float64 `json:"percent_used"`
-		WeeklyResetAt      int64   `json:"weekly_reset_at"`
-		LastUsageCheck     int64   `json:"last_usage_check"`
-		UsageUnavailable   bool    `json:"usage_unavailable"`
+		ID               string  `json:"id"`
+		Provider         string  `json:"provider"`
+		Label            string  `json:"label"`
+		Email            string  `json:"email"`
+		PlanTier         string  `json:"plan_tier"`
+		Active           bool    `json:"active"`
+		TokenExpiry      string  `json:"token_expiry"`
+		TokenValid       bool    `json:"token_valid"`
+		CreditsUsed      float64 `json:"credits_used"`
+		CreditsTotal     float64 `json:"credits_total"`
+		CreditsRemaining float64 `json:"credits_remaining"`
+		PercentUsed      float64 `json:"percent_used"`
+		WeeklyResetAt    int64   `json:"weekly_reset_at"`
+		LastUsageCheck   int64   `json:"last_usage_check"`
+		UsageUnavailable bool    `json:"usage_unavailable"`
+		SessionPercent   float64 `json:"session_percent"`
+		SessionResetAt   int64   `json:"session_reset_at"`
+		WeeklyPercent    float64 `json:"weekly_percent"`
+		ReviewPercent    float64 `json:"review_percent"`
+		CreditsBalance   float64 `json:"credits_balance"`
+		RateLimitResets  int     `json:"rate_limit_resets"`
 	}
 
 	accounts := make([]safeAccount, 0, len(cfg.OAuthAccounts))
@@ -967,25 +1154,33 @@ func handleOAuthAccounts(w http.ResponseWriter, r *http.Request) {
 			tokenExpiry = time.Unix(a.ExpiresAt, 0).Format("2006-01-02 15:04:05")
 		}
 
-		// Get cached usage
-		usage := getCachedUsage(a.ID)
-		creditsUsed := a.CreditsUsed
-		creditsTotal := a.CreditsTotal
-		creditsRemaining := a.CreditsRemaining
-		percentUsed := float64(0)
+		// Start with stored values
+		sessionPercent := a.SessionPercent
+		sessionResetAt := a.SessionResetAt
+		weeklyPercent := a.WeeklyPercent
+		weeklyResetAt := a.WeeklyResetAt
+		reviewPercent := a.ReviewPercent
+		creditsBalance := a.CreditsBalance
+		rateLimitResets := a.RateLimitResets
+		percentUsed := a.SessionPercent
 		usageUnavailable := false
-		if creditsTotal > 0 {
-			percentUsed = (creditsUsed / creditsTotal) * 100
-		}
 
+		// Override with cached usage if newer
+		usage := getCachedUsage(a.ID)
 		if usage != nil && usage.LastUpdated > a.LastUsageCheck {
-			creditsUsed = usage.CreditsUsed
-			creditsTotal = usage.CreditsTotal
-			creditsRemaining = usage.CreditsRemaining
+			sessionPercent = usage.SessionPercent
+			sessionResetAt = usage.SessionResetAt
+			weeklyPercent = usage.WeeklyPercent
+			weeklyResetAt = usage.WeeklyResetAt
+			reviewPercent = usage.ReviewPercent
+			creditsBalance = usage.CreditsBalance
+			rateLimitResets = usage.RateLimitResets
 			percentUsed = usage.PercentUsed
 			if usage.Error == "usage_unavailable" {
 				usageUnavailable = true
 			}
+		} else if usage != nil && usage.Error == "usage_unavailable" {
+			usageUnavailable = true
 		}
 
 		// Default plan tier to provider name if empty, try JWT fallback
@@ -1006,13 +1201,16 @@ func handleOAuthAccounts(w http.ResponseWriter, r *http.Request) {
 			Active:           a.Active,
 			TokenExpiry:      tokenExpiry,
 			TokenValid:       tokenValid,
-			CreditsUsed:      creditsUsed,
-			CreditsTotal:     creditsTotal,
-			CreditsRemaining: creditsRemaining,
 			PercentUsed:      percentUsed,
-			WeeklyResetAt:    a.WeeklyResetAt,
+			WeeklyResetAt:    weeklyResetAt,
 			LastUsageCheck:   a.LastUsageCheck,
 			UsageUnavailable: usageUnavailable,
+			SessionPercent:   sessionPercent,
+			SessionResetAt:   sessionResetAt,
+			WeeklyPercent:    weeklyPercent,
+			ReviewPercent:    reviewPercent,
+			CreditsBalance:   creditsBalance,
+			RateLimitResets:  rateLimitResets,
 		})
 	}
 

@@ -22,6 +22,12 @@ type UsageInfo struct {
 	WeeklyResetAt    int64   `json:"weekly_reset_at"`
 	LastUpdated      int64   `json:"last_updated"`
 	Error            string  `json:"error,omitempty"`
+	SessionPercent   float64 `json:"session_percent,omitempty"`
+	SessionResetAt   int64   `json:"session_reset_at,omitempty"`
+	WeeklyPercent    float64 `json:"weekly_percent,omitempty"`
+	ReviewPercent    float64 `json:"review_percent,omitempty"`
+	CreditsBalance   float64 `json:"credits_balance,omitempty"`
+	RateLimitResets  int     `json:"rate_limit_resets,omitempty"`
 }
 
 var (
@@ -51,6 +57,12 @@ func refreshUsageForAccount(account *OAuthAccount) (*UsageInfo, error) {
 		return nil, fmt.Errorf("failed to get valid access token: %w", err)
 	}
 
+	// Extract chatgpt-account-id (re-extract from JWT if not stored)
+	accountID := account.ChatGPTAccountID
+	if accountID == "" && token != "" {
+		accountID = parseChatGPTAccountID(token)
+	}
+
 	info := &UsageInfo{
 		Email:       account.Email,
 		LastUpdated: time.Now().Unix(),
@@ -58,55 +70,30 @@ func refreshUsageForAccount(account *OAuthAccount) (*UsageInfo, error) {
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	// Fetch account info from /backend-api/me
-	meInfo, meErr := fetchCodexAccountInfo(client, token)
-	if meErr != nil {
-		log.Printf("[Usage] Failed to fetch account info from ChatGPT backend for %s: %v", account.Email, meErr)
-		// 403 means we don't have access - try api.openai.com/v1/me as fallback
-		if isForbidden(meErr) {
+	// Fetch usage from /backend-api/wham/usage (same endpoint as openusage)
+	usage, err := fetchCodexUsage(client, token, accountID)
+	if err != nil {
+		log.Printf("[Usage] Failed to fetch usage for %s: %v", account.Email, err)
+		if isForbidden(err) {
 			info.Error = "usage_unavailable"
-			// Fallback to api.openai.com
-			apiMeInfo, apiErr := fetchOpenAIMe(client, token)
-			if apiErr != nil {
-				log.Printf("[Usage] Failed to fetch from api.openai.com for %s: %v", account.Email, apiErr)
-			} else {
-				if apiMeInfo.Email != "" {
-					info.Email = apiMeInfo.Email
-				}
-				if apiMeInfo.PlanTier != "" {
-					info.PlanTier = apiMeInfo.PlanTier
-				}
-			}
 		} else {
-			info.Error = fmt.Sprintf("Failed to fetch account info: %v", meErr)
+			info.Error = fmt.Sprintf("Failed to fetch usage: %v", err)
 		}
 	} else {
-		info.Email = meInfo.Email
-		info.PlanTier = meInfo.PlanTier
-	}
-
-	// If plan tier is still empty, try to extract from JWT access token
-	if info.PlanTier == "" && account.AccessToken != "" {
-		info.PlanTier = parseJWTPlanTier(account.AccessToken)
-	}
-
-	// Fetch usage limits from /backend-api/accounts/check
-	checkInfo, checkErr := fetchCodexAccountCheck(client, token)
-	if checkErr != nil {
-		log.Printf("[Usage] Failed to fetch usage check for %s: %v", account.Email, checkErr)
-		if isForbidden(checkErr) {
-			if info.Error == "" {
-				info.Error = "usage_unavailable"
-			}
-		} else if info.Error == "" {
-			info.Error = fmt.Sprintf("Failed to fetch usage: %v", checkErr)
+		info.PlanTier = usage.PlanTier
+		info.SessionPercent = usage.SessionPercent
+		info.SessionResetAt = usage.SessionResetAt
+		info.WeeklyPercent = usage.WeeklyPercent
+		info.WeeklyResetAt = usage.WeeklyResetAt
+		info.ReviewPercent = usage.ReviewPercent
+		info.CreditsBalance = usage.CreditsBalance
+		info.RateLimitResets = usage.RateLimitResets
+		// Set PercentUsed to session percent for backwards compat with UI
+		info.PercentUsed = usage.SessionPercent
+		// If no plan tier from usage API, try JWT
+		if info.PlanTier == "" {
+			info.PlanTier = parseJWTPlanTier(token)
 		}
-	} else {
-		info.CreditsUsed = checkInfo.CreditsUsed
-		info.CreditsTotal = checkInfo.CreditsTotal
-		info.CreditsRemaining = checkInfo.CreditsRemaining
-		info.PercentUsed = checkInfo.PercentUsed
-		info.WeeklyResetAt = checkInfo.WeeklyResetAt
 	}
 
 	// Update cache
@@ -122,10 +109,14 @@ func refreshUsageForAccount(account *OAuthAccount) (*UsageInfo, error) {
 	for _, a := range cfg.OAuthAccounts {
 		if a.ID == account.ID {
 			a.PlanTier = info.PlanTier
-			a.CreditsUsed = info.CreditsUsed
-			a.CreditsTotal = info.CreditsTotal
-			a.CreditsRemaining = info.CreditsRemaining
+			a.SessionPercent = info.SessionPercent
+			a.SessionResetAt = info.SessionResetAt
+			a.WeeklyPercent = info.WeeklyPercent
 			a.WeeklyResetAt = info.WeeklyResetAt
+			a.ReviewPercent = info.ReviewPercent
+			a.CreditsBalance = info.CreditsBalance
+			a.RateLimitResets = info.RateLimitResets
+			a.PercentUsed = info.PercentUsed
 			a.LastUsageCheck = info.LastUpdated
 		}
 	}
@@ -220,19 +211,32 @@ func parseJWTPlanTier(accessToken string) string {
 	return ""
 }
 
-// codexAccountInfo holds account data from /backend-api/me
-type codexAccountInfo struct {
-	Email    string `json:"email"`
-	PlanTier string `json:"plan_tier"`
-	Name     string `json:"name"`
+// codexUsage holds parsed usage data from /backend-api/wham/usage
+type codexUsage struct {
+	PlanTier        string  `json:"plan_type"`
+	SessionPercent  float64 `json:"session_percent"`
+	SessionResetAt  int64   `json:"session_reset_at"`
+	WeeklyPercent   float64 `json:"weekly_percent"`
+	WeeklyResetAt   int64   `json:"weekly_reset_at"`
+	ReviewPercent   float64 `json:"review_percent"`
+	CreditsBalance  float64 `json:"credits_balance"`
+	RateLimitResets int     `json:"rate_limit_resets"`
 }
 
-func fetchCodexAccountInfo(client *http.Client, accessToken string) (*codexAccountInfo, error) {
-	req, err := http.NewRequest("GET", codexChatGPTBase+"/backend-api/me", nil)
+// fetchCodexUsage fetches usage data from /backend-api/wham/usage
+// This is the same endpoint used by the openusage project.
+// The User-Agent header is critical for bypassing Cloudflare protection.
+func fetchCodexUsage(client *http.Client, accessToken string, accountID string) (*codexUsage, error) {
+	req, err := http.NewRequest("GET", codexChatGPTBase+"/backend-api/wham/usage", nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "OpenUsage")
+	if accountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", accountID)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -246,7 +250,7 @@ func fetchCodexAccountInfo(client *http.Client, accessToken string) (*codexAccou
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, truncateForLog(string(body), 200))
 	}
 
 	var raw map[string]interface{}
@@ -254,287 +258,70 @@ func fetchCodexAccountInfo(client *http.Client, accessToken string) (*codexAccou
 		return nil, fmt.Errorf("parse failed: %w", err)
 	}
 
-	info := &codexAccountInfo{}
+	usage := &codexUsage{}
 
-	// Extract email from multiple possible locations
-	if email, ok := raw["email"].(string); ok && email != "" {
-		info.Email = email
+	// Extract plan_type
+	if planType, ok := raw["plan_type"].(string); ok {
+		usage.PlanTier = planType
 	}
-	if info.Email == "" {
-		if user, ok := raw["user"].(map[string]interface{}); ok {
-			if email, ok := user["email"].(string); ok {
-				info.Email = email
+
+	// Extract rate_limit windows
+	if rateLimit, ok := raw["rate_limit"].(map[string]interface{}); ok {
+		if primary, ok := rateLimit["primary_window"].(map[string]interface{}); ok {
+			if pct, ok := primary["used_percent"].(float64); ok {
+				usage.SessionPercent = pct
+			}
+			if resetAt, ok := primary["reset_at"].(float64); ok {
+				usage.SessionResetAt = int64(resetAt)
+			}
+		}
+		if secondary, ok := rateLimit["secondary_window"].(map[string]interface{}); ok {
+			if pct, ok := secondary["used_percent"].(float64); ok {
+				usage.WeeklyPercent = pct
+			}
+			if resetAt, ok := secondary["reset_at"].(float64); ok {
+				usage.WeeklyResetAt = int64(resetAt)
 			}
 		}
 	}
 
-	// Extract plan tier from multiple possible paths
-	// Path 1: top-level subscription_plan
-	if planTier, ok := raw["subscription_plan"].(string); ok && planTier != "" {
-		info.PlanTier = planTier
-	}
-	// Path 2: top-level plan_type
-	if info.PlanTier == "" {
-		if planType, ok := raw["plan_type"].(string); ok && planType != "" {
-			info.PlanTier = planType
-		}
-	}
-	// Path 3: top-level chatgpt_plan
-	if info.PlanTier == "" {
-		if chatPlan, ok := raw["chatgpt_plan"].(string); ok && chatPlan != "" {
-			info.PlanTier = chatPlan
-		}
-	}
-	// Path 4: accounts -> {account_id} -> account -> subscription_plan
-	if info.PlanTier == "" {
-		if accounts, ok := raw["accounts"].(map[string]interface{}); ok {
-			for _, accVal := range accounts {
-				if acc, ok := accVal.(map[string]interface{}); ok {
-					if plan, ok := acc["subscription_plan"].(string); ok && plan != "" {
-						info.PlanTier = plan
-						break
-					}
-					if isPaid, ok := acc["is_paid_subscription_active"].(bool); ok && isPaid && info.PlanTier == "" {
-						info.PlanTier = "plus"
-					}
-				}
-			}
-		}
-	}
-	// Path 5: accounts -> account (older structure)
-	if info.PlanTier == "" {
-		if accounts, ok := raw["accounts"].(map[string]interface{}); ok {
-			if acc, ok := accounts["account"].(map[string]interface{}); ok {
-				if plan, ok := acc["subscription_plan"].(string); ok && plan != "" {
-					info.PlanTier = plan
-				}
-				if isPaid, ok := acc["is_paid_subscription_active"].(bool); ok && isPaid && info.PlanTier == "" {
-					info.PlanTier = "plus"
-				}
+	// Extract code_review_rate_limit
+	if reviewRL, ok := raw["code_review_rate_limit"].(map[string]interface{}); ok {
+		if primary, ok := reviewRL["primary_window"].(map[string]interface{}); ok {
+			if pct, ok := primary["used_percent"].(float64); ok {
+				usage.ReviewPercent = pct
 			}
 		}
 	}
 
-	log.Printf("[Usage] Parsed account info: email=%s plan=%s", info.Email, info.PlanTier)
-	return info, nil
+	// Extract credits balance
+	if credits, ok := raw["credits"].(map[string]interface{}); ok {
+		if balance, ok := credits["balance"].(float64); ok {
+			usage.CreditsBalance = balance
+		}
+		if hasCredits, ok := credits["has_credits"].(bool); ok && !hasCredits {
+			usage.CreditsBalance = 0
+		}
+	}
+
+	// Extract rate_limit_reset_credits
+	if resetCredits, ok := raw["rate_limit_reset_credits"].(map[string]interface{}); ok {
+		if count, ok := resetCredits["available_count"].(float64); ok {
+			usage.RateLimitResets = int(count)
+		}
+	}
+
+	log.Printf("[Usage] Parsed wham/usage: plan=%s session=%.0f%% weekly=%.0f%% review=%.0f%% credits=%.1f resets=%d",
+		usage.PlanTier, usage.SessionPercent, usage.WeeklyPercent, usage.ReviewPercent, usage.CreditsBalance, usage.RateLimitResets)
+	return usage, nil
 }
 
-// openAIMeInfo holds account data from api.openai.com/v1/me (fallback)
-type openAIMeInfo struct {
-	Email    string `json:"email"`
-	PlanTier string `json:"plan_tier"`
-	Name     string `json:"name"`
-}
-
-func fetchOpenAIMe(client *http.Client, accessToken string) (*openAIMeInfo, error) {
-	req, err := http.NewRequest("GET", "https://api.openai.com/v1/me", nil)
-	if err != nil {
-		return nil, err
+// truncateForLog truncates a string for logging purposes
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("parse failed: %w", err)
-	}
-
-	info := &openAIMeInfo{}
-
-	if email, ok := raw["email"].(string); ok && email != "" {
-		info.Email = email
-	}
-
-	// The /v1/me endpoint doesn't return plan info directly, but we can check orgs
-	if orgs, ok := raw["orgs"].(map[string]interface{}); ok {
-		if data, ok := orgs["data"].([]interface{}); ok && len(data) > 0 {
-			if org, ok := data[0].(map[string]interface{}); ok {
-				// No direct plan field, but we can infer from settings if present
-				if settings, ok := org["settings"].(map[string]interface{}); ok {
-					if _, ok := settings["disable_user_api_keys"]; ok {
-						// Just a marker that we have an org
-					}
-				}
-			}
-		}
-	}
-
-	log.Printf("[Usage] Parsed api.openai.com/v1/me: email=%s", info.Email)
-	return info, nil
-}
-
-// codexAccountCheck holds usage data from /backend-api/accounts/check
-type codexAccountCheck struct {
-	CreditsUsed      float64 `json:"credits_used"`
-	CreditsTotal     float64 `json:"credits_total"`
-	CreditsRemaining float64 `json:"credits_remaining"`
-	PercentUsed      float64 `json:"percent_used"`
-	WeeklyResetAt    int64   `json:"weekly_reset_at"`
-}
-
-func fetchCodexAccountCheck(client *http.Client, accessToken string) (*codexAccountCheck, error) {
-	req, err := http.NewRequest("GET", codexChatGPTBase+"/backend-api/accounts/check", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("parse failed: %w", err)
-	}
-
-	check := &codexAccountCheck{}
-
-	// Helper to extract rate limits from various nested structures
-	extractRateLimits := func(m map[string]interface{}) {
-		if limits, ok := m["rate_limits"].(map[string]interface{}); ok {
-			if used, ok := limits["used"].(float64); ok {
-				check.CreditsUsed = used
-			}
-			if total, ok := limits["total"].(float64); ok {
-				check.CreditsTotal = total
-			}
-			if remaining, ok := limits["remaining"].(float64); ok {
-				check.CreditsRemaining = remaining
-			}
-			if resetAt, ok := limits["resets_at"].(float64); ok {
-				check.WeeklyResetAt = int64(resetAt)
-			}
-		}
-	}
-
-	// Path 1: accounts -> {id} -> features -> [{name: "codex", rate_limits: {...}}]
-	if accounts, ok := raw["accounts"].(map[string]interface{}); ok {
-		for _, accVal := range accounts {
-			accMap, ok := accVal.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			if features, ok := accMap["features"].([]interface{}); ok {
-				for _, f := range features {
-					fMap, ok := f.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					if featureName, ok := fMap["name"].(string); ok {
-						if featureName == "codex_rate_limit" || featureName == "codex" {
-							extractRateLimits(fMap)
-						}
-					}
-				}
-			}
-
-			// Path 1b: direct rate_limits on account
-			if check.CreditsTotal == 0 {
-				extractRateLimits(accMap)
-			}
-		}
-	}
-
-	// Path 2: top-level rate_limits
-	if check.CreditsTotal == 0 {
-		extractRateLimits(raw)
-	}
-
-	// Path 3: account_ordering -> first account id -> look in accounts map for rate_limits
-	if check.CreditsTotal == 0 {
-		if ordering, ok := raw["account_ordering"].([]interface{}); ok && len(ordering) > 0 {
-			if firstID, ok := ordering[0].(string); ok {
-				if accounts, ok := raw["accounts"].(map[string]interface{}); ok {
-					if accVal, ok := accounts[firstID]; ok {
-						if accMap, ok := accVal.(map[string]interface{}); ok {
-							extractRateLimits(accMap)
-							// Also try plan info
-							if plan, ok := accMap["plan"].(map[string]interface{}); ok {
-								if used, ok := plan["credits_used"].(float64); ok {
-									check.CreditsUsed = used
-								}
-								if total, ok := plan["credits_total"].(float64); ok {
-									check.CreditsTotal = total
-								}
-								if remaining, ok := plan["credits_remaining"].(float64); ok {
-									check.CreditsRemaining = remaining
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Path 4: plan at top level
-	if check.CreditsTotal == 0 {
-		if plan, ok := raw["plan"].(map[string]interface{}); ok {
-			if used, ok := plan["credits_used"].(float64); ok {
-				check.CreditsUsed = used
-			}
-			if total, ok := plan["credits_total"].(float64); ok {
-				check.CreditsTotal = total
-			}
-			if remaining, ok := plan["credits_remaining"].(float64); ok {
-				check.CreditsRemaining = remaining
-			}
-		}
-	}
-
-	// Path 5: usage object at top level
-	if check.CreditsTotal == 0 {
-		if usage, ok := raw["usage"].(map[string]interface{}); ok {
-			if used, ok := usage["used"].(float64); ok {
-				check.CreditsUsed = used
-			}
-			if total, ok := usage["total"].(float64); ok {
-				check.CreditsTotal = total
-			}
-			if remaining, ok := usage["remaining"].(float64); ok {
-				check.CreditsRemaining = remaining
-			}
-		}
-	}
-
-	// Calculate percentages
-	if check.CreditsTotal > 0 {
-		check.PercentUsed = (check.CreditsUsed / check.CreditsTotal) * 100
-		if check.CreditsRemaining == 0 && check.CreditsUsed > 0 {
-			check.CreditsRemaining = check.CreditsTotal - check.CreditsUsed
-		}
-	}
-
-	log.Printf("[Usage] Parsed account check: used=%.1f total=%.1f remaining=%.1f pct=%.1f reset=%d",
-		check.CreditsUsed, check.CreditsTotal, check.CreditsRemaining, check.PercentUsed, check.WeeklyResetAt)
-	return check, nil
+	return s[:maxLen] + "..."
 }
 
 // startUsageRefreshLoop starts a background goroutine that periodically refreshes usage

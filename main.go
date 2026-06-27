@@ -73,6 +73,9 @@ func runProxyServer() {
 	// Sync Codex Desktop config if installed
 	SyncCodexDesktop(parseIntOr(port, 11434))
 
+	// Sync other agent integrations (Claude Code, Factory Droid, OpenCode) if installed
+	SyncAgents(parseIntOr(port, 11434))
+
 	router := NewProviderRouter(cfg, modelRemap)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
@@ -87,13 +90,14 @@ func runProxyServer() {
 	// (not in the --serve proxy process)
 	mux := http.NewServeMux()
 
-	// Internal endpoint to hot-reload model remapping without restarting the process
+	// Internal endpoint to hot-reload model remapping and config without restarting
 	mux.HandleFunc("/__reload_model_remap__", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", 405)
 			return
 		}
 		router.ReloadModelRemapping()
+		router.ReloadConfig()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
@@ -139,9 +143,9 @@ func runProxyServer() {
 			return
 		}
 		type modelInfo struct {
-			Name            string `json:"name"`
-			ID              string `json:"id"`
-			Limit           struct {
+			Name  string `json:"name"`
+			ID    string `json:"id"`
+			Limit struct {
 				Context int `json:"context"`
 				Output  int `json:"output"`
 			} `json:"limit"`
@@ -221,16 +225,16 @@ func runProxyServer() {
 			}
 		}
 		result := map[string]interface{}{
-			"found":             true,
-			"id":                bestMatch.ID,
-			"name":              bestMatch.Name,
-			"provider_id":       bestProvider,
-			"context_length":    bestMatch.Limit.Context,
-			"max_output_tokens": bestMatch.Limit.Output,
-			"reasoning":         bestMatch.Reasoning,
-			"tool_calling":      bestMatch.ToolCall,
+			"found":              true,
+			"id":                 bestMatch.ID,
+			"name":               bestMatch.Name,
+			"provider_id":        bestProvider,
+			"context_length":     bestMatch.Limit.Context,
+			"max_output_tokens":  bestMatch.Limit.Output,
+			"reasoning":          bestMatch.Reasoning,
+			"tool_calling":       bestMatch.ToolCall,
 			"structured_outputs": bestMatch.StructuredOutput,
-			"vision":            vision,
+			"vision":             vision,
 		}
 		if bestMatch.Reasoning {
 			efforts := []string{"low", "medium", "high"}

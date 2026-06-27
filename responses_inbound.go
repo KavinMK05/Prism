@@ -37,14 +37,10 @@ func (pr *ProviderRouter) HandleResponsesAPI(w http.ResponseWriter, r *http.Requ
 	// Extract tool type mapping for preserving built-in tool types in responses
 	toolTypes := buildToolTypeMap(respReq.Tools)
 
-	// Codex provider: translate Responses API to Chat Completions (Codex OAuth tokens
-	// don't have api.responses.write scope, so /v1/responses returns 401)
+	// Codex provider: forward Responses API directly to chatgpt.com/backend-api/codex/responses
+	// (ChatGPT OAuth tokens only work with the backend-api/codex endpoint, not api.openai.com)
 	if rp.ProviderType == "codex" {
-		if respReq.Stream {
-			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp, toolTypes)
-		} else {
-			pr.handleResponsesAPIToOpenAI(w, r, &respReq, rp, toolTypes)
-		}
+		pr.handleCodexResponsesAPI(w, r, &respReq, rp)
 		return
 	}
 
@@ -68,6 +64,13 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
+
+	// Log tools being sent upstream for debugging
+	if len(chatReq.Tools) > 0 {
+		for _, t := range chatReq.Tools {
+			log.Printf("[REQ] sending tool upstream: type=%s name=%s", t.Type, t.Function.Name)
+		}
+	}
 
 	// Validate reasoning_effort for the model
 	chatReq.ReasoningEffort = pr.validateReasoningEffort(chatReq.Model, chatReq.ReasoningEffort)

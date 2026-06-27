@@ -2,18 +2,36 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// generateToolUseID returns a globally-unique Anthropic-style tool_use ID.
+// Uniqueness across turns is critical: if IDs repeat within the conversation
+// history a client sends back, tool_result blocks can't be unambiguously
+// associated with their tool_use blocks, which causes upstream models to
+// miss tool results and re-invoke the same tool in a retry loop.
+func generateToolUseID(name string) string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		// Fall back to a time-based value if randomness is unavailable.
+		return fmt.Sprintf("toolu_%s_%d", name, time.Now().UnixNano())
+	}
+	return "toolu_" + hex.EncodeToString(b)
+}
+
 type ProviderRouter struct {
 	cfg        *Config
+	cfgMu      sync.RWMutex
 	modelRemap atomic.Pointer[ModelRemapping]
 	client     *http.Client
 }
@@ -32,21 +50,54 @@ func (pr *ProviderRouter) ReloadModelRemapping() {
 	pr.modelRemap.Store(loadModelRemapping())
 }
 
+// ReloadConfig reloads the config from disk so the proxy picks up OAuth account
+// changes, provider changes, etc. without requiring a restart.
+func (pr *ProviderRouter) ReloadConfig() {
+	pr.cfgMu.Lock()
+	pr.cfg = loadConfig()
+	pr.cfgMu.Unlock()
+}
+
+// getConfig returns the current config in a thread-safe manner.
+func (pr *ProviderRouter) getConfig() *Config {
+	pr.cfgMu.RLock()
+	defer pr.cfgMu.RUnlock()
+	return pr.cfg
+}
+
 func (pr *ProviderRouter) getModelRemap() *ModelRemapping {
 	return pr.modelRemap.Load()
 }
 
 // resolveProviderForModel resolves a requested model to a provider and returns the provider info
 func (pr *ProviderRouter) resolveProviderForModel(requestedModel string) (*ResolvedProvider, string, error) {
-	resolvedModel, providerID := resolveModelProvider(pr.cfg, pr.getModelRemap(), requestedModel)
-	providerInfo, err := pr.cfg.getProviderByID(providerID)
+	cfg := pr.getConfig()
+	resolvedModel, providerID := resolveModelProvider(cfg, pr.getModelRemap(), requestedModel)
+	providerInfo, err := cfg.getProviderByID(providerID)
 	if err != nil {
-		return nil, resolvedModel, err
+		// Fallback: if the provider ID looks like a Codex OAuth account (codex_ prefix)
+		// but doesn't match any configured account, use the first available Codex OAuth account.
+		if strings.HasPrefix(providerID, "codex_") && len(cfg.OAuthAccounts) > 0 {
+			for _, a := range cfg.OAuthAccounts {
+				if a.Provider == "codex" {
+					log.Printf("[OAuth] Provider %s not found, falling back to %s (%s)", providerID, a.ID, a.Email)
+					providerID = a.ID
+					providerInfo, err = cfg.getProviderByID(providerID)
+					if err != nil {
+						return nil, resolvedModel, err
+					}
+					break
+				}
+			}
+		}
+		if err != nil {
+			return nil, resolvedModel, err
+		}
 	}
 
 	// For OAuth accounts, get a fresh token
 	if providerInfo.ProviderType == "codex" {
-		for _, a := range pr.cfg.OAuthAccounts {
+		for _, a := range cfg.OAuthAccounts {
 			if a.ID == providerID {
 				token, err := getValidAccessToken(a)
 				if err != nil {
@@ -54,7 +105,18 @@ func (pr *ProviderRouter) resolveProviderForModel(requestedModel string) (*Resol
 					token = a.AccessToken
 				}
 				providerInfo.APIKey = token
-				break
+				// Re-extract chatgpt-account-id from the token as a fallback
+				accountID := a.ChatGPTAccountID
+				if accountID == "" && token != "" {
+					accountID = parseChatGPTAccountID(token)
+				}
+				return &ResolvedProvider{
+					BaseURL:          strings.TrimRight(providerInfo.BaseURL, "/"),
+					APIKey:           providerInfo.APIKey,
+					ProviderType:     providerInfo.ProviderType,
+					ProviderID:       providerID,
+					ChatGPTAccountID: accountID,
+				}, resolvedModel, nil
 			}
 		}
 	}
@@ -455,6 +517,12 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			}
 			messages = append(messages, ollamaMsg)
 		}
+		if len(textParts) > 0 {
+			messages = append(messages, OllamaMessage{
+				Role:    "user",
+				Content: strings.Join(textParts, ""),
+			})
+		}
 		return messages
 	}
 
@@ -497,10 +565,10 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 		content = append(content, AnthropicTextBlock{Type: "text", Text: ollama.Message.Content})
 	}
 
-	for i, tc := range ollama.Message.ToolCalls {
+	for _, tc := range ollama.Message.ToolCalls {
 		id := tc.ID
 		if id == "" {
-			id = fmt.Sprintf("call_%s_%d", tc.Function.Name, i)
+			id = generateToolUseID(tc.Function.Name)
 		}
 		content = append(content, AnthropicToolUseBlock{
 			Type:  "tool_use",

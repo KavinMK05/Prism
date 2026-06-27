@@ -77,11 +77,11 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	state.writeSSE("message_start", map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
-			"id":         msgID,
-			"type":       "message",
-			"role":       "assistant",
-			"model":      anthroReq.Model,
-			"content":    []interface{}{},
+			"id":          msgID,
+			"type":        "message",
+			"role":        "assistant",
+			"model":       anthroReq.Model,
+			"content":     []interface{}{},
 			"stop_reason": nil,
 			"usage": map[string]interface{}{
 				"input_tokens":  0,
@@ -94,6 +94,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	prevChunkHasThinking := false
+	finishStopReason := ""
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -111,12 +112,8 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 			continue
 		}
 
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		choice := chunk.Choices[0]
-
+		// Capture usage first: with stream_options.include_usage=true the
+		// final usage chunk has choices:[] and must not be skipped.
 		if chunk.Usage != nil {
 			if chunk.Usage.PromptTokens > 0 {
 				inputTokens = chunk.Usage.PromptTokens
@@ -125,6 +122,12 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 				outputTokens = chunk.Usage.CompletionTokens
 			}
 		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
 
 		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
 
@@ -155,10 +158,10 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 					if state.toolUseBlockOpen {
 						state.closeBlock("tool_use")
 					}
-					state.openToolUseBlock(tc.Function.Name)
+					state.openToolUseBlockWithID(tc.Function.Name, tc.ID)
 				}
 
-				if tc.Function.Arguments != "" && tc.Function.Arguments != "{}" {
+				if tc.Function.Arguments != "" {
 					liveOutputTokens++
 					globalStats.AddTokens(1)
 					state.writeSSE("content_block_delta", map[string]interface{}{
@@ -176,7 +179,12 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			liveOutputTokens++
 			globalStats.AddTokens(1)
-			if !state.textBlockOpen && !state.thinkingBlockOpen && !state.toolUseBlockOpen {
+			// If a tool_use block is open, close it before opening a text
+			// block so the content isn't silently dropped.
+			if state.toolUseBlockOpen {
+				state.closeBlock("tool_use")
+			}
+			if !state.textBlockOpen && !state.thinkingBlockOpen {
 				state.openTextBlock()
 			}
 			if state.textBlockOpen {
@@ -193,17 +201,19 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 		if choice.FinishReason != nil {
 			state.closeAllBlocks()
+			state.sendEmptyTextBlock()
 
-			stopReason := "end_turn"
+			// Record the stop reason but defer message_delta/message_stop
+			// until after the loop: with stream_options.include_usage=true
+			// the usage chunk arrives AFTER finish_reason, and we need its
+			// token counts in the message_delta.usage event.
+			finishStopReason = "end_turn"
 			switch *choice.FinishReason {
 			case "length":
-				stopReason = "max_tokens"
+				finishStopReason = "max_tokens"
 			case "tool_calls", "function_call":
-				stopReason = "tool_use"
+				finishStopReason = "tool_use"
 			}
-
-			state.sendEmptyTextBlock()
-			state.sendStopReason(stopReason, outputTokens)
 		}
 	}
 
@@ -211,12 +221,24 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		log.Printf("[ERR] Stream read error: %v", err)
 	}
 
-	// If the stream ended without a FinishReason, close any remaining blocks
-	// and send an empty text block as fallback.
+	// Terminate the SSE stream. If finish_reason was seen we deferred the
+	// terminal events so the usage-only chunk could be captured first.
+	// If the stream ended without finish_reason (connection drop or [DONE]
+	// with no finish_reason), close remaining blocks and emit a fallback
+	// stop so clients don't hang waiting for a terminal event.
 	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
 		state.closeAllBlocks()
 	}
 	if !state.hasContentBlock {
 		state.sendEmptyTextBlock()
 	}
+	stopReason := finishStopReason
+	if stopReason == "" {
+		stopReason = "end_turn"
+	}
+	out := outputTokens
+	if out == 0 {
+		out = liveOutputTokens
+	}
+	state.sendStopReason(stopReason, out)
 }

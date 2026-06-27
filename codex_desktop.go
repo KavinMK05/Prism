@@ -98,18 +98,9 @@ func generateCodexCatalog(remap *ModelRemapping) []map[string]interface{} {
 			"limit": truncLimit,
 		}
 
-		// Reasoning
-		if m.Reasoning {
-			efforts := m.ReasoningEffort
-			if len(efforts) == 0 {
-				efforts = []string{"low", "medium", "high", "xhigh"}
-			}
-			entry["default_reasoning_level"] = efforts[0]
-			entry["supported_reasoning_levels"] = reasoningLevels(efforts)
-		} else {
-			entry["default_reasoning_level"] = "low"
-			entry["supported_reasoning_levels"] = reasoningLevels([]string{"low", "medium", "high", "xhigh"})
-		}
+		// Reasoning — always expose all 4 levels, default to medium (matches codex-shim)
+		entry["default_reasoning_level"] = "medium"
+		entry["supported_reasoning_levels"] = reasoningLevels([]string{"low", "medium", "high", "xhigh"})
 
 		entry["default_reasoning_summary"] = "none"
 		entry["reasoning_summary_format"] = "none"
@@ -149,11 +140,16 @@ func generateCodexCatalog(remap *ModelRemapping) []map[string]interface{} {
 		// Base instructions
 		entry["base_instructions"] = "You are a coding agent running through Prism, a local proxy. " +
 			"You have access to the user's codebase and can run commands. " +
+			"When using the apply_patch tool, emit patches in V4A format: wrap with *** Begin Patch and *** End Patch, " +
+			"use *** Add File: <path> to create files, *** Update File: <path> to modify them, *** Delete File: <path> to remove them. " +
+			"Prefix added lines with +, deleted lines with -, context lines with nothing. " +
 			"Always use tools when needed. Be concise and direct."
 
 		entry["model_messages"] = map[string]interface{}{
-			"instructions_template": "",
-			"instructions_variables": map[string]interface{}{},
+			"instructions_template": "You are Codex running on {model_name} through Prism, a local proxy. Be a helpful, direct coding collaborator.",
+			"instructions_variables": map[string]interface{}{
+				"model_name": humanizeModelID(m.ID),
+			},
 		}
 
 		entries = append(entries, entry)
