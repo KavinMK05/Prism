@@ -3,13 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -109,7 +107,8 @@ func runProxyServer() {
 	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleResponsesAPI)))
 	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleModels)))
 
-	// Model info endpoint - proxies models.dev lookups for the admin UI
+	// Model info endpoint - looks up a model on models.dev (unscoped; the
+	// admin UI's /admin/model-info is the scoped variant).
 	mux.HandleFunc("/api/model-info", loggingMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
@@ -120,130 +119,13 @@ func runProxyServer() {
 			http.Error(w, "missing id parameter", 400)
 			return
 		}
-		// Fetch models.dev database
-		resp, err := http.Get("https://models.dev/api.json")
+		result, err := fetchModelsDevModel(modelID, "")
 		if err != nil {
-			http.Error(w, "failed to fetch models.dev: "+err.Error(), 502)
+			http.Error(w, err.Error(), 502)
 			return
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			http.Error(w, "models.dev returned status "+fmt.Sprintf("%d", resp.StatusCode), 502)
-			return
-		}
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			http.Error(w, "failed to read models.dev response", 502)
-			return
-		}
-		// Parse as raw map to iterate all providers
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(body, &raw); err != nil {
-			http.Error(w, "failed to parse models.dev response", 502)
-			return
-		}
-		type modelInfo struct {
-			Name  string `json:"name"`
-			ID    string `json:"id"`
-			Limit struct {
-				Context int `json:"context"`
-				Output  int `json:"output"`
-			} `json:"limit"`
-			Reasoning        bool `json:"reasoning"`
-			ToolCall         bool `json:"tool_call"`
-			StructuredOutput bool `json:"structured_output"`
-			Modalities       *struct {
-				Input  []string `json:"input"`
-				Output []string `json:"output"`
-			} `json:"modalities"`
-		}
-		type providerInfo struct {
-			ID     string               `json:"id"`
-			Name   string               `json:"name"`
-			Models map[string]modelInfo `json:"models"`
-		}
-		// Strip provider suffix like :cloud or :free from search
-		searchBase := modelID
-		if idx := strings.Index(modelID, ":"); idx > 0 {
-			searchBase = modelID[:idx]
-		}
-		searchID := strings.ToLower(searchBase)
-		type match struct {
-			model    modelInfo
-			provider string
-			exact    bool
-			native   bool
-		}
-		var matches []match
-		for _, provRaw := range raw {
-			var prov providerInfo
-			if json.Unmarshal(provRaw, &prov) != nil {
-				continue
-			}
-			provIDLower := strings.ToLower(prov.ID)
-			for _, m := range prov.Models {
-				mID := strings.ToLower(m.ID)
-				mName := strings.ToLower(m.Name)
-				isExact := mID == searchID
-				isNative := strings.HasPrefix(searchID, provIDLower)
-				if isExact {
-					matches = append(matches, match{model: m, provider: prov.ID, exact: true, native: isNative})
-				} else if strings.Contains(mID, searchID) || strings.Contains(searchID, mID) || strings.Contains(mName, searchID) {
-					matches = append(matches, match{model: m, provider: prov.ID, exact: false, native: isNative})
-				}
-			}
-		}
-		// Prefer: exact+native > exact > native+partial > partial
-		sort.Slice(matches, func(i, j int) bool {
-			if matches[i].exact != matches[j].exact {
-				return matches[i].exact
-			}
-			if matches[i].native != matches[j].native {
-				return matches[i].native
-			}
-			return false
-		})
-		var bestMatch *modelInfo
-		var bestProvider string
-		if len(matches) > 0 {
-			best := matches[len(matches)-1]
-			bestMatch = &best.model
-			bestProvider = best.provider
-		}
-		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		if bestMatch == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"found": false})
-			return
-		}
-		vision := false
-		if bestMatch.Modalities != nil {
-			for _, mod := range bestMatch.Modalities.Input {
-				if mod == "image" {
-					vision = true
-				}
-			}
-		}
-		result := map[string]interface{}{
-			"found":              true,
-			"id":                 bestMatch.ID,
-			"name":               bestMatch.Name,
-			"provider_id":        bestProvider,
-			"context_length":     bestMatch.Limit.Context,
-			"max_output_tokens":  bestMatch.Limit.Output,
-			"reasoning":          bestMatch.Reasoning,
-			"tool_calling":       bestMatch.ToolCall,
-			"structured_outputs": bestMatch.StructuredOutput,
-			"vision":             vision,
-		}
-		if bestMatch.Reasoning {
-			efforts := []string{"low", "medium", "high"}
-			if strings.Contains(searchID, "deepseek-v4") {
-				efforts = append(efforts, "max")
-			}
-			result["reasoning_effort"] = efforts
-		}
-		json.NewEncoder(w).Encode(result)
+		writeModelsDevResult(w, result)
 	}))
 
 	// Stats endpoint (proxied from admin UI)
