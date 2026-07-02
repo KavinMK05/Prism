@@ -1796,6 +1796,16 @@
         <button class="btn btn-ghost" onclick="restoreAgent('zcode')">Restore</button>
       </div>
     </div>
+
+    <div class="card">
+      <h3>Oh My Pi</h3>
+      <p class="card-description">Registers prism and prism-codex providers in ~/.omp/agent/models.yml so Oh My Pi can use your local models via Prism. Requires Oh My Pi (omp) to be installed.</p>
+      <div id="agent-status-omp" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('omp')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('omp')">Restore</button>
+      </div>
+    </div>
 </div>
 
 <div class="panel" id="panel-proxy">
@@ -1905,6 +1915,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       checkAgentStatus('factory-droid');
       checkAgentStatus('opencode');
       checkAgentStatus('zcode');
+      checkAgentStatus('omp');
     }
     if (tab.dataset.tab === 'stats') {
       startStatsPolling();
@@ -3862,6 +3873,7 @@ checkAgentStatus('claude-code');
 checkAgentStatus('factory-droid');
 checkAgentStatus('opencode');
 checkAgentStatus('zcode');
+checkAgentStatus('omp');
 </script>
 </body>
 </html>

@@ -5,6 +5,7 @@
 # IDE / agent artifacts
 .opencode/
 .superpowers/
+.phase-by-phase-planner/
 # Build artifacts
 *.syso
 docs/

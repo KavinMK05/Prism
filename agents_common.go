@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // prismManagedTag is the display-name prefix used to tag model entries that
@@ -16,7 +18,7 @@ const prismManagedTag = "[Prism]"
 
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp"}
 
 // agentConfigPath returns the config file path for the given agent id.
 // Returns "" if the home directory cannot be determined or the id is unknown.
@@ -34,6 +36,8 @@ func agentConfigPath(agentID string) string {
 		return filepath.Join(home, ".config", "opencode", "opencode.json")
 	case "zcode":
 		return filepath.Join(home, ".zcode", "v2", "config.json")
+	case "omp":
+		return filepath.Join(home, ".omp", "agent", "models.yml")
 	}
 	return ""
 }
@@ -49,6 +53,8 @@ func agentDisplayName(agentID string) string {
 		return "OpenCode"
 	case "zcode":
 		return "ZCode"
+	case "omp":
+		return "Oh My Pi"
 	}
 	return agentID
 }
@@ -118,8 +124,14 @@ func isAgentActive(agentID string) bool {
 		return false
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return false
+	if agentID == "omp" {
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			return false
+		}
+	} else {
+		if err := json.Unmarshal(data, &m); err != nil {
+			return false
+		}
 	}
 	switch agentID {
 	case "claude-code":
@@ -147,6 +159,16 @@ func isAgentActive(agentID string) bool {
 	case "zcode":
 		if provs, ok := m["provider"].(map[string]interface{}); ok {
 			if _, set := provs[zcodeProviderID]; set {
+				return true
+			}
+		}
+		return false
+	case "omp":
+		if provs, ok := m["providers"].(map[string]interface{}); ok {
+			if _, set := provs[ompProviderID]; set {
+				return true
+			}
+			if _, set := provs[ompProviderID+"-codex"]; set {
 				return true
 			}
 		}
@@ -246,6 +268,8 @@ func agentInstalled(id string) bool {
 		return isOpencodeInstalled()
 	case "zcode":
 		return isZcodeInstalled()
+	case "omp":
+		return isOmpInstalled()
 	}
 	return false
 }
@@ -267,6 +291,8 @@ func SyncAgents(port int) {
 			syncOpencode(port)
 		case "zcode":
 			syncZcode(port)
+		case "omp":
+			syncOmp(port)
 		}
 	}
 }
