@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 )
 
@@ -20,7 +19,10 @@ func isOpencodeInstalled() bool {
 	if isAgentConfigInstalled("opencode") {
 		return true
 	}
-	if p, err := exec.LookPath("opencode"); err == nil && p != "" {
+	// OpenCode may not create its config file until first run, so fall back
+	// to the binary. lookupBinary searches install dirs GUI apps don't
+	// inherit (Homebrew, ~/.bun/bin, mise, …) — see comment there.
+	if p, ok := lookupBinary("opencode"); ok && p != "" {
 		return true
 	}
 	return false

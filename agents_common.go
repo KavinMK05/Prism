@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -109,6 +111,53 @@ func isAgentConfigInstalled(agentID string) bool {
 	return err == nil
 }
 
+
+// lookupBinary reports whether the named executable is reachable, searching
+// the process PATH first and then common install directories that GUI apps
+// (.app bundles, LaunchAgents) do not inherit. On macOS a GUI app launched
+// from Finder/Dock gets only /usr/bin:/bin:/usr/sbin:/sbin, so binaries
+// installed by Homebrew (/opt/homebrew/bin), bun (~/.bun/bin), npm/mise
+// (~/.local/bin, ~/.local/share/mise/shims) are invisible to exec.LookPath
+// and agents are wrongly reported as "not installed".
+func lookupBinary(name string) (string, bool) {
+	if p, err := exec.LookPath(name); err == nil && p != "" {
+		return p, true
+	}
+	home, err := os.UserHomeDir()
+	dirs := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if err == nil && home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".local", "share", "mise", "shims"),
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, ".yarn", "bin"),
+			filepath.Join(home, ".deno", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+		)
+	}
+	for _, dir := range dirs {
+		candidates := []string{filepath.Join(dir, name)}
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				filepath.Join(dir, name+".exe"),
+				filepath.Join(dir, name+".cmd"),
+				filepath.Join(dir, name+".bat"),
+			)
+		}
+		for _, p := range candidates {
+			info, err := os.Stat(p)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+				continue // not executable
+			}
+			return p, true
+		}
+	}
+	return "", false
+}
 // isAgentActive reports whether Prism's managed config is present in the
 // agent's config file. Detection is agent-specific:
 //   - claude-code: env.ANTHROPIC_BASE_URL is set in ~/.claude/settings.json

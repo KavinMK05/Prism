@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,7 +25,10 @@ func isOmpInstalled() bool {
 	if isAgentConfigInstalled("omp") {
 		return true
 	}
-	if p, err := exec.LookPath("omp"); err == nil && p != "" {
+	// OMP may not create ~/.omp/agent/models.yml until first run, so fall
+	// back to the binary. lookupBinary also searches the install dirs GUI
+	// apps don't inherit (Homebrew, ~/.bun/bin, mise, …) — see comment there.
+	if p, ok := lookupBinary("omp"); ok && p != "" {
 		return true
 	}
 	return false
