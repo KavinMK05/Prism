@@ -218,6 +218,14 @@ func resolveBootstrapPython(progressFn func(percent int)) (string, error) {
 	}
 	log.Printf("[SearXNG] no usable system python; downloading python-build-standalone")
 
+	// Idempotency: if a previous run already downloaded + flattened the
+	// standalone interpreter, reuse it instead of re-downloading ~30 MB.
+	bootstrap := filepath.Join(searxngPythonDir(), searxngStandalonePythonBinary())
+	if _, err := os.Stat(bootstrap); err == nil {
+		setSearxngInstallPhase("creating-venv", -1)
+		return bootstrap, nil
+	}
+
 	setSearxngInstallPhase("downloading-python", 0)
 	asset, err := resolvePythonRelease()
 	if err != nil {
@@ -230,15 +238,75 @@ func resolveBootstrapPython(progressFn func(percent int)) (string, error) {
 	}
 
 	setSearxngInstallPhase("extracting-python", -1)
+	// Clean slate so a stale half-extracted tree (e.g. a prior broken run
+	// that left the nested "python/" dir in place) can't confuse the flatten.
+	os.RemoveAll(searxngPythonDir())
+	if err := os.MkdirAll(searxngPythonDir(), 0755); err != nil {
+		setSearxngInstallError("create python dir: " + err.Error())
+		return "", fmt.Errorf("create python dir: %w", err)
+	}
 	if err := extractTarGz(tarPath, searxngPythonDir()); err != nil {
 		setSearxngInstallError("extract python: " + err.Error())
 		return "", fmt.Errorf("extract python: %w", err)
 	}
 	os.Remove(tarPath)
 
-	bootstrap := filepath.Join(searxngPythonDir(), searxngStandalonePythonBinary())
+	// python-build-standalone install_only tarballs extract to a single
+	// top-level directory (e.g. "python/"). Flatten it so the interpreter
+	// lands at searxngPythonDir()/bin/python3 (macOS) or
+	// searxngPythonDir()/python.exe (Windows) — otherwise venv creation
+	// fails with "no such file or directory" on the bootstrap path.
+	if err := flattenSingleTopLevelDir(searxngPythonDir()); err != nil {
+		setSearxngInstallError("flatten python dir: " + err.Error())
+		return "", fmt.Errorf("flatten python dir: %w", err)
+	}
+
+	if _, err := os.Stat(bootstrap); err != nil {
+		setSearxngInstallError("python interpreter not found after extract: " + bootstrap)
+		return "", fmt.Errorf("python interpreter not found after extract: %s", bootstrap)
+	}
 	setSearxngInstallPhase("creating-venv", -1)
 	return bootstrap, nil
+}
+
+// flattenSingleTopLevelDir moves the contents of a single top-level directory
+// up into parent, removing the now-empty wrapper. If parent contains multiple
+// entries or no directory, it is left untouched. Used to normalize tarballs
+// that extract to one wrapper directory (e.g. python-build-standalone's
+// "python/").
+func flattenSingleTopLevelDir(parent string) error {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	// Find the single top-level directory (ignore the tarball's loose files
+	// if any; python-build-standalone install_only has exactly one dir).
+	var topDir string
+	for _, e := range entries {
+		if e.IsDir() {
+			if topDir != "" {
+				// More than one directory — not the expected layout; leave as-is.
+				return nil
+			}
+			topDir = filepath.Join(parent, e.Name())
+		}
+	}
+	if topDir == "" {
+		return nil
+	}
+	inner, err := os.ReadDir(topDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range inner {
+		src := filepath.Join(topDir, e.Name())
+		dst := filepath.Join(parent, e.Name())
+		os.RemoveAll(dst)
+		if err := os.Rename(src, dst); err != nil {
+			return err
+		}
+	}
+	return os.Remove(topDir)
 }
 
 // findSystemPython locates a system Python interpreter ≥3.10 on PATH. Returns
