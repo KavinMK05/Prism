@@ -190,27 +190,75 @@ func resolvePythonRelease() (*pythonStandaloneAsset, error) {
 	}
 	a := findPythonAsset(rel)
 	if a == nil {
-		return nil, fmt.Errorf("no python-build-standalone asset for target %s in release %s", searxngPythonTarget(), tag)
+		return nil, fmt.Errorf("no python-build-standalone asset (need Python >=3.11 for target %s) in release %s", searxngPythonTarget(), tag)
 	}
 	return a, nil
 }
 
+// findPythonAsset selects the install_only asset for the current platform
+// target with the LOWEST Python version >=3.11. SearXNG imports `tomllib`
+// (stdlib from Python 3.11) in searx/botdetection/config.py, so a 3.10 build
+// crashes the webapp on import. python-build-standalone publishes 3.10–3.14
+// per release; picking the lowest >=3.11 maximizes wheel availability for
+// SearXNG's dependencies (lxml, markupsafe, etc.) while satisfying tomllib.
 func findPythonAsset(rel *pythonStandaloneRelease) *pythonStandaloneAsset {
 	suffix := searxngPythonTarget() + "-install_only.tar.gz"
+	var best *pythonStandaloneAsset
+	bestScore := 0
 	for i := range rel.Assets {
-		if strings.HasSuffix(rel.Assets[i].Name, suffix) {
-			return &rel.Assets[i]
+		a := &rel.Assets[i]
+		if !strings.HasSuffix(a.Name, suffix) {
+			continue
+		}
+		mj, mn, ok := parseCpythonVersion(a.Name)
+		if !ok {
+			continue
+		}
+		if mj < 3 || (mj == 3 && mn < 11) {
+			continue
+		}
+		score := mj*1000 + mn
+		if best == nil || score < bestScore {
+			best = a
+			bestScore = score
 		}
 	}
-	return nil
+	return best
+}
+
+// parseCpythonVersion extracts the major.minor version from a
+// python-build-standalone asset name such as
+// "cpython-3.13.7+20260324-aarch64-apple-darwin-install_only.tar.gz".
+func parseCpythonVersion(name string) (int, int, bool) {
+	const prefix = "cpython-"
+	if !strings.HasPrefix(name, prefix) {
+		return 0, 0, false
+	}
+	rest := name[len(prefix):]
+	plus := strings.IndexByte(rest, '+')
+	if plus < 0 {
+		return 0, 0, false
+	}
+	parts := strings.Split(rest[:plus], ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	mj, err1 := strconv.Atoi(parts[0])
+	mn, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return mj, mn, true
 }
 
 // --- Install ---
 
 // resolveBootstrapPython returns a Python interpreter suitable for creating the
-// SearXNG venv: the system Python if one ≥3.10 is on PATH, otherwise a freshly
-// downloaded+extracted python-build-standalone interpreter. The returned path is
-// the bootstrap interpreter; the venv then has its own isolated python/pip.
+// SearXNG venv: the system Python if one ≥3.11 is on PATH, otherwise a freshly
+// downloaded+extracted python-build-standalone interpreter (≥3.11). The returned
+// path is the bootstrap interpreter; the venv then has its own isolated python/pip.
+// SearXNG requires Python ≥3.11 because searx/botdetection/config.py does
+// `import tomllib`, which is stdlib only from 3.11 onward.
 func resolveBootstrapPython(progressFn func(percent int)) (string, error) {
 	if sys, err := findSystemPython(); err == nil {
 		log.Printf("[SearXNG] using system python: %s", sys)
@@ -218,12 +266,17 @@ func resolveBootstrapPython(progressFn func(percent int)) (string, error) {
 	}
 	log.Printf("[SearXNG] no usable system python; downloading python-build-standalone")
 
-	// Idempotency: if a previous run already downloaded + flattened the
-	// standalone interpreter, reuse it instead of re-downloading ~30 MB.
+	// Idempotency: reuse a previously downloaded + flattened interpreter, but
+	// only if it is Python ≥3.11 — a cached 3.10 build from a prior broken run
+	// must be discarded so we re-download a compatible one.
 	bootstrap := filepath.Join(searxngPythonDir(), searxngStandalonePythonBinary())
 	if _, err := os.Stat(bootstrap); err == nil {
-		setSearxngInstallPhase("creating-venv", -1)
-		return bootstrap, nil
+		if ok, _ := searxngInterpreterVersionOK(bootstrap); ok {
+			setSearxngInstallPhase("creating-venv", -1)
+			return bootstrap, nil
+		}
+		log.Printf("[SearXNG] cached standalone interpreter is Python <3.11; re-downloading")
+		os.RemoveAll(searxngPythonDir())
 	}
 
 	setSearxngInstallPhase("downloading-python", 0)
@@ -265,13 +318,17 @@ func resolveBootstrapPython(progressFn func(percent int)) (string, error) {
 		setSearxngInstallError("python interpreter not found after extract: " + bootstrap)
 		return "", fmt.Errorf("python interpreter not found after extract: %s", bootstrap)
 	}
+	if ok, _ := searxngInterpreterVersionOK(bootstrap); !ok {
+		setSearxngInstallError("downloaded python interpreter is <3.11; cannot create SearXNG venv")
+		return "", fmt.Errorf("downloaded python interpreter is <3.11; cannot create SearXNG venv")
+	}
 	setSearxngInstallPhase("creating-venv", -1)
 	return bootstrap, nil
 }
 
 // flattenSingleTopLevelDir moves the contents of a single top-level directory
 // up into parent, removing the now-empty wrapper. If parent contains multiple
-// entries or no directory, it is left untouched. Used to normalize tarballs
+// directories or no directory, it is left untouched. Used to normalize tarballs
 // that extract to one wrapper directory (e.g. python-build-standalone's
 // "python/").
 func flattenSingleTopLevelDir(parent string) error {
@@ -279,14 +336,11 @@ func flattenSingleTopLevelDir(parent string) error {
 	if err != nil {
 		return err
 	}
-	// Find the single top-level directory (ignore the tarball's loose files
-	// if any; python-build-standalone install_only has exactly one dir).
 	var topDir string
 	for _, e := range entries {
 		if e.IsDir() {
 			if topDir != "" {
-				// More than one directory — not the expected layout; leave as-is.
-				return nil
+				return nil // more than one directory — not the expected layout
 			}
 			topDir = filepath.Join(parent, e.Name())
 		}
@@ -309,8 +363,9 @@ func flattenSingleTopLevelDir(parent string) error {
 	return os.Remove(topDir)
 }
 
-// findSystemPython locates a system Python interpreter ≥3.10 on PATH. Returns
-// the resolved binary path, or an error if none is found.
+// findSystemPython locates a system Python interpreter ≥3.11 on PATH. Returns
+// the resolved binary path, or an error if none is found. (SearXNG needs 3.11+
+// for the stdlib `tomllib` module imported by searx/botdetection/config.py.)
 func findSystemPython() (string, error) {
 	for _, c := range systemPythonCandidates() {
 		path, err := exec.LookPath(c)
@@ -329,27 +384,52 @@ func findSystemPython() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("no system python >=3.10 found on PATH")
+	return "", fmt.Errorf("no system python >=3.11 found on PATH")
 }
 
-// systemPythonVersionOK reports whether a "X.Y[.Z]" version string is ≥3.10.
+// systemPythonVersionOK reports whether a "X.Y[.Z]" version string is ≥3.11.
 func systemPythonVersionOK(ver string) bool {
-	parts := strings.Split(ver, ".")
-	if len(parts) < 2 {
+	mj, mn, ok := parseVersionMajorMinor(ver)
+	if !ok {
 		return false
 	}
-	major, err1 := strconv.Atoi(parts[0])
-	minor, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	if major > 3 {
+	if mj > 3 {
 		return true
 	}
-	if major != 3 {
+	if mj != 3 {
 		return false
 	}
-	return minor >= 10
+	return mn >= 11
+}
+
+// searxngInterpreterVersionOK runs `<path> --version` and reports whether the
+// interpreter is Python ≥3.11. Used to detect a stale 3.10 venv/standalone that
+// must be rebuilt. Returns false on any error (treated as "needs rebuild").
+func searxngInterpreterVersionOK(path string) (bool, error) {
+	out, err := exec.Command(path, "--version").CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+	ver := strings.TrimSpace(string(out))
+	if strings.HasPrefix(ver, "Python ") {
+		ver = ver[len("Python "):]
+	}
+	return systemPythonVersionOK(ver), nil
+}
+
+// parseVersionMajorMinor parses the leading "X.Y" of a version string like
+// "3.11.5" or "3.11".
+func parseVersionMajorMinor(ver string) (int, int, bool) {
+	parts := strings.Split(ver, ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	mj, err1 := strconv.Atoi(parts[0])
+	mn, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return mj, mn, true
 }
 
 // downloadAndPrepareSearxngSource fetches the SearXNG source tarball from GitHub,
@@ -437,8 +517,20 @@ func installSearxng(progressFn func(percent int)) error {
 
 	// Step 1+2: Python interpreter + venv. Prefer the system Python (venv isolates
 	// SearXNG's packages); only download python-build-standalone when no usable
-	// system interpreter is present.
+	// system interpreter is present. If a venv already exists but is Python <3.11
+	// (e.g. a 3.10 venv from a prior broken run, before tomllib was enforced), wipe
+	// both the venv and the standalone interpreter so a compatible ≥3.11 build is
+	// downloaded and the venv is recreated from it.
+	createVenv := false
 	if _, err := os.Stat(searxngVenvPython()); err != nil {
+		createVenv = true
+	} else if ok, _ := searxngInterpreterVersionOK(searxngVenvPython()); !ok {
+		log.Printf("[SearXNG] existing venv is Python <3.11; rebuilding venv and standalone interpreter")
+		os.RemoveAll(searxngVenvDir())
+		os.RemoveAll(searxngPythonDir())
+		createVenv = true
+	}
+	if createVenv {
 		setSearxngInstallPhase("creating-venv", -1)
 		bootstrapPython, err := resolveBootstrapPython(progressFn)
 		if err != nil {
@@ -542,8 +634,15 @@ func startSearxngProcess() error {
 		return nil
 	}
 
-	// Install on demand if the venv isn't ready.
-	if !searxngIsInstalled() {
+	// Install on demand if the venv isn't ready, or if the existing venv's
+	// Python is below 3.11 (SearXNG needs the stdlib `tomllib` from 3.11).
+	needInstall := !searxngIsInstalled()
+	if !needInstall {
+		if ok, _ := searxngInterpreterVersionOK(searxngVenvPython()); !ok {
+			needInstall = true
+		}
+	}
+	if needInstall {
 		if err := installSearxng(func(percent int) {
 			searxngInstallMu.Lock()
 			searxngInstall.Progress = percent

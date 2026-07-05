@@ -299,7 +299,7 @@ The admin UI provides:
 | **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, and ZCode. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
-| **SearXNG** | Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.10 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter first. |
+| **SearXNG** | Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.11 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first. |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -726,7 +726,7 @@ Prism can start automatically when you log in. Toggle this from the admin UI (**
 
 Prism can run a local [SearXNG](https://github.com/searxng/searxng) metasearch engine as a managed instance, controlled from the system tray and the admin UI **SearXNG** tab. It runs as a separate process from the proxy (default `http://127.0.0.1:8888/`); the proxy port (`11434`) is unchanged.
 
-**First Start** bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). If no system Python ≥3.10 is found on PATH, Prism downloads a matching [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter first — so SearXNG runs on machines with no Python installed at all. On Windows, Prism also applies an idempotent patch that makes SearXNG's unconditional `pwd` import conditional, so the webapp launches cleanly.
+**First Start** bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). SearXNG requires Python ≥3.11 (it imports the stdlib `tomllib` module). If no system Python ≥3.11 is found on PATH, Prism downloads a matching [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first — so SearXNG runs on machines with no Python installed at all. On Windows, Prism also applies an idempotent patch that makes SearXNG's unconditional `pwd` import conditional, so the webapp launches cleanly.
 
 The generated `settings.yml` inherits SearXNG's full engine set (`use_default_settings`), enables JSON output, and turns the bot limiter **off** — so no Valkey/Redis is required for local single-user use.
 
