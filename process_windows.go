@@ -83,10 +83,12 @@ func stopProxyProcess() {
 	closeLogFileMutex()
 }
 
-func isProxyRunning() bool {
-	proxyRunningMu.Lock()
-	pid := proxyPID
-	proxyRunningMu.Unlock()
+// stopProcessByPID terminates a process by PID (Windows taskkill /F).
+func stopProcessByPID(pid int) {
+	runHidden(exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F")).Run()
+}
+
+func pidAlive(pid int) bool {
 	if pid == 0 {
 		return false
 	}
@@ -101,6 +103,13 @@ func isProxyRunning() bool {
 		return false
 	}
 	return exitCode == STILL_ACTIVE
+}
+
+func isProxyRunning() bool {
+	proxyRunningMu.Lock()
+	pid := proxyPID
+	proxyRunningMu.Unlock()
+	return pidAlive(pid)
 }
 
 func getExePath() string {

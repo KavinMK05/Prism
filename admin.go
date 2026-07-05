@@ -593,6 +593,103 @@ func startAdminServer(cfg *Config, port string) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	// API: SearXNG managed instance — status / lifecycle / settings / autostart
+	mux.HandleFunc("/admin/searxng/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(searxngStatus())
+	})
+
+	mux.HandleFunc("/admin/searxng/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		go func() { _ = startSearxngProcess() }()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/admin/searxng/stop", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		stopSearxngProcess()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/admin/searxng/restart", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		go func() { _ = restartSearxngProcess() }()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/admin/searxng/settings", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			f, err := loadSearxngSettingsForm()
+			if err != nil {
+				writeJSONError(w, "SearXNG not installed: "+err.Error(), 404)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(f)
+		case http.MethodPut:
+			var f searxngSettingsForm
+			if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+				writeJSONError(w, err.Error(), 400)
+				return
+			}
+			if err := validateSearxngSettingsForm(&f); err != nil {
+				writeJSONError(w, err.Error(), 400)
+				return
+			}
+			if err := saveSearxngSettingsForm(&f); err != nil {
+				writeJSONError(w, "failed to save settings: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+	})
+
+	mux.HandleFunc("/admin/searxng/autostart", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]bool{"enabled": searxngAutostartEnabled()})
+		case http.MethodPut:
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeJSONError(w, err.Error(), 400)
+				return
+			}
+			c := loadConfig()
+			c.SearXNGAutoStart = body.Enabled
+			if err := saveConfig(c); err != nil {
+				writeJSONError(w, "failed to save config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+	})
+
 	// API: Codex Desktop integration
 	mux.HandleFunc("/admin/codex-desktop/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

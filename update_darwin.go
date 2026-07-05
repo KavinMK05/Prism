@@ -3,15 +3,11 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -102,73 +98,6 @@ func performUpdate(info *UpdateInfo, progressFn func(percent int)) error {
 	return nil
 }
 
-// extractTarGz extracts a .tar.gz file to the destination directory.
-func extractTarGz(src, dst string) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open tar.gz: %w", err)
-	}
-	defer f.Close()
-
-	gzr, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gzr.Close()
-
-	tr := tar.NewReader(gzr)
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
-		}
-
-		// Sanitize path to prevent path traversal
-		target := filepath.Join(dst, hdr.Name)
-		if !isPathSafe(dst, target) {
-			log.Printf("[Update] Skipping unsafe path: %s", hdr.Name)
-			continue
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
-				return fmt.Errorf("mkdir %s: %w", target, err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(target), err)
-			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-			if err != nil {
-				return fmt.Errorf("create %s: %w", target, err)
-			}
-			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
-				return fmt.Errorf("write %s: %w", target, err)
-			}
-			out.Close()
-		case tar.TypeSymlink:
-			if !isPathSafe(dst, filepath.Join(dst, hdr.Linkname)) {
-				log.Printf("[Update] Skipping unsafe symlink: %s -> %s", hdr.Name, hdr.Linkname)
-				continue
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(target), err)
-			}
-			os.Remove(target)
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("symlink %s -> %s: %w", target, hdr.Linkname, err)
-			}
-		}
-	}
-
-	return nil
-}
 
 func showPlatformNotification(title, message string) {
 	script := fmt.Sprintf(`display notification "%s" with title "%s"`,
@@ -181,9 +110,3 @@ func showPlatformNotification(title, message string) {
 	}
 }
 
-// isPathSafe checks that target is within base (prevents path traversal).
-func isPathSafe(base, target string) bool {
-	absBase, _ := filepath.Abs(base)
-	absTarget, _ := filepath.Abs(target)
-	return strings.HasPrefix(absTarget, absBase+string(filepath.Separator)) || absTarget == absBase
-}

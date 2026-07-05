@@ -194,6 +194,49 @@
     line-height: 1.5;
   }
 
+  /* ── SearXNG panel ── */
+  .searx-status {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; margin: 12px 0;
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+  .searx-status .badge { font-size: 14px; font-weight: 600; }
+  .searx-status .url { margin-left: auto; font-size: 13px; }
+  .searx-install-msg { font-size: 13px; color: var(--text-secondary); margin: 10px 0; min-height: 18px; }
+  .searx-install-msg.error { color: var(--danger); }
+  .searx-form-section { margin-bottom: 20px; }
+  .searx-form-section:last-child { margin-bottom: 0; }
+  .searx-form-section h4 {
+    margin: 0 0 12px; padding-bottom: 8px;
+    font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  .searx-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 14px 18px;
+  }
+  .searx-grid .full { grid-column: 1 / -1; }
+  .searx-grid .field { margin-bottom: 0; }
+  .searx-checks { display: flex; flex-direction: column; gap: 4px; }
+  .searx-check {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0;
+  }
+  .searx-check .toggle-label { font-size: 14px; }
+  .searx-check .toggle-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .searx-formats { display: flex; gap: 18px; flex-wrap: wrap; padding: 4px 0; }
+  .searx-formats label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 14px; cursor: pointer;
+  }
+  .searx-secret-row { display: flex; gap: 8px; align-items: stretch; }
+  .searx-secret-row input { flex: 1; }
+  .searx-secret-row .btn { flex: 0 0 auto; }
+
+
+
   /* ── Fields ── */
   .field { margin-bottom: 20px; }
   .field:last-child { margin-bottom: 0; }
@@ -1365,6 +1408,7 @@
     <button class="tab" data-tab="stats">Stats</button>
     <button class="tab" data-tab="agents">Agents</button>
     <button class="tab" data-tab="proxy">Proxy</button>
+    <button class="tab" data-tab="searxng">SearXNG</button>
   </div>
 
   <!-- Provider Tab -->
@@ -1839,7 +1883,104 @@
           <button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button>
         </div>
       </div>
+</div>
+
+<!-- SearXNG Tab -->
+<div class="panel" id="panel-searxng">
+  <div class="card">
+    <h3>SearXNG</h3>
+    <p class="card-description">Managed local metasearch instance. Start creates an isolated Python venv and installs SearXNG (~80MB, a minute or two). If no system Python is found, Prism downloads a standalone interpreter first.</p>
+    <div class="searx-status">
+      <span id="searxDot" class="status-dot stopped"></span>
+      <span id="searxBadge" class="badge">Stopped</span>
+      <a id="searxUrl" class="url" href="http://127.0.0.1:8888/" target="_blank">http://127.0.0.1:8888/</a>
     </div>
+    <div class="btn-row">
+      <button id="btnSearxStart" class="btn btn-primary">Start</button>
+      <button id="btnSearxStop" class="btn btn-danger" disabled>Stop</button>
+      <button id="btnSearxRestart" class="btn btn-ghost" disabled>Restart</button>
+    </div>
+    <p id="searxInstallMsg" class="searx-install-msg"></p>
+    <div class="toggle-row" style="margin-top:16px">
+      <div>
+        <div class="toggle-label">Auto-start on Prism launch</div>
+        <div class="toggle-desc" id="searxAutostartNote">Start SearXNG automatically when Prism launches</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="searxAutostart">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Settings</h3>
+    <p class="card-description">Structured editor for the SearXNG instance. Changes require a Restart to take effect. Advanced keys (engines, outgoing, redis) are not exposed here — edit <code>settings.yml</code> directly if needed.</p>
+
+    <div class="searx-form-section">
+      <h4>Server</h4>
+      <div class="searx-grid">
+        <div class="field"><label>Port</label><input type="number" id="searxPort" min="1" max="65535"></div>
+        <div class="field"><label>Bind address</label><input type="text" id="searxBindAddress"></div>
+        <div class="field"><label>Base URL</label><input type="text" id="searxBaseURL" placeholder="(blank for local)"></div>
+        <div class="field"><label>Method</label><select id="searxMethod"><option value="POST">POST</option><option value="GET">GET</option></select></div>
+        <div class="field full"><label>Secret key</label>
+          <div class="searx-secret-row">
+            <input type="text" id="searxSecretKey" style="font-family:monospace">
+            <button type="button" id="btnSearxRegenSecret" class="btn btn-ghost">Regenerate</button>
+          </div>
+        </div>
+      </div>
+      <div class="searx-checks">
+        <div class="searx-check"><div><div class="toggle-label">Rate limiter</div><div class="toggle-desc">Requires Valkey/Redis</div></div>
+          <label class="toggle-switch"><input type="checkbox" id="searxLimiter"><span class="toggle-slider"></span></label></div>
+        <div class="searx-check"><div><div class="toggle-label">Public instance</div><div class="toggle-desc">Expose to the network (not just localhost)</div></div>
+          <label class="toggle-switch"><input type="checkbox" id="searxPublicInstance"><span class="toggle-slider"></span></label></div>
+        <div class="searx-check"><div><div class="toggle-label">Image proxy</div><div class="toggle-desc">Proxy image requests through SearXNG</div></div>
+          <label class="toggle-switch"><input type="checkbox" id="searxImageProxy"><span class="toggle-slider"></span></label></div>
+      </div>
+    </div>
+
+    <div class="searx-form-section">
+      <h4>Search</h4>
+      <div class="searx-grid">
+        <div class="field"><label>Safe search</label><select id="searxSafeSearch"><option value="0">None</option><option value="1">Moderate</option><option value="2">Strict</option></select></div>
+        <div class="field"><label>Autocomplete</label><select id="searxAutocomplete"><option value="">(off)</option><option>google</option><option>duckduckgo</option><option>bing</option><option>brave</option><option>wikipedia</option><option>startpage</option><option>qwant</option><option>yandex</option><option>dbpedia</option><option>mwmbl</option><option>seznam</option><option>swisscows</option><option>privacywall</option><option>naver</option><option>360search</option><option>baidu</option><option>quark</option><option>sogou</option></select></div>
+        <div class="field"><label>Default language</label><input type="text" id="searxDefaultLang" placeholder="(blank = browser)"></div>
+        <div class="field full"><label>Output formats (html required)</label>
+          <div class="searx-formats">
+            <label><input type="checkbox" id="searxFmtHtml" checked> html</label>
+            <label><input type="checkbox" id="searxFmtJson"> json</label>
+            <label><input type="checkbox" id="searxFmtCsv"> csv</label>
+            <label><input type="checkbox" id="searxFmtRss"> rss</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="searx-form-section">
+      <h4>UI</h4>
+      <div class="searx-grid">
+        <div class="field"><label>Default locale</label><input type="text" id="searxDefaultLocale" placeholder="(blank = browser)"></div>
+        <div class="field"><label>Default theme</label><input type="text" id="searxDefaultTheme"></div>
+        <div class="field"><label>Simple theme style</label><select id="searxSimpleStyle"><option value="auto">auto</option><option value="light">light</option><option value="dark">dark</option><option value="black">black</option></select></div>
+        <div class="field"><label>Hotkeys</label><select id="searxHotkeys"><option value="default">default</option><option value="vim">vim</option></select></div>
+      </div>
+      <div class="searx-checks">
+        <div class="searx-check"><div class="toggle-label">Show query in page title</div>
+          <label class="toggle-switch"><input type="checkbox" id="searxQueryInTitle"><span class="toggle-slider"></span></label></div>
+        <div class="searx-check"><div class="toggle-label">Center results</div>
+          <label class="toggle-switch"><input type="checkbox" id="searxCenterAlignment"><span class="toggle-slider"></span></label></div>
+        <div class="searx-check"><div class="toggle-label">Open results in new tab</div>
+          <label class="toggle-switch"><input type="checkbox" id="searxResultsOnNewTab"><span class="toggle-slider"></span></label></div>
+        <div class="searx-check"><div class="toggle-label">Search on category select</div>
+          <label class="toggle-switch"><input type="checkbox" id="searxSearchOnCategorySelect"><span class="toggle-slider"></span></label></div>
+      </div>
+    </div>
+
+    <div class="btn-row"><button id="btnSearxSaveSettings" class="btn btn-primary">Save Settings</button></div>
+  </div>
+</div>
 </div>
 
 <div class="modal-overlay" id="deleteModal" onclick="if(event.target===this)closeDeleteModal()">
@@ -1917,6 +2058,13 @@ document.querySelectorAll('.tab').forEach(tab => {
       checkAgentStatus('zcode');
       checkAgentStatus('omp');
     }
+    if (tab.dataset.tab === 'searxng') {
+      refreshSearxngStatus();
+      loadSearxngSettings();
+      startSearxngPolling();
+    } else {
+      stopSearxngPolling();
+    }
     if (tab.dataset.tab === 'stats') {
       startStatsPolling();
       refreshStats();
@@ -1927,6 +2075,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
   });
 });
+
 
 // ── Toast ──
 function toast(msg, type='success') {
@@ -3861,6 +4010,129 @@ async function restoreAgent(id) {
 
 // ── Init ──
 initTheme();
+// ── SearXNG ──
+let searxngInterval = null;
+async function refreshSearxngStatus() {
+  try {
+    const s = await api('/searxng/status');
+    document.getElementById('searxDot').className = 'status-dot ' + (s.running ? 'running' : 'stopped');
+    document.getElementById('searxBadge').textContent = s.running ? 'Running' : 'Stopped';
+    document.getElementById('btnSearxStart').disabled = s.running;
+    document.getElementById('btnSearxStop').disabled = !s.running;
+    document.getElementById('btnSearxRestart').disabled = !s.running;
+    const url = 'http://127.0.0.1:' + (s.port || 8888) + '/';
+    document.getElementById('searxUrl').href = url; document.getElementById('searxUrl').textContent = url;
+    const ph = s.install && s.install.phase;
+    const msg = document.getElementById('searxInstallMsg');
+    const phaseLabels = {
+      'downloading-python': 'Downloading Python',
+      'extracting-python': 'Extracting Python',
+      'creating-venv': 'Creating virtual environment',
+      'downloading-searxng': 'Downloading SearXNG source',
+      'extracting-searxng': 'Extracting SearXNG source',
+      'installing-searxng': 'Installing SearXNG dependencies',
+    };
+    if (ph && phaseLabels[ph]) {
+      msg.classList.remove('error');
+      msg.textContent = phaseLabels[ph] + '…' + (s.install.progress > 0 ? ' ' + s.install.progress + '%' : '');
+    } else if (ph === 'error') {
+      msg.classList.add('error');
+      msg.textContent = 'Error: ' + (s.install.error || '');
+    } else {
+      msg.classList.remove('error');
+      msg.textContent = '';
+    }
+    document.getElementById('searxAutostart').checked = !!(s.autostart);
+    const note = document.getElementById('searxAutostartNote');
+    if (s.autostart && !s.installed) note.textContent = 'SearXNG will auto-start once you install it with Start.';
+    else if (s.autostart) note.textContent = 'Auto-starts on Prism launch.';
+    else note.textContent = 'Start SearXNG automatically when Prism launches';
+  } catch(e) {}
+}
+function startSearxngPolling() { if (searxngInterval) return; refreshSearxngStatus(); searxngInterval = setInterval(refreshSearxngStatus, 2000); }
+function stopSearxngPolling() { if (searxngInterval) { clearInterval(searxngInterval); searxngInterval = null; } }
+async function startSearxng() { try { await api('/searxng/start', {method:'POST'}); toast('SearXNG installing/starting…'); } catch(e) { toast('Failed: '+e.message,'error'); } }
+async function stopSearxng() { try { await api('/searxng/stop', {method:'POST'}); toast('SearXNG stopping…'); setTimeout(refreshSearxngStatus, 1000); } catch(e) { toast('Failed: '+e.message,'error'); } }
+async function restartSearxng() { try { await api('/searxng/restart', {method:'POST'}); toast('SearXNG restarting…'); setTimeout(refreshSearxngStatus, 2000); } catch(e) { toast('Failed: '+e.message,'error'); } }
+async function loadSearxngSettings() {
+  try {
+    const f = await api('/searxng/settings');
+    document.getElementById('searxPort').value = f.port;
+    document.getElementById('searxBindAddress').value = f.bind_address;
+    document.getElementById('searxBaseURL').value = f.base_url;
+    document.getElementById('searxSecretKey').value = f.secret_key;
+    document.getElementById('searxMethod').value = f.method;
+    document.getElementById('searxLimiter').checked = !!f.limiter;
+    document.getElementById('searxPublicInstance').checked = !!f.public_instance;
+    document.getElementById('searxImageProxy').checked = !!f.image_proxy;
+    document.getElementById('searxSafeSearch').value = String(f.safe_search);
+    document.getElementById('searxAutocomplete').value = f.autocomplete;
+    document.getElementById('searxDefaultLang').value = f.default_lang;
+    document.getElementById('searxFmtHtml').checked = (f.formats||[]).includes('html');
+    document.getElementById('searxFmtJson').checked = (f.formats||[]).includes('json');
+    document.getElementById('searxFmtCsv').checked = (f.formats||[]).includes('csv');
+    document.getElementById('searxFmtRss').checked = (f.formats||[]).includes('rss');
+    document.getElementById('searxDefaultLocale').value = f.default_locale;
+    document.getElementById('searxDefaultTheme').value = f.default_theme;
+    document.getElementById('searxSimpleStyle').value = f.simple_style;
+    document.getElementById('searxHotkeys').value = f.hotkeys;
+    document.getElementById('searxQueryInTitle').checked = !!f.query_in_title;
+    document.getElementById('searxCenterAlignment').checked = !!f.center_alignment;
+    document.getElementById('searxResultsOnNewTab').checked = !!f.results_on_new_tab;
+    document.getElementById('searxSearchOnCategorySelect').checked = !!f.search_on_category_select;
+  } catch(e) { const m = document.getElementById('searxInstallMsg'); m.classList.add('error'); m.textContent = 'Install SearXNG first to edit settings.'; }
+}
+function collectSearxngSettings() {
+  const formats = [];
+  if (document.getElementById('searxFmtHtml').checked) formats.push('html');
+  if (document.getElementById('searxFmtJson').checked) formats.push('json');
+  if (document.getElementById('searxFmtCsv').checked) formats.push('csv');
+  if (document.getElementById('searxFmtRss').checked) formats.push('rss');
+  return {
+    port: parseInt(document.getElementById('searxPort').value, 10) || 0,
+    bind_address: document.getElementById('searxBindAddress').value,
+    base_url: document.getElementById('searxBaseURL').value,
+    secret_key: document.getElementById('searxSecretKey').value,
+    method: document.getElementById('searxMethod').value,
+    limiter: document.getElementById('searxLimiter').checked,
+    public_instance: document.getElementById('searxPublicInstance').checked,
+    image_proxy: document.getElementById('searxImageProxy').checked,
+    safe_search: parseInt(document.getElementById('searxSafeSearch').value, 10) || 0,
+    autocomplete: document.getElementById('searxAutocomplete').value,
+    default_lang: document.getElementById('searxDefaultLang').value,
+    formats,
+    default_locale: document.getElementById('searxDefaultLocale').value,
+    default_theme: document.getElementById('searxDefaultTheme').value,
+    simple_style: document.getElementById('searxSimpleStyle').value,
+    hotkeys: document.getElementById('searxHotkeys').value,
+    query_in_title: document.getElementById('searxQueryInTitle').checked,
+    center_alignment: document.getElementById('searxCenterAlignment').checked,
+    results_on_new_tab: document.getElementById('searxResultsOnNewTab').checked,
+    search_on_category_select: document.getElementById('searxSearchOnCategorySelect').checked,
+  };
+}
+async function saveSearxngSettings() {
+  try { await api('/searxng/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(collectSearxngSettings())}); toast('Settings saved. Restart SearXNG to apply.'); }
+  catch(e) { toast('Save failed: '+e.message,'error'); }
+}
+function regenerateSearxngSecret() {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const buf = new Uint32Array(64);
+  crypto.getRandomValues(buf);
+  document.getElementById('searxSecretKey').value = Array.from(buf, n => chars[n % chars.length]).join('');
+}
+async function toggleSearxngAutostart() {
+  const enabled = document.getElementById('searxAutostart').checked;
+  try { await api('/searxng/autostart', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})}); toast(enabled ? 'SearXNG will auto-start on Prism launch.' : 'SearXNG auto-start disabled.'); setTimeout(refreshSearxngStatus, 300); }
+  catch(e) { toast('Failed: '+e.message,'error'); refreshSearxngStatus(); }
+}
+document.getElementById('btnSearxStart').addEventListener('click', startSearxng);
+document.getElementById('btnSearxStop').addEventListener('click', stopSearxng);
+document.getElementById('btnSearxRestart').addEventListener('click', restartSearxng);
+document.getElementById('btnSearxSaveSettings').addEventListener('click', saveSearxngSettings);
+document.getElementById('btnSearxRegenSecret').addEventListener('click', regenerateSearxngSecret);
+document.getElementById('searxAutostart').addEventListener('change', toggleSearxngAutostart);
+
 loadConfig();
 loadModelConfig();
 loadAutoStart();

@@ -34,6 +34,7 @@ type Config struct {
 	CustomProviders   []*ProviderConfig        `json:"custom_providers"`
 	OAuthAccounts     []*OAuthAccount          `json:"oauth_accounts"`
 	AgentIntegrations *AgentIntegrationsConfig `json:"agent_integrations,omitempty"`
+	SearXNGAutoStart  bool                     `json:"searxng_autostart,omitempty"`
 }
 
 // clone returns a deep copy of the Config, safe for mutation without affecting the original

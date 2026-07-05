@@ -22,6 +22,10 @@ var (
 	versionItem    *systray.MenuItem
 	checkUpdateItem *systray.MenuItem
 	updateAvailItem *systray.MenuItem
+	searxStatusItem  *systray.MenuItem
+	searxStartItem   *systray.MenuItem
+	searxStopItem    *systray.MenuItem
+	searxRestartItem *systray.MenuItem
 	logFile        *os.File
 	logFileMu      sync.Mutex
 	proxyPID       int
@@ -81,14 +85,31 @@ func runTray(iconData []byte, cleanup func()) {
 
 		systray.AddSeparator()
 
+		searxStatusItem = systray.AddMenuItem("SearXNG: \u25cb Stopped", "SearXNG status")
+		searxStatusItem.Disable()
+		searxStartItem = systray.AddMenuItem("Start SearXNG", "Start managed SearXNG instance")
+		searxStopItem = systray.AddMenuItem("Stop SearXNG", "Stop SearXNG instance")
+		searxRestartItem = systray.AddMenuItem("Restart SearXNG", "Restart SearXNG instance")
+
+		systray.AddSeparator()
+
 		quitItem := systray.AddMenuItem("Quit", "Quit tray (stops proxy too)")
 
 		updateMenu(running)
+		updateSearxngMenu(isSearxngRunning())
 
 		if !running {
 			startProxyProcess()
 			time.Sleep(500 * time.Millisecond)
 			updateMenu(isProxyRunning())
+		}
+
+		// Auto-start the managed SearXNG instance only if the user opted in AND
+		// it is already installed — never trigger the first-time download on launch.
+		if searxngAutostartEnabled() && searxngIsInstalled() && !isSearxngRunning() {
+			go startSearxngProcess()
+			time.Sleep(500 * time.Millisecond)
+			updateSearxngMenu(isSearxngRunning())
 		}
 
 		// Start background usage refresh for OAuth accounts
@@ -126,7 +147,22 @@ func runTray(iconData []byte, cleanup func()) {
 					go manualUpdateCheck()
 				case <-updateAvailItem.ClickedCh:
 					go installUpdate()
+				case <-searxStartItem.ClickedCh:
+					go func() {
+						_ = startSearxngProcess()
+						time.Sleep(500 * time.Millisecond)
+						updateSearxngMenu(isSearxngRunning())
+					}()
+				case <-searxStopItem.ClickedCh:
+					stopSearxngProcess()
+					time.Sleep(500 * time.Millisecond)
+					updateSearxngMenu(isSearxngRunning())
+				case <-searxRestartItem.ClickedCh:
+					_ = restartSearxngProcess()
+					time.Sleep(500 * time.Millisecond)
+					updateSearxngMenu(isSearxngRunning())
 				case <-quitItem.ClickedCh:
+					stopSearxngProcess()
 					stopProxyProcess()
 					closeLogFile()
 					if cleanup != nil {
@@ -150,6 +186,24 @@ func updateMenu(running bool) {
 		startItem.Enable()
 		stopItem.Disable()
 		mRestart.Disable()
+	}
+}
+
+// updateSearxngMenu toggles the SearXNG tray items to reflect running state.
+func updateSearxngMenu(running bool) {
+	if searxStatusItem == nil {
+		return
+	}
+	if running {
+		searxStatusItem.SetTitle("SearXNG: \u25cf Running")
+		searxStartItem.Disable()
+		searxStopItem.Enable()
+		searxRestartItem.Enable()
+	} else {
+		searxStatusItem.SetTitle("SearXNG: \u25cb Stopped")
+		searxStartItem.Enable()
+		searxStopItem.Disable()
+		searxRestartItem.Disable()
 	}
 }
 

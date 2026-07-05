@@ -274,12 +274,14 @@ When launched without arguments, Prism runs as a system tray application with th
 | Menu item | Action |
 |---|---|
 | **Start / Stop / Restart Proxy** | Control the proxy server process |
+| **SearXNG: Running / Stopped** | Live status of the managed SearXNG instance |
+| **Start / Stop / Restart SearXNG** | Control the managed SearXNG metasearch instance |
 | **Open Settings** | Open the web admin UI in your browser |
 | **Open Folder** | Open the proxy directory in Explorer / Finder |
 | **Edit Model Config** | Open `model_remapping.json` in Notepad / TextEdit |
 | **Show Logs** | Open a live log viewer console |
 | **Check for Updates** | Check for newer versions of Prism |
-| **Quit** | Stop proxy and exit |
+| **Quit** | Stop proxy and SearXNG, then exit |
 
 ## Admin Web UI
 
@@ -297,6 +299,7 @@ The admin UI provides:
 | **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, and ZCode. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
+| **SearXNG** | Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.10 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter first. |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -718,6 +721,23 @@ Prism can start automatically when you log in. Toggle this from the admin UI (**
 **Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required.
 
 **macOS:** Uses a LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) to launch Prism at login.
+
+## SearXNG
+
+Prism can run a local [SearXNG](https://github.com/searxng/searxng) metasearch engine as a managed instance, controlled from the system tray and the admin UI **SearXNG** tab. It runs as a separate process from the proxy (default `http://127.0.0.1:8888/`); the proxy port (`11434`) is unchanged.
+
+**First Start** bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). If no system Python ≥3.10 is found on PATH, Prism downloads a matching [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter first — so SearXNG runs on machines with no Python installed at all. On Windows, Prism also applies an idempotent patch that makes SearXNG's unconditional `pwd` import conditional, so the webapp launches cleanly.
+
+The generated `settings.yml` inherits SearXNG's full engine set (`use_default_settings`), enables JSON output, and turns the bot limiter **off** — so no Valkey/Redis is required for local single-user use.
+
+| Control | Where |
+|---|---|
+| Start / Stop / Restart | System tray **SearXNG** menu, or admin UI **SearXNG** tab |
+| Auto-start on Prism launch | Admin UI **SearXNG** tab (only triggers if SearXNG is already installed — the first-time download never runs automatically) |
+| Structured settings (server / search / UI) | Admin UI **SearXNG** tab → **Settings** card; changes require a Restart to take effect |
+| Advanced settings (engines, outgoing, redis) | Edit `settings.yml` directly |
+
+Everything lives under Prism's config dir — `%APPDATA%\prism\searxng\` on Windows, `~/Library/Application Support/prism/searxng/` on macOS (venv, source tree, and `settings.yml`). Deleting that directory or uninstalling Prism removes it completely.
 
 ## Limitations
 

@@ -1,20 +1,24 @@
-# Prism v0.2.2
+# Prism v0.3.0
 
 ## What's New
 
-- **Oh My Pi (omp) Agent Integration** — Prism now registers `prism` and `prism-codex` providers in `~/.omp/agent/models.yml` so Oh My Pi can route your local models through Prism. Non-Codex models use the `openai-completions` transport (`/v1/chat/completions`); Codex OAuth models use `openai-responses` (`/v1/responses`). A new admin UI card provides Setup/Restore actions and live status checks. Existing providers and top-level keys in `models.yml` are preserved, with a one-time `.prism-backup`.
-- **macOS Auto-start** — LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) launches Prism at login (toggle in Proxy tab → Start at Login).
-- **Node.js 20 deprecation notice** — Release workflow actions still target Node.js 20 (GitHub is forcing Node.js 24). Builds pass today; action versions will be bumped before GitHub hard-blocks Node.js 20.
+- **Managed SearXNG instance** — Prism can now run a local [SearXNG](https://github.com/searxng/searxng) metasearch engine alongside the proxy, managed entirely from the tray and admin UI. A new **SearXNG** tab provides start/stop/restart, a live status indicator, an auto-start toggle, and a structured settings editor for the user-tunable subset of `settings.yml` (server, search, and UI keys — engines/outgoing/redis stay editable in the file directly).
+  - **Zero-Python-friction install.** First **Start** bootstraps an isolated venv and `pip install`s SearXNG (~80 MB, a minute or two). If no system Python ≥3.10 is on PATH, Prism downloads a matching [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter first — so SearXNG runs on Windows machines with no Python installed at all.
+  - **Windows portability patch.** SearXNG imports the Unix-only `pwd` module unconditionally in `searx/valkeydb.py`, which crashes the webapp on Windows before the (off-by-default) limiter is ever consulted. Prism applies an idempotent conditional-import patch on install so the webapp launches cleanly on Windows.
+  - **Sensible local defaults.** The generated `settings.yml` inherits SearXNG's full engine set via `use_default_settings`, enables JSON output, and turns the bot limiter **off** — so no Valkey/Redis is required for local single-user use.
+  - **Tray integration.** New **SearXNG** menu items (status line, Start / Stop / Restart) mirror the admin UI, and SearXNG is stopped cleanly on Quit.
+  - **Auto-start.** Opt in from the SearXNG tab; if SearXNG is already installed, Prism launches it on startup. The first-time download is never triggered automatically — only an explicit **Start** installs.
+- **Cross-platform archive extraction** — The macOS self-update `extractTarGz` / `isPathSafe` helpers (and a new Windows-illegal-filename guard) have been promoted to a shared `archive.go`, now reused by both the macOS auto-updater and the SearXNG python-build-standalone install on Windows and macOS.
 
 ## Improvements
 
-- Rebranded README from a translation proxy to a universal LLM proxy with agent integrations documentation.
-- Tighter inbound streaming: reworked OpenAI-compatible stream handling for more reliable passthrough.
-- Model catalog generation now produces `reasoning_levels` in the correct dict format and matches codex-shim's file ordering.
+- `isProxyRunning` is now built on shared `pidAlive` / `stopProcessByPID` helpers on both Windows and macOS, eliminating per-platform duplication of the PID liveness check and process termination.
 
 ## Bug Fixes
 
-- **Fixed: models.dev lookup returned the wrong model and wrong context window.** Searching a model (e.g. GLM-5.2 under Ollama Cloud) returned a *different* model's metadata — GLM-5.2 came back as `glm-5` with context 202,752 instead of the exact `glm-5.2` at 976,000 — because (1) the matcher sorted exact matches to the front but selected the *last* (worst/partial) match, and (2) greedy reverse-substring matching let a shorter id (`glm-5`) match a longer search (`glm-5.2`). The matcher now picks the **best** match directly (exact > in-scope-provider > native > deterministic provider id), so lookups are stable regardless of Go's randomized map iteration, prefer the selected provider's value, and fall back to all providers when that provider doesn't list the model. Also added a 30s HTTP timeout so a stalled ~3 MB models.dev download can no longer hang the UI's "Fetch". The duplicate parser in the public `/api/model-info` endpoint now shares the same implementation. Covered by hermetic + live tests.
-- **Fixed: OMP / OpenCode reported as "not detected" on macOS.** macOS `.app` bundles launched from Finder/Dock inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so `exec.LookPath` missed binaries installed by Homebrew (`/opt/homebrew/bin`), bun (`~/.bun/bin`), mise (`~/.local/share/mise/shims`), and npm-global. When the agent config file didn't yet exist, detection fell through to the broken binary check. Added a shared `lookupBinary` helper that augments the search with the common install directories for OMP's documented macOS install methods (Homebrew, bun, curl, mise, npm-global); applied to both OMP and OpenCode, which shared the identical defect. Covered by a hermetic test simulating the minimal-PATH GUI scenario.
-- Fixed TOML path escaping and section-aware key extraction when writing managed blocks to `~/.codex/config.toml`.
-- Preserved Codex Desktop built-in tool types in the Responses API.
+- No user-facing bug fixes this release; the SearXNG work surfaced and fixed the platform-duplication noted above.
+
+## Notes
+
+- The managed SearXNG instance lives entirely under Prism's config dir (`%APPDATA%\prism\searxng\` on Windows, `~/Library/Application Support/prism/searxng/` on macOS) — venv, source tree, and `settings.yml`. Uninstalling Prism or deleting that directory removes it completely.
+- SearXNG defaults to `http://127.0.0.1:8888/` (port configurable in the SearXNG tab). It runs as a separate process from the proxy; the proxy port (`11434`) is unchanged.
