@@ -683,6 +683,16 @@ func startAdminServer(cfg *Config, port string) {
 				writeJSONError(w, "failed to save config: "+err.Error(), 500)
 				return
 			}
+			// Keep the in-memory adminConfig in sync. Other handlers (OAuth
+			// add/remove, background usage refresh) snapshot adminConfig and call
+			// saveConfig, which would otherwise overwrite config.json with a stale
+			// SearXNGAutoStart=false and - because the JSON tag is omitempty - drop
+			// the field entirely, silently reverting the user's toggle.
+			adminMu.Lock()
+			if adminConfig != nil {
+				adminConfig.SearXNGAutoStart = body.Enabled
+			}
+			adminMu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		default:

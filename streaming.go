@@ -25,19 +25,62 @@ type streamState struct {
 	totalPromptTokens int
 	msgID             string
 	stopSent          bool
+	// Tracking for cumulative Ollama tool-call streaming. Ollama re-emits the
+	// full accumulated arguments (a complete, closed JSON object) in every
+	// chunk, so the arguments cannot be diffed into input_json_delta suffixes.
+	// We buffer the latest complete arguments per tool call and emit the whole
+	// call once at finalization, matching Ollama's own single-emission behaviour.
+	pendingToolUses []*pendingToolUse
+	pendingToolMap  map[string]*pendingToolUse
+}
+
+// pendingToolUse buffers one tool call being streamed from Ollama until
+// finalization, when it is emitted as a single tool_use content block.
+type pendingToolUse struct {
+	name     string
+	id       string
+	argsJSON string
+	flushed  bool
 }
 
 func newStreamState(w http.ResponseWriter, flusher http.Flusher, canFlush bool, msgID string) *streamState {
 	return &streamState{
-		w:        w,
-		flusher:  flusher,
-		canFlush: canFlush,
-		msgID:    msgID,
+		w:             w,
+		flusher:       flusher,
+		canFlush:      canFlush,
+		msgID:         msgID,
+		pendingToolMap: make(map[string]*pendingToolUse),
 	}
 }
 
 func (s *streamState) writeSSE(event string, data interface{}) {
 	writeSSE(s.w, s.flusher, s.canFlush, event, data)
+}
+
+// flushPendingToolUses emits every buffered tool call exactly once as a
+// tool_use content block: content_block_start, a single input_json_delta
+// carrying the full arguments JSON, then content_block_stop. Called at
+// stream finalization (or when text content arrives after tool calls).
+func (s *streamState) flushPendingToolUses() {
+	for _, pu := range s.pendingToolUses {
+		if pu.flushed {
+			continue
+		}
+		pu.flushed = true
+		s.openToolUseBlockWithID(pu.name, pu.id)
+		if pu.argsJSON != "" {
+			globalStats.AddTokens(1)
+			s.writeSSE("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": s.contentBlockIndex,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": pu.argsJSON,
+				},
+			})
+		}
+		s.closeBlock("tool_use")
+	}
 }
 
 func (s *streamState) closeBlock(blockType string) {
@@ -93,9 +136,6 @@ func (s *streamState) openTextBlock() {
 	s.hasContentBlock = true
 }
 
-func (s *streamState) openToolUseBlock(toolName string) {
-	s.openToolUseBlockWithID(toolName, "")
-}
 
 // openToolUseBlockWithID opens a tool_use block. If id is non-empty it is used
 // as the tool_use ID (e.g. preserving an upstream-provided ID); otherwise a
@@ -293,26 +333,30 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 				if toolName == "" {
 					continue
 				}
-				if state.toolUseBlockOpen {
-					state.closeBlock("tool_use")
+				key := tc.ID
+				if key == "" {
+					key = toolName
 				}
-				state.openToolUseBlock(toolName)
+				// Buffer the tool call. Ollama re-emits the full cumulative
+				// arguments (a complete JSON object) in every chunk, so we
+				// keep the latest arguments per call and emit the whole call
+				// once at finalization rather than diffing into deltas.
+				pu, seen := state.pendingToolMap[key]
+				if !seen {
+					pu = &pendingToolUse{name: toolName, id: tc.ID}
+					state.pendingToolMap[key] = pu
+					state.pendingToolUses = append(state.pendingToolUses, pu)
+				}
 				if tc.Function.Arguments != nil {
-					argsJSON, _ := json.Marshal(tc.Function.Arguments)
-					globalStats.AddTokens(1)
-					state.writeSSE("content_block_delta", map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": state.contentBlockIndex,
-						"delta": map[string]interface{}{
-							"type":         "input_json_delta",
-							"partial_json": string(argsJSON),
-						},
-					})
+					b, _ := json.Marshal(tc.Function.Arguments)
+					pu.argsJSON = string(b)
 				}
 			}
 		}
 
 		if chunk.Message.Content != "" {
+			// Emit any buffered tool calls before text so they appear in order.
+			state.flushPendingToolUses()
 			if state.toolUseBlockOpen {
 				state.closeBlock("tool_use")
 			}
@@ -333,6 +377,8 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 		}
 
 		if chunk.Done {
+			// Emit buffered tool calls as tool_use blocks before closing.
+			state.flushPendingToolUses()
 			state.closeAllBlocks()
 
 			stopReason := "end_turn"
@@ -360,9 +406,10 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 
 	// If the stream ended without a Done chunk, close any remaining blocks
 	// and send an empty text block as fallback. We must still terminate the
-	// SSE stream with message_delta + message_stop so clients don't hang
-	// waiting for a terminal event.
-	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
+	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen || len(state.pendingToolUses) > 0 {
+		// Stream ended without a done chunk: still emit any buffered tool
+		// calls so they are not lost, then close remaining blocks.
+		state.flushPendingToolUses()
 		state.closeAllBlocks()
 	}
 	if !state.hasContentBlock {

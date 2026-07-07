@@ -91,6 +91,38 @@ func makeOllamaChunk(model string, content string, thinking string, done bool, d
 	return string(b) + "\n"
 }
 
+// makeOllamaToolCallChunk builds an Ollama native /api/chat streaming chunk
+// carrying a single tool call. Ollama streams tool calls cumulatively: each
+// chunk re-emits the full accumulated arguments object (a complete, closed
+// JSON object), growing chunk by chunk until the call is complete.
+func makeOllamaToolCallChunk(model, id, toolName string, arguments map[string]interface{}, done bool, doneReason string) string {
+	tc := map[string]interface{}{
+		"function": map[string]interface{}{
+			"name":      toolName,
+			"arguments": arguments,
+		},
+	}
+	if id != "" {
+		tc["id"] = id
+	}
+	chunk := map[string]interface{}{
+		"model": model,
+		"message": map[string]interface{}{
+			"role":       "assistant",
+			"content":    "",
+			"tool_calls": []map[string]interface{}{tc},
+		},
+		"done": done,
+	}
+	if done {
+		chunk["done_reason"] = doneReason
+		chunk["eval_count"] = 10
+		chunk["prompt_eval_count"] = 5
+	}
+	b, _ := json.Marshal(chunk)
+	return string(b) + "\n"
+}
+
 func makeOpenAIChunk(model string, content string, reasoningContent string, finishReason string, toolCalls []map[string]interface{}) string {
 	return makeOpenAIChunkWithRole(model, content, reasoningContent, finishReason, toolCalls, true)
 }
@@ -1391,5 +1423,201 @@ func TestOpenAIStreaming_UsageOnlyChunk(t *testing.T) {
 	}
 	if outputTokens != float64(12) {
 		t.Errorf("expected output_tokens=12 from usage-only chunk, got %v", outputTokens)
+	}
+}
+
+// TestOpenAIInboundOllamaStreaming_ToolCallsCumulative reproduces the original
+// bug: Ollama streams tool_calls cumulatively (each chunk re-emits the full
+// accumulated arguments object), and the proxy must convert that into a single
+// OpenAI tool call with a stable index — not one tool call per chunk.
+func TestOpenAIInboundOllamaStreaming_ToolCallsCumulative(t *testing.T) {
+	var upstreamBody string
+	// Four cumulative chunks for one edit tool call; args grow each chunk.
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.g"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go", "old": "A"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go", "old": "A", "new": "B"}, false, "")
+	upstreamBody += makeOllamaChunk("test-model", "", "", true, "tool_call")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	openAIReq := &OpenAIChatRequest{Model: "test", Stream: true}
+	router.handleOpenAIInboundOllamaStreaming(w, req, openAIReq, rp)
+
+	chunks := parseOpenAISSEEvents(w.Body.String())
+
+	// Accumulate tool-call arguments by index. A correct stream produces
+	// exactly ONE tool call (one index) whose concatenated argument deltas
+	// form the complete, valid final arguments object.
+	type acc struct {
+		id   string
+		name string
+		args string
+	}
+	byIndex := map[int]*acc{}
+	for _, c := range chunks {
+		choices, ok := c["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice := choices[0].(map[string]interface{})
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tcs, ok := delta["tool_calls"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, tci := range tcs {
+			tc, ok := tci.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			idx := -1
+			if v, ok := tc["index"].(float64); ok {
+				idx = int(v)
+			}
+			a := byIndex[idx]
+			if a == nil {
+				a = &acc{}
+				byIndex[idx] = a
+			}
+			if id, ok := tc["id"].(string); ok && id != "" {
+				a.id = id
+			}
+			if fn, ok := tc["function"].(map[string]interface{}); ok {
+				if name, ok := fn["name"].(string); ok && name != "" {
+					a.name = name
+				}
+				if args, ok := fn["arguments"].(string); ok {
+					a.args += args
+				}
+			}
+		}
+	}
+
+	if len(byIndex) != 1 {
+		t.Fatalf("expected exactly 1 tool call (one index), got %d: %+v", len(byIndex), byIndex)
+	}
+	a := byIndex[0]
+	if a.name != "edit" {
+		t.Errorf("expected tool name 'edit', got '%s'", a.name)
+	}
+	if a.id == "" {
+		t.Error("expected tool call id to be set")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(a.args), &got); err != nil {
+		t.Fatalf("concatenated argument deltas are not valid JSON (%v): %s", err, a.args)
+	}
+	if got["file"] != "a.go" || got["old"] != "A" || got["new"] != "B" {
+		t.Errorf("reconstructed args mismatch, expected file=a.go old=A new=B, got %v", got)
+	}
+	// The finish_reason must be tool_calls.
+	var finishReason string
+	for _, c := range chunks {
+		if choices, ok := c["choices"].([]interface{}); ok && len(choices) > 0 {
+			choice := choices[0].(map[string]interface{})
+			if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+				finishReason = fr
+			}
+		}
+	}
+	if finishReason != "tool_calls" {
+		t.Errorf("expected finish_reason 'tool_calls', got '%s'", finishReason)
+	}
+}
+
+// TestOllamaStreaming_ToolCallsCumulative reproduces the original bug on the
+// Anthropic-inbound path: Ollama streams tool_calls cumulatively, and the
+// proxy must emit a single tool_use block per call with the full arguments,
+// not one block per chunk (which produced garbled/concatenated input JSON).
+func TestOllamaStreaming_ToolCallsCumulative(t *testing.T) {
+	var upstreamBody string
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.g"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go", "old": "A"}, false, "")
+	upstreamBody += makeOllamaToolCallChunk("test-model", "call_1", "edit", map[string]interface{}{"file": "a.go", "old": "A", "new": "B"}, false, "")
+	upstreamBody += makeOllamaChunk("test-model", "", "", true, "tool_call")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
+
+	router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+
+	// Collect tool_use blocks (one content_block_start of type tool_use per
+	// block) and concatenate input_json_delta partial_json per block index.
+	toolUseStarts := 0
+	toolUseStops := 0
+	inputJSON := map[int]string{}
+	currentToolIndex := -1
+	for _, e := range events {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(e.Data), &data); err != nil {
+			continue
+		}
+		switch e.Event {
+		case "content_block_start":
+			if block, ok := data["content_block"].(map[string]interface{}); ok {
+				if block["type"] == "tool_use" {
+					toolUseStarts++
+					if idx, ok := data["index"].(float64); ok {
+						currentToolIndex = int(idx)
+					}
+				}
+			}
+		case "content_block_delta":
+			if delta, ok := data["delta"].(map[string]interface{}); ok {
+				if delta["type"] == "input_json_delta" {
+					if pj, ok := delta["partial_json"].(string); ok {
+						inputJSON[currentToolIndex] += pj
+					}
+				}
+			}
+		case "content_block_stop":
+			toolUseStops++
+		}
+	}
+
+	if toolUseStarts != 1 {
+		t.Errorf("expected exactly 1 tool_use content_block_start, got %d", toolUseStarts)
+	}
+	if toolUseStops < 1 {
+		t.Errorf("expected at least 1 content_block_stop, got %d", toolUseStops)
+	}
+	if len(inputJSON) != 1 {
+		t.Fatalf("expected input_json_delta for exactly 1 tool block, got %d: %+v", len(inputJSON), inputJSON)
+	}
+	// The single tool block's concatenated partial_json must be the complete
+	// final arguments object (valid JSON, all keys present).
+	var got map[string]interface{}
+	joined := inputJSON[0]
+	if err := json.Unmarshal([]byte(joined), &got); err != nil {
+		t.Fatalf("tool_use input_json is not valid JSON (%v): %s", err, joined)
+	}
+	if got["file"] != "a.go" || got["old"] != "A" || got["new"] != "B" {
+		t.Errorf("reconstructed tool input mismatch, expected file=a.go old=A new=B, got %v", got)
 	}
 }

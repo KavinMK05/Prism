@@ -24,16 +24,118 @@ type ollamaStreamState struct {
 	pendingContent   string
 	toolCallsActive  bool
 	toolCallIndex    int
-	emittedToolCalls map[string]bool // track which tool calls have been emitted by name
+	emittedToolCalls  map[string]*streamedToolCall // tool calls seen, keyed by identity
+	pendingToolCalls  []*streamedToolCall         // tool calls buffered for emission at finalization
 }
 
 func (s *ollamaStreamState) writeOpenAISSE(chunk OpenAIStreamChunk) {
 	writeOpenAISSE(s.w, s.flusher, s.canFlush, chunk)
 }
-
 func (s *ollamaStreamState) closeToolCalls() {
 	if s.toolCallsActive {
+		// Flush any buffered tool calls before closing so they are emitted
+		// in order, ahead of any subsequent content.
+		s.flushPendingToolCalls()
 		s.toolCallsActive = false
+	}
+}
+
+// streamedToolCall buffers one tool call being streamed from Ollama. Ollama
+// re-emits the full cumulative arguments object in every chunk — a complete,
+// closed JSON object each time — so the arguments cannot be diffed into
+// OpenAI-style deltas (the closing brace breaks any prefix relationship).
+// Instead we keep the latest complete arguments per tool call and emit the
+// whole call once at finalization, matching Ollama's own OpenAI-compat
+// single-emission behaviour and letting clients reconstruct a single call.
+type streamedToolCall struct {
+	index    int
+	id       string
+	name     string
+	argsJSON string
+	flushed  bool
+}
+
+// recordToolCall buffers an Ollama tool call. The first time a call identity
+// is seen it is assigned a stable index; every chunk updates the buffered
+// arguments to the latest complete object. Nothing is emitted yet.
+func (s *ollamaStreamState) recordToolCall(tc OllamaToolCall) {
+	toolName := tc.Function.Name
+	if toolName == "" {
+		return
+	}
+	key := tc.ID
+	if key == "" {
+		key = toolName
+	}
+
+	var argsStr string
+	if tc.Function.Arguments != nil {
+		b, _ := json.Marshal(tc.Function.Arguments)
+		argsStr = string(b)
+	}
+
+	tcall, seen := s.emittedToolCalls[key]
+	if !seen {
+		idx := s.toolCallIndex
+		s.toolCallIndex++
+		id := tc.ID
+		if id == "" {
+			id = generateToolUseID(toolName)
+		}
+		tcall = &streamedToolCall{index: idx, id: id, name: toolName}
+		s.emittedToolCalls[key] = tcall
+		s.pendingToolCalls = append(s.pendingToolCalls, tcall)
+		if !s.toolCallsActive {
+			s.toolCallsActive = true
+		}
+	}
+	tcall.argsJSON = argsStr
+}
+
+// flushPendingToolCalls emits every buffered tool call exactly once: a header
+// chunk (id + name + empty arguments) followed by a single argument chunk
+// carrying the full arguments JSON. Called at stream finalization.
+func (s *ollamaStreamState) flushPendingToolCalls() {
+	for _, tcall := range s.pendingToolCalls {
+		if tcall.flushed {
+			continue
+		}
+		tcall.flushed = true
+		created := time.Now().Unix()
+		s.writeOpenAISSE(OpenAIStreamChunk{
+			ID:      s.respID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   s.model,
+			Choices: []OpenAIStreamChoice{{
+				Index: 0,
+				Delta: OpenAIStreamDelta{
+					ToolCalls: []OpenAIToolCall{{
+						Index:    &tcall.index,
+						ID:       tcall.id,
+						Type:     "function",
+						Function: OpenAIToolCallFunc{Name: tcall.name, Arguments: ""},
+					}},
+				},
+			}},
+		})
+		if tcall.argsJSON != "" {
+			s.writeOpenAISSE(OpenAIStreamChunk{
+				ID:      s.respID,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   s.model,
+				Choices: []OpenAIStreamChoice{{
+					Index: 0,
+					Delta: OpenAIStreamDelta{
+						ToolCalls: []OpenAIToolCall{{
+							Index:    &tcall.index,
+							Function: OpenAIToolCallFunc{Arguments: tcall.argsJSON},
+						}},
+					},
+				}},
+			})
+		}
 	}
 }
 
@@ -90,7 +192,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 		canFlush: canFlush,
 		respID: respID,
 		model:  openAIReq.Model,
-		emittedToolCalls: make(map[string]bool),
+		emittedToolCalls: make(map[string]*streamedToolCall),
 	}
 
 	client := detectClient(r)
@@ -185,66 +287,8 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 
 		if len(chunk.Message.ToolCalls) > 0 {
 			for _, tc := range chunk.Message.ToolCalls {
-				toolName := tc.Function.Name
-				if toolName == "" {
-					continue
-				}
-
-				// Use name as dedup key (supports both cumulative and non-cumulative streaming)
-				// For multiple calls to the same function, append the index
-				dedupKey := toolName
-				if state.emittedToolCalls[dedupKey] {
-					// If same name was already emitted, check with index suffix
-					// (handles multiple calls to the same function)
-					idx := 0
-					for {
-						dedupKey = fmt.Sprintf("%s_%d", toolName, idx)
-						if !state.emittedToolCalls[dedupKey] {
-							break
-						}
-						idx++
-					}
-				}
-
-				argsJSON, _ := json.Marshal(tc.Function.Arguments)
 				globalStats.AddTokens(1)
-				if !state.toolCallsActive {
-					state.toolCallsActive = true
-				}
-				idx := state.toolCallIndex
-
-			// Use Ollama's native ID if available, otherwise generate a unique one
-			toolCallID := tc.ID
-			if toolCallID == "" {
-				toolCallID = generateToolUseID(toolName)
-			}
-
-				state.writeOpenAISSE(OpenAIStreamChunk{
-					ID:      respID,
-					Object:  "chat.completion.chunk",
-					Created: createdAt,
-					Model:   openAIReq.Model,
-					Choices: []OpenAIStreamChoice{
-						{
-							Index: 0,
-							Delta: OpenAIStreamDelta{
-								ToolCalls: []OpenAIToolCall{
-									{
-										Index: &idx,
-										ID:    toolCallID,
-										Type:  "function",
-										Function: OpenAIToolCallFunc{
-											Name:      toolName,
-											Arguments: string(argsJSON),
-										},
-									},
-								},
-							},
-						},
-					},
-				})
-				state.toolCallIndex++
-				state.emittedToolCalls[dedupKey] = true
+				state.recordToolCall(tc)
 			}
 		}
 
@@ -331,6 +375,9 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream read error: %v", err)
 	}
+	// If the stream ended without a done chunk, still emit any buffered tool
+	// calls so they are not lost.
+	state.closeToolCalls()
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	if canFlush {

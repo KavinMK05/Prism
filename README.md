@@ -4,9 +4,9 @@
 
 # Prism
 
-### One proxy. Every agent. Every protocol. A 5 MB binary with zero dependencies. Runs on Windows & macOS.
+### One binary. Every agent. Every provider. Free unlimited search. Zero dependencies. Runs on Windows & macOS.
 
-Prism is a universal LLM proxy that connects any AI agent — Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode, Cursor, and more — to any provider through any protocol. It translates between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama APIs in real time, with built-in one-click integrations that auto-configure your agents. Native system tray, web admin UI, model auto-discovery, and full SSE streaming. Zero config.
+Prism is a one-stop agentic coding setup — point any AI coding agent (Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode, and more) at a single local endpoint and reach any provider through any protocol. It routes to Ollama Cloud, OpenCode Go, custom OpenAI-compatible providers, and your Codex (OpenAI) OAuth account, translating between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama APIs in real time. Built in: a managed local SearXNG metasearch engine giving your agents free unlimited web search with no API keys, no rate limits, and no Cloudflare blocks. Native system tray, web admin UI, model auto-discovery from models.dev, and full SSE streaming. Zero config.
 
 [![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/prism)
 [![macOS](https://img.shields.io/badge/platform-macOS-silver?logo=apple)](https://github.com/user/prism)
@@ -21,7 +21,11 @@ Prism is a universal LLM proxy that connects any AI agent — Claude Code, Codex
 
 ## Why Prism?
 
-Every AI agent speaks a different protocol. Every provider expects a different format. Every model has different capabilities. Prism sits in between, translating requests and responses on the fly — and with one-click integrations, it auto-configures your agents so they just work.
+Prism is the only thing standing between your agents and the messy reality of LLM infrastructure. Three pillars:
+
+- **Any agent, any provider, any protocol.** One local endpoint; Prism routes to Ollama Cloud, OpenCode Go, custom providers, or your Codex OAuth account and translates Anthropic Messages / OpenAI Chat / OpenAI Responses / Ollama on the fly.
+- **Free unlimited search, no API restrictions.** A managed local SearXNG instance gives every agent web search with no API keys, no per-request billing, no rate limits, no Cloudflare blocks.
+- **One-click agent setup.** Prism auto-detects installed agents and writes the right config files — environment variables, provider blocks, model catalogs — so they just work.
 
 **One proxy. Every agent. Every protocol. No Python.**
 
@@ -52,6 +56,7 @@ Every AI agent speaks a different protocol. Every provider expects a different f
 | **OpenCode integration** | ✅ One-click | ❌ |
 | **ZCode integration** | ✅ One-click | ❌ |
 | **Web admin UI** | ✅ | ❌ |
+| **Free unlimited web search** | ✅ Managed SearXNG | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
 | **macOS native** | ✅ System tray + admin UI | ❌ Requires Python |
 
@@ -75,10 +80,6 @@ Every AI agent speaks a different protocol. Every provider expects a different f
                    │         │              │  /v1/chat/... │
   ZCode ───────────┤         │              └──────────────┘
   (Chat Completions)│         │
-                   │         │              ┌────────────────────┐
-  Cursor ──────────┤         └──────────────→│  Codex (via OAuth) │
-  (OpenAI API)     │                        │  /backend-api/...  │
-                   │                        └────────────────────┘
   Continue ────────┤
   (OpenAI API)     │              ┌────────────────────┐
                    │              │  Codex (via OAuth) │── Sign in with OpenAI
@@ -89,11 +90,35 @@ Every AI agent speaks a different protocol. Every provider expects a different f
                             │  Admin UI          │
                             │  :8765             │
                             └────────────────────┘
+                            ┌────────────────────┐
+                            │  SearXNG Search    │
+                            │  :8888             │
+                            └────────────────────┘
 ```
 
-Prism accepts requests in **four protocol formats** — **Anthropic Messages** (`/v1/messages`), **OpenAI Chat Completions** (`/v1/chat/completions`), **OpenAI Responses** (`/v1/responses`), and **Ollama Native** (`/api/chat`) — translates them to whatever your upstream provider speaks, and translates responses back. For Codex (OpenAI) accounts, Prism routes directly to the ChatGPT backend API, including Chat Completions ↔ Responses API translation so any agent can use your OAuth account regardless of its protocol. Streaming works seamlessly in all directions.
+Prism is the single local endpoint your agents talk to. It accepts requests in **four protocol formats** — **Anthropic Messages** (`/v1/messages`), **OpenAI Chat Completions** (`/v1/chat/completions`), **OpenAI Responses** (`/v1/responses`), and **Ollama Native** (`/api/chat`) — translates them to whatever your upstream provider speaks, and translates responses back. For Codex (OpenAI) accounts, Prism routes directly to the ChatGPT backend API, including Chat Completions ↔ Responses API translation so any agent can use your OAuth account regardless of its protocol. Streaming works seamlessly in all directions.
 
 For integrated agents, Prism writes the right config files automatically — environment variables, provider blocks, model catalogs — so your agents see Prism's models without any manual setup.
+
+## Free search
+
+Prism bundles a managed local [SearXNG](https://github.com/searxng/searxng) metasearch engine — free unlimited web search with no API keys, no rate limits, and no Cloudflare blocks, running entirely on your machine. It aggregates Google, Bing, DuckDuckGo, and dozens of other engines locally, so there's no per-request billing and no API key to obtain.
+
+### Use it from any agent
+
+The endpoint `http://127.0.0.1:8888/search?q=<query>&format=json` returns JSON results any agent or script can consume:
+
+```bash
+curl "http://127.0.0.1:8888/search?q=latest%20go%20release&format=json"
+```
+
+Prism runs and manages the SearXNG instance; pointing an agent's web-search tool at it is a one-time config in that agent (Prism does not auto-write the SearXNG URL into agent configs). Point any agent's "web search" / "fetch" tool at the endpoint above and it just works.
+
+### Zero-setup install
+
+First Start bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). If no system Python ≥3.11 is on PATH, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first — so SearXNG runs on machines with no Python installed at all. The generated `settings.yml` enables JSON output and turns the bot limiter **off**, so no Valkey/Redis is required for local single-user use.
+
+See the [SearXNG control surface](#searxng-control-surface) section below for the full control surface (system tray menu, admin UI settings card, file locations, `settings.yml` details).
 
 ## Quick start
 
@@ -112,7 +137,11 @@ open Prism.app
 
 That's it. Prism starts on `http://127.0.0.1:11434` and a system tray icon appears. A web admin UI is available at `http://127.0.0.1:8765/admin`.
 
-### 2. Configure your provider
+### 2. Start free search (optional)
+
+Open the admin UI **SearXNG** tab (or use the system tray **SearXNG** menu) and click **Start**. The first start downloads and installs SearXNG (~80 MB, a minute or two) — no Python install required on your machine. Once running, your agents can query `http://127.0.0.1:8888/search?q=<query>&format=json` for free unlimited web search.
+
+### 3. Configure your provider
 
 Open the admin UI from the system tray (right-click → **Open Settings**) or navigate to `http://127.0.0.1:8765/admin`. In the **Provider** tab:
 
@@ -123,11 +152,11 @@ Open the admin UI from the system tray (right-click → **Open Settings**) or na
 
 You can also configure via the config file — `%APPDATA%\prism\config.json` on Windows or `~/Library/Application Support/prism/config.json` on macOS — see [Providers](#providers) below.
 
-### 3. Add your models
+### 4. Add your models
 
 In the **Models** tab, just type a model name and Prism auto-fetches all the details — context length, max output tokens, reasoning support, tool calling, vision, structured outputs, and reasoning effort levels — from [models.dev](https://models.dev). No manual configuration needed. Select your provider, search for the model, and click to auto-fill everything.
 
-### 4. Connect your agents
+### 5. Connect your agents
 
 Go to the **Agents** tab in the admin UI. Prism auto-detects which agents are installed and shows their status. Click **Setup** next to any agent to configure it with one click. See [Agent integrations](#agent-integrations) for details on each agent.
 
@@ -220,7 +249,8 @@ Prism writes a provider block to `~/.zcode/v2/config.json` with your Prism base 
 </details>
 
 <details>
-<summary><strong>Setting up with Cursor / Continue / other OpenAI clients</strong></summary>
+<summary><strong>Setting up with Continue / other OpenAI clients</strong></summary>
+> ⚠️ **Cursor requires a Pro subscription.** Cursor does not allow custom models or custom OpenAI-compatible providers on its free tier — it locks free users to its hosted models and ignores custom base URLs. To use Cursor with Prism, you need a Cursor Pro subscription (which unlocks the "custom OpenAI-compatible" provider option). For a no-subscription alternative, use Continue or any OpenAI-SDK client against `http://127.0.0.1:11434/v1`.
 
 Point your client to `http://127.0.0.1:11434/v1` with any API key. Prism accepts OpenAI Chat Completions requests and translates them to the configured upstream provider.
 
@@ -299,7 +329,7 @@ The admin UI provides:
 | **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, and ZCode. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
-| **SearXNG** | Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.11 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first. |
+| **SearXNG** | Managed local metasearch — **free unlimited web search with no API keys or rate limits**. Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.11 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first. |
 | **Logs** | Live tail of the last 200 log lines |
 
 Changes are saved immediately and the proxy auto-restarts when needed.
@@ -575,7 +605,7 @@ Map incoming model names to different upstream models.
 
 ## Translation support
 
-Prism handles the full translation surface between all API formats:
+Prism handles the full protocol translation surface between all API formats — this is what makes any-agent-to-any-provider routing work:
 
 <details>
 <summary><strong>Anthropic ↔ Ollama</strong></summary>
@@ -722,9 +752,9 @@ Prism can start automatically when you log in. Toggle this from the admin UI (**
 
 **macOS:** Uses a LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) to launch Prism at login.
 
-## SearXNG
+## SearXNG control surface
 
-Prism can run a local [SearXNG](https://github.com/searxng/searxng) metasearch engine as a managed instance, controlled from the system tray and the admin UI **SearXNG** tab. It runs as a separate process from the proxy (default `http://127.0.0.1:8888/`); the proxy port (`11434`) is unchanged.
+Prism manages the local SearXNG metasearch instance (introduced in [Free search](#free-search)) from the system tray and the admin UI. It runs as a separate process from the proxy (default `http://127.0.0.1:8888/`); the proxy port (`11434`) is unchanged.
 
 **First Start** bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). SearXNG requires Python ≥3.11 (it imports the stdlib `tomllib` module). If no system Python ≥3.11 is found on PATH, Prism downloads a matching [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first — so SearXNG runs on machines with no Python installed at all. On Windows, Prism also applies an idempotent patch that makes SearXNG's unconditional `pwd` import conditional, so the webapp launches cleanly.
 
