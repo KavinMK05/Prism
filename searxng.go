@@ -665,6 +665,20 @@ func startSearxngProcess() error {
 		return fmt.Errorf("open searxng log: %w", err)
 	}
 
+	// Reclaim the SearXNG port from an orphaned process left by a prior Prism
+	// run (or a crash). Without this, the fresh webapp fails to bind
+	// ("Address already in use") and the crash-restart loop eventually gives
+	// up, leaving SearXNG permanently down. knownPID is our tracked (possibly
+	// stale) SearXNG PID; we never kill a live one because isSearxngRunning()
+	// early-returned above.
+	searxngMu.Lock()
+	knownPID := searxngPID
+	searxngMu.Unlock()
+	if n := killOrphansOnPort(strconv.Itoa(searxngPortFromSettings()), knownPID); n > 0 {
+		log.Printf("[SearXNG] reclaimed port %d from %d orphaned process(es)", searxngPortFromSettings(), n)
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	cmd := runHidden(exec.Command(searxngVenvPython(), "-m", "searx.webapp"))
 	env := os.Environ()
 	env = append(env, "SEARXNG_SETTINGS_PATH="+searxngSettingsPath())

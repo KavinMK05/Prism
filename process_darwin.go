@@ -32,6 +32,23 @@ func findPIDsOnPort(port string) []int {
 	return pids
 }
 
+// killOrphansOnPort terminates every process listening on port that isn't
+// knownPID, returning how many it killed. Used to reclaim a port held by an
+// orphaned child from a prior Prism run before binding a fresh server.
+func killOrphansOnPort(port string, knownPID int) int {
+	var killed int
+	for _, pid := range findPIDsOnPort(port) {
+		if pid == knownPID {
+			continue
+		}
+		log.Printf("Killing orphaned process %d on port %s", pid, port)
+		exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+		killed++
+		time.Sleep(300 * time.Millisecond)
+	}
+	return killed
+}
+
 func killOrphanOnPort() {
 	port := os.Getenv("PRISM_PORT")
 	if port == "" {
@@ -42,14 +59,7 @@ func killOrphanOnPort() {
 	knownPID := proxyPID
 	proxyRunningMu.Unlock()
 
-	for _, pid := range findPIDsOnPort(port) {
-		if pid == knownPID {
-			continue
-		}
-		log.Printf("Killing orphaned process %d on port %s", pid, port)
-		exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
-		time.Sleep(300 * time.Millisecond)
-	}
+	killOrphansOnPort(port, knownPID)
 }
 
 func runHidden(cmd *exec.Cmd) *exec.Cmd {
