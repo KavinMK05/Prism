@@ -8,8 +8,20 @@ import (
 // factoryDroidConfigPath returns ~/.factory/settings.json (cross-platform).
 func factoryDroidConfigPath() string { return agentConfigPath("factory-droid") }
 
-func isFactoryDroidInstalled() bool { return isAgentConfigInstalled("factory-droid") }
-func isFactoryDroidActive() bool    { return isAgentActive("factory-droid") }
+// isFactoryDroidInstalled reports whether Factory Droid is installed: the
+// ~/.factory/settings.json config file exists OR the `droid` binary is on
+// PATH. (Factory Droid may not create its settings.json until first run, so
+// the binary check avoids a false "not installed".)
+func isFactoryDroidInstalled() bool {
+	if isAgentConfigInstalled("factory-droid") {
+		return true
+	}
+	if p, ok := lookupBinary("droid"); ok && p != "" {
+		return true
+	}
+	return false
+}
+func isFactoryDroidActive() bool { return isAgentActive("factory-droid") }
 
 // buildFactoryDroidModels returns [Prism]-tagged customModels entries, one
 // per Prism known model. Codex OAuth models use the "openai" provider type
