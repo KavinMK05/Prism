@@ -33,8 +33,13 @@ func (s *ollamaStreamState) writeOpenAISSE(chunk OpenAIStreamChunk) {
 }
 func (s *ollamaStreamState) closeToolCalls() {
 	if s.toolCallsActive {
-		// Flush any buffered tool calls before closing so they are emitted
-		// in order, ahead of any subsequent content.
+		// Flush buffered tool calls. This is only called at stream
+		// finalization (the done chunk, or post-loop on a dropped stream):
+		// because Ollama re-emits the full cumulative arguments on every
+		// chunk, flushing mid-stream (e.g. when content arrives) would emit
+		// partial arguments and silently drop the fuller cumulative updates
+		// that arrive afterwards. Deferring to the end guarantees every call
+		// is emitted exactly once with its final, complete arguments.
 		s.flushPendingToolCalls()
 		s.toolCallsActive = false
 	}
@@ -55,6 +60,21 @@ type streamedToolCall struct {
 	flushed  bool
 }
 
+// toolCallIdentity returns a stable dedup key for an Ollama tool call.
+// Ollama re-emits the same call (with cumulative arguments) across chunks; a
+// call's identity is function.index, which Ollama always emits and which is
+// distinct even for parallel calls to the same tool. Falling back to id, then
+// to the function name, only when index and id are both absent.
+func toolCallIdentity(tc OllamaToolCall) string {
+	if tc.Function.Index != nil {
+		return fmt.Sprintf("idx:%d", *tc.Function.Index)
+	}
+	if tc.ID != "" {
+		return "id:" + tc.ID
+	}
+	return "name:" + tc.Function.Name
+}
+
 // recordToolCall buffers an Ollama tool call. The first time a call identity
 // is seen it is assigned a stable index; every chunk updates the buffered
 // arguments to the latest complete object. Nothing is emitted yet.
@@ -63,10 +83,7 @@ func (s *ollamaStreamState) recordToolCall(tc OllamaToolCall) {
 	if toolName == "" {
 		return
 	}
-	key := tc.ID
-	if key == "" {
-		key = toolName
-	}
+	key := toolCallIdentity(tc)
 
 	var argsStr string
 	if tc.Function.Arguments != nil {
@@ -265,7 +282,6 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 			state.thinkingActive = false
 			// Flush any content that was buffered during thinking
 			if state.pendingContent != "" {
-				state.closeToolCalls()
 				pending := state.pendingContent
 				state.pendingContent = ""
 				state.writeOpenAISSE(OpenAIStreamChunk{
@@ -298,7 +314,6 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 				// Buffer content until thinking ends
 				state.pendingContent += chunk.Message.Content
 			} else {
-				state.closeToolCalls()
 				content := chunk.Message.Content
 				state.writeOpenAISSE(OpenAIStreamChunk{
 					ID:      respID,

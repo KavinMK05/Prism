@@ -1850,6 +1850,15 @@
         <button class="btn btn-ghost" onclick="restoreAgent('omp')">Restore</button>
       </div>
     </div>
+    <div class="card">
+      <h3>Grok Build</h3>
+      <p class="card-description">Registers [model.prism-*] entries in ~/.grok/config.toml so Grok Build can use your local models via Prism. Requires Grok Build (grok) to be installed.</p>
+      <div id="agent-status-grok-build" style="margin:12px 0;font-size:13px;color:var(--text-secondary)">Checking...</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="setupAgent('grok-build')">Setup</button>
+        <button class="btn btn-ghost" onclick="restoreAgent('grok-build')">Restore</button>
+      </div>
+    </div>
 </div>
 
 <div class="panel" id="panel-proxy">
@@ -2057,6 +2066,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       checkAgentStatus('opencode');
       checkAgentStatus('zcode');
       checkAgentStatus('omp');
+      checkAgentStatus('grok-build');
     }
     if (tab.dataset.tab === 'searxng') {
       refreshSearxngStatus();
@@ -4146,6 +4156,7 @@ checkAgentStatus('factory-droid');
 checkAgentStatus('opencode');
 checkAgentStatus('zcode');
 checkAgentStatus('omp');
+checkAgentStatus('grok-build');
 </script>
 </body>
 </html>

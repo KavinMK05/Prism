@@ -288,6 +288,10 @@ func translateOpenAIMessageToOllamaWithLookup(msg OpenAIChatMessage, toolIDToNam
 			toolCalls[i] = OllamaToolCall{
 				ID: tc.ID,
 				Function: OllamaToolCallFunction{
+					// Ollama identifies tool calls within an assistant message by
+					// function.index; mirror the array position so parallel calls
+					// to the same tool survive the round-trip back to Ollama.
+					Index:     &i,
 					Name:      tc.Function.Name,
 					Arguments: args,
 				},

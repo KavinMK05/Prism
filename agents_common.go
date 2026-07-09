@@ -20,7 +20,7 @@ const prismManagedTag = "[Prism]"
 
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp", "grok-build"}
 
 // agentConfigPath returns the config file path for the given agent id.
 // Returns "" if the home directory cannot be determined or the id is unknown.
@@ -40,6 +40,8 @@ func agentConfigPath(agentID string) string {
 		return filepath.Join(home, ".zcode", "v2", "config.json")
 	case "omp":
 		return filepath.Join(home, ".omp", "agent", "models.yml")
+	case "grok-build":
+		return filepath.Join(home, ".grok", "config.toml")
 	}
 	return ""
 }
@@ -57,6 +59,8 @@ func agentDisplayName(agentID string) string {
 		return "ZCode"
 	case "omp":
 		return "Oh My Pi"
+	case "grok-build":
+		return "Grok Build"
 	}
 	return agentID
 }
@@ -171,6 +175,9 @@ func isAgentActive(agentID string) bool {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return false
+	}
+	if agentID == "grok-build" {
+		return strings.Contains(string(data), codexManagedBegin)
 	}
 	var m map[string]interface{}
 	if agentID == "omp" {
@@ -319,6 +326,8 @@ func agentInstalled(id string) bool {
 		return isZcodeInstalled()
 	case "omp":
 		return isOmpInstalled()
+	case "grok-build":
+		return isGrokBuildInstalled()
 	}
 	return false
 }
@@ -338,10 +347,10 @@ func SyncAgents(port int) {
 			syncFactoryDroid(port)
 		case "opencode":
 			syncOpencode(port)
-		case "zcode":
-			syncZcode(port)
 		case "omp":
 			syncOmp(port)
+		case "grok-build":
+			syncGrokBuild(port)
 		}
 	}
 }

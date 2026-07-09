@@ -1,11 +1,11 @@
-# Prism v0.3.3
+# Prism v0.3.4
+
+## New Features
+
+- **Added: Grok Build agent integration.** Prism now registers `[model.prism-*]` entries in `~/.grok/config.toml` so Grok Build can route through your local Prism models. One-click setup is available on the **Agents** tab in the admin UI (Setup/Restore), with status detection that falls back to checking for the `grok` binary on PATH since Grok Build may not create its config file until first run. README documents the integration alongside the existing agents.
 
 ## Bug Fixes
 
-- **Fixed: SearXNG auto-start toggle silently reverted itself (and never started SearXNG on launch/system startup).** The auto-start PUT handler saved `searxng_autostart` to config.json but did not update the in-memory `adminConfig`. Background operations that snapshot `adminConfig` — the OAuth usage refresh and any OAuth account add/remove/activate — then wrote that stale copy back to config.json, and because the JSON tag is `omitempty`, the `false` value dropped the field entirely. So shortly after enabling the toggle it disappeared from disk; on the next Prism launch `searxngAutostartEnabled()` read `false` and SearXNG never started — including on system startup, where the Prism-at-login → SearXNG-autostart chain was broken. The handler now syncs `adminConfig.SearXNGAutoStart` under the admin lock after saving, so every subsequent snapshot-based save preserves the user's toggle.
+- **Fixed: parallel tool calls to the same tool collapsed into one when translating OpenAI → Ollama.** The streaming dedup keyed tool calls on `id` then function name, so two concurrent calls to the same tool with no `id` merged. Ollama identifies tool calls within an assistant message by `function.index`, which it always emits and which is distinct even for parallel calls to the same tool. Prism now mirrors the array position as `index` on the inbound translation and uses `index` (falling back to `id`, then name) as the dedup key, so parallel same-name calls survive the round-trip back to Ollama.
 
-- **Fixed: Ollama tool-call streaming produced duplicate/garbled tool calls.** Ollama streams `tool_calls` cumulatively — each chunk re-emits the *full* accumulated arguments object (a complete, closed JSON object), growing chunk by chunk. The proxy was emitting one tool call per chunk in both translation directions (OpenAI Chat Completions deltas and Anthropic `tool_use` `input_json_delta`), so clients received N copies of the same call with concatenated/corrupt argument JSON. Prism now buffers the latest complete arguments per tool-call identity and emits the whole call exactly once at stream finalization (and when text content arrives after tool calls), matching Ollama's own single-emission behaviour. Buffered tool calls are also flushed when a stream ends without a `done` chunk so they are not lost. Covered by new hermetic tests `TestOllamaStreaming_ToolCallsCumulative` and `TestOpenAIInboundOllamaStreaming_ToolCallsCumulative`.
-
-## Notes
-
-- Documentation: README rewritten to surface the managed SearXNG / free-search pillar and the Cursor Pro requirement for custom providers; the admin UI SearXNG settings section header relabeled "SearXNG UI settings".
+- **Fixed: buffered tool calls flushed mid-stream, re-emitting the same call multiple times.** `closeToolCalls` was called whenever content arrived after tool calls, which — combined with Ollama re-emitting the full cumulative arguments on every chunk — produced duplicate/garbled tool calls. Flushing now happens only at stream finalization (the `done` chunk, or post-loop on a dropped stream), matching Ollama's single-emission behaviour.

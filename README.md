@@ -249,6 +249,17 @@ Prism writes a provider block to `~/.zcode/v2/config.json` with your Prism base 
 </details>
 
 <details>
+<summary><strong>Setting up with Grok Build</strong></summary>
+
+Prism writes a `[model.prism-*]` block per Prism model into `~/.grok/config.toml` with your Prism base URL and API key. Codex OAuth models use `api_backend = "responses"` (routed through `/v1/responses`); all others use `api_backend = "chat_completions"` (routed through `/v1/chat/completions`). The first Prism model is set as `[models] default` only when you have no existing `[models]` section.
+
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Grok Build". Prism backs up your existing config and writes the model entries.
+
+**To disable:** Click **Restore** to remove the Prism model entries.
+
+</details>
+
+<details>
 <summary><strong>Setting up with Continue / other OpenAI clients</strong></summary>
 > ⚠️ **Cursor requires a Pro subscription.** Cursor does not allow custom models or custom OpenAI-compatible providers on its free tier — it locks free users to its hosted models and ignores custom base URLs. To use Cursor with Prism, you need a Cursor Pro subscription (which unlocks the "custom OpenAI-compatible" provider option). For a no-subscription alternative, use Continue or any OpenAI-SDK client against `http://127.0.0.1:11434/v1`.
 
@@ -289,6 +300,7 @@ Prism includes built-in, one-click integrations for popular AI coding agents. Ea
 | **Factory Droid** | Adds `[Prism]` custom models with smart routing | `~/.factory/settings.json` |
 | **OpenCode** | Registers `prism` + `prism-codex` providers | `~/.config/opencode/opencode.json` |
 | **ZCode** | Registers `prism` provider with model list | `~/.zcode/v2/config.json` |
+| **Grok Build** | Adds `[model.prism-*]` entries with smart routing | `~/.grok/config.toml` |
 
 **How it works:**
 

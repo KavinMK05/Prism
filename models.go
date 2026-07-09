@@ -118,6 +118,11 @@ type OllamaToolCall struct {
 }
 
 type OllamaToolCallFunction struct {
+	// Index is Ollama's stable identity for a tool call within a response.
+	// Ollama always emits it (even for parallel calls to the same tool, which
+	// get distinct indices). It must not be omitted from the dedup key or
+	// same-name calls collapse into one.
+	Index     *int                  `json:"index,omitempty"`
 	Name      string                 `json:"name"`
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 }
