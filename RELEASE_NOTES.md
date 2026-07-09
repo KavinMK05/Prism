@@ -1,11 +1,11 @@
-# Prism v0.3.4
-
-## New Features
-
-- **Added: Grok Build agent integration.** Prism now registers `[model.prism-*]` entries in `~/.grok/config.toml` so Grok Build can route through your local Prism models. One-click setup is available on the **Agents** tab in the admin UI (Setup/Restore), with status detection that falls back to checking for the `grok` binary on PATH since Grok Build may not create its config file until first run. README documents the integration alongside the existing agents.
+# Prism v0.3.5
 
 ## Bug Fixes
 
-- **Fixed: parallel tool calls to the same tool collapsed into one when translating OpenAI → Ollama.** The streaming dedup keyed tool calls on `id` then function name, so two concurrent calls to the same tool with no `id` merged. Ollama identifies tool calls within an assistant message by `function.index`, which it always emits and which is distinct even for parallel calls to the same tool. Prism now mirrors the array position as `index` on the inbound translation and uses `index` (falling back to `id`, then name) as the dedup key, so parallel same-name calls survive the round-trip back to Ollama.
+- **Fixed: SearXNG failed to start with "Address already in use" (port 8888) after an unclean Prism exit.** When Prism was force-quit or crashed without reaping its child SearXNG process, the orphaned webapp survived and kept holding port 8888. On the next launch Prism saw no tracked SearXNG PID (`isSearxngRunning()` false), spawned a fresh webapp, which couldn't bind 8888 and crashed — and the crash-restart loop gave up after 5 attempts in 60s, leaving SearXNG permanently down. The existing `killOrphanOnPort()` only reclaimed the proxy port (11434); SearXNG's port was never reclaimed. Prism now reclaims the configured SearXNG port before spawning the webapp, killing any orphan holding it while sparing Prism's own tracked PID. The recursive restart path also flows through this, so crash-restarts benefit too.
 
-- **Fixed: buffered tool calls flushed mid-stream, re-emitting the same call multiple times.** `closeToolCalls` was called whenever content arrived after tool calls, which — combined with Ollama re-emitting the full cumulative arguments on every chunk — produced duplicate/garbled tool calls. Flushing now happens only at stream finalization (the `done` chunk, or post-loop on a dropped stream), matching Ollama's single-emission behaviour.
+- **Refactor: shared `killOrphansOnPort(port, knownPID)` helper (macOS + Windows).** Extracted from the proxy-only `killOrphanOnPort()` so both the proxy and SearXNG reclaim ports the same way. Added `port_orphan_test.go` verifying both branches: a known PID is spared (returns 0, process alive) and a foreign orphan is killed (returns ≥1, process exits).
+
+## Notes
+
+- The SearXNG log lines `fatal: not a git repository`, `missing config file ... limiter.toml`, and `ahmia`/`torch: can't register engine` are harmless SearXNG-internal noise (running from an extracted tarball; limiter is off; optional engines missing optional deps) and do not affect search.
