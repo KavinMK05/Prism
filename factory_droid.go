@@ -3,10 +3,27 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 )
 
-// factoryDroidConfigPath returns ~/.factory/settings.json (cross-platform).
+// factoryDroidConfigPath returns ~/.factory/settings.json — droid's main
+// config file, used for the "is installed" check only. Prism does NOT write
+// to this file because droid watches it and re-saves on change, clobbering
+// our entries (see factoryDroidLocalConfigPath).
 func factoryDroidConfigPath() string { return agentConfigPath("factory-droid") }
+
+// factoryDroidLocalConfigPath returns ~/.factory/settings.local.json — the
+// local-override file that droid merges on top of settings.json but never
+// overwrites. Prism writes customModels here so droid's file watcher can't
+// clobber them. See: https://docs.factory.ai/cli/configuration/settings
+func factoryDroidLocalConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".factory", "settings.local.json")
+}
 
 // isFactoryDroidInstalled reports whether Factory Droid is installed: the
 // ~/.factory/settings.json config file exists OR the `droid` binary is on
@@ -57,56 +74,88 @@ func buildFactoryDroidModels(remap *ModelRemapping, baseURL string, cfg *Config)
 }
 
 // installFactoryDroidConfig writes one [Prism]-tagged customModels entry per
-// Prism model into ~/.factory/settings.json, preserving all other top-level
-// keys and non-Prism customModels entries. A one-time .prism-backup is kept.
+// Prism model into ~/.factory/settings.local.json (the local-override file
+// that droid merges on top of settings.json but never overwrites). Non-Prism
+// customModels from both settings.json and settings.local.json are preserved.
+// A one-time .prism-backup of settings.local.json is kept.
 func installFactoryDroidConfig(port int, remap *ModelRemapping) error {
-	p := factoryDroidConfigPath()
-	if p == "" {
+	localPath := factoryDroidLocalConfigPath()
+	mainPath := factoryDroidConfigPath()
+	if localPath == "" || mainPath == "" {
 		return fmt.Errorf("cannot determine Factory Droid config path")
 	}
 	if remap == nil || len(remap.KnownModels) == 0 {
 		return fmt.Errorf("no Prism models configured")
 	}
 
-	m, err := readJSONConfig(p)
+	// Read droid's main settings.json (droid-managed; may have user's
+	// non-Prism customModels) and the local-override file (Prism-managed).
+	mainCfg, err := readJSONConfig(mainPath)
 	if err != nil {
 		return fmt.Errorf("failed to read Factory Droid config: %w", err)
 	}
-	ensureAgentBackup(p)
+	localCfg, err := readJSONConfig(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to read Factory Droid local config: %w", err)
+	}
+	ensureAgentBackup(localPath)
 
-	// Build set of Codex OAuth provider IDs for per-model provider type selection
 	cfg := loadConfig()
-
 	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
-	existing, _ := m["customModels"].([]interface{})
-	cleaned, _ := stripPrismModels(existing) // drop prior Prism entries
-	cleaned = append(cleaned, buildFactoryDroidModels(remap, baseURL, cfg)...)
-	m["customModels"] = cleaned
 
-	if err := writeJSONConfig(p, m); err != nil {
-		return fmt.Errorf("failed to write Factory Droid config: %w", err)
+	// Collect non-Prism customModels from both files so they survive the
+	// merge (settings.local.json's array replaces settings.json's on merge).
+	mainExisting, _ := mainCfg["customModels"].([]interface{})
+	localExisting, _ := localCfg["customModels"].([]interface{})
+	mainCleaned, _ := stripPrismModels(mainExisting)
+	localCleaned, _ := stripPrismModels(localExisting)
+	cleaned := append(mainCleaned, localCleaned...)
+	cleaned = append(cleaned, buildFactoryDroidModels(remap, baseURL, cfg)...)
+	localCfg["customModels"] = cleaned
+
+	if err := writeJSONConfig(localPath, localCfg); err != nil {
+		return fmt.Errorf("failed to write Factory Droid local config: %w", err)
 	}
 	return nil
 }
 
-// restoreFactoryDroidConfig removes all [Prism]-tagged customModels entries,
-// preserving any other entries the user added.
+// restoreFactoryDroidConfig removes all [Prism]-tagged customModels entries
+// from ~/.factory/settings.local.json, preserving any other entries the user
+// added. Also strips any stale Prism entries that older Prism versions may
+// have written directly into settings.json.
 func restoreFactoryDroidConfig() error {
-	p := factoryDroidConfigPath()
-	if p == "" {
+	localPath := factoryDroidLocalConfigPath()
+	mainPath := factoryDroidConfigPath()
+	if localPath == "" || mainPath == "" {
 		return fmt.Errorf("cannot determine Factory Droid config path")
 	}
-	m, err := readJSONConfig(p)
+
+	// Strip Prism entries from settings.local.json (Prism's write target).
+	localCfg, err := readJSONConfig(localPath)
 	if err != nil {
-		return fmt.Errorf("failed to read Factory Droid config: %w", err)
+		return fmt.Errorf("failed to read Factory Droid local config: %w", err)
 	}
-	if existing, ok := m["customModels"].([]interface{}); ok {
+	if existing, ok := localCfg["customModels"].([]interface{}); ok {
 		cleaned, removed := stripPrismModels(existing)
 		if removed > 0 {
-			m["customModels"] = cleaned
-			if err := writeJSONConfig(p, m); err != nil {
-				return fmt.Errorf("failed to write Factory Droid config: %w", err)
+			localCfg["customModels"] = cleaned
+			if err := writeJSONConfig(localPath, localCfg); err != nil {
+				return fmt.Errorf("failed to write Factory Droid local config: %w", err)
 			}
+		}
+	}
+
+	// Also clean stale Prism entries from settings.json (written by older
+	// Prism versions that wrote there directly). This is a one-time migration.
+	mainCfg, err := readJSONConfig(mainPath)
+	if err != nil {
+		return nil // can't read main config; nothing to clean
+	}
+	if existing, ok := mainCfg["customModels"].([]interface{}); ok {
+		cleaned, removed := stripPrismModels(existing)
+		if removed > 0 {
+			mainCfg["customModels"] = cleaned
+			_ = writeJSONConfig(mainPath, mainCfg) // best-effort; droid may rewrite
 		}
 	}
 	return nil
@@ -127,5 +176,5 @@ func syncFactoryDroid(port int) {
 		log.Printf("[Factory Droid] Failed to sync config: %v", err)
 		return
 	}
-	log.Printf("[Factory Droid] Synced %d models to ~/.factory/settings.json", len(remap.KnownModels))
+	log.Printf("[Factory Droid] Synced %d models to ~/.factory/settings.local.json", len(remap.KnownModels))
 }

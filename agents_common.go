@@ -198,8 +198,25 @@ func isAgentActive(agentID string) bool {
 		}
 		return false
 	case "factory-droid":
-		if arr, ok := m["customModels"].([]interface{}); ok {
-			return hasPrismModels(arr)
+		// Prism writes to settings.local.json (droid doesn't overwrite it);
+		// fall back to settings.json for entries from older Prism versions.
+		for _, fp := range []string{factoryDroidLocalConfigPath(), p} {
+			if fp == "" {
+				continue
+			}
+			fd, err := os.ReadFile(fp)
+			if err != nil {
+				continue
+			}
+			var fm map[string]interface{}
+			if err := json.Unmarshal(fd, &fm); err != nil {
+				continue
+			}
+			if arr, ok := fm["customModels"].([]interface{}); ok {
+				if hasPrismModels(arr) {
+					return true
+				}
+			}
 		}
 		return false
 	case "opencode":
