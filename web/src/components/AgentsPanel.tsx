@@ -80,7 +80,7 @@ export default function AgentsPanel() {
   const statusHTML = (s: any, displayName?: string) => {
     if (!s) return <span style={{ color: 'var(--text-secondary)' }}>Checking...</span>;
     if (!s.installed) return <span style={{ color: 'var(--text-secondary)' }}>{displayName || s.displayName || 'Not detected'}</span>;
-    if (s.active) return <span style={{ color: 'var(--success)' }}>Active \u2014 routed through Prism</span>;
+    if (s.active) return <span style={{ color: 'var(--success)' }}>Active — routed through Prism</span>;
     return <span style={{ color: '#f59e0b' }}>Installed but not configured</span>;
   };
 
@@ -90,11 +90,11 @@ export default function AgentsPanel() {
 
       <div className="card">
         <h3>Codex Desktop Integration</h3>
-        <p className="card-description">Makes your Prism models appear in Codex Desktop\u2019s native model picker. Requires Codex Desktop to be installed.</p>
+        <p className="card-description">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
         <div style={{ margin: '12px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
           {codexStatus ? (
             !codexStatus.installed ? <span>Codex Desktop not detected</span> :
-            codexStatus.active ? <span style={{ color: 'var(--success)' }}>Active \u2014 models synced to Codex Desktop</span> :
+            codexStatus.active ? <span style={{ color: 'var(--success)' }}>Active — models synced to Codex Desktop</span> :
             <span style={{ color: '#f59e0b' }}>Installed but not configured</span>
           ) : 'Checking...'}
         </div>

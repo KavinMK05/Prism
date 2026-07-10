@@ -315,7 +315,7 @@ export default function StatsPanel() {
           {byModelEntries.length > 0 ? byModelEntries.map(([model, stats]: [string, any]) => (
             <div className="model-stats-row" key={model}>
               <span className="model-stats-name">{model}</span>
-              <span className="model-stats-detail">{stats.requests} req \u00b7 {formatNumber(stats.input_tokens)} in / {formatNumber(stats.output_tokens)} out \u00b7 {stats.avg_tokens_per_sec.toFixed(1)} tok/s</span>
+              <span className="model-stats-detail">{stats.requests} req · {formatNumber(stats.input_tokens)} in / {formatNumber(stats.output_tokens)} out · {stats.avg_tokens_per_sec.toFixed(1)} tok/s</span>
             </div>
           )) : <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontStyle: 'italic' }}>No data yet.</div>}
         </div>

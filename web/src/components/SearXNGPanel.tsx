@@ -122,7 +122,7 @@ export default function SearXNGPanel() {
       ) : settings && (
         <div className="card">
           <h3>Settings</h3>
-          <p className="card-description">Structured editor for the SearXNG instance. Changes require a Restart to take effect. Advanced keys (engines, outgoing, redis) are not exposed here \u2014 edit <code>settings.yml</code> directly if needed.</p>
+          <p className="card-description">Structured editor for the SearXNG instance. Changes require a Restart to take effect. Advanced keys (engines, outgoing, redis) are not exposed here — edit <code>settings.yml</code> directly if needed.</p>
 
           <div className="searx-form-section" style={{ marginBottom: '20px' }}>
             <h4 style={{ margin: '0 0 12px', paddingBottom: '8px', fontSize: '14px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>Server</h4>

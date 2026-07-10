@@ -216,7 +216,7 @@ export default function ProviderPanel() {
 
       {!oauthAcct && (
         <div className="card">
-          <h3>API Key \u2014 {providerName}</h3>
+          <h3>API Key — {providerName}</h3>
           <div className="field"><label>Current Key</label><div className="key-display">{maskKey(activeProvObj?.api_key || '')}</div></div>
           <div className="field"><label>Set New Key</label><div className="input-with-icon"><input type="password" placeholder="Enter new API key" value={newAPIKey} onChange={e => setNewAPIKey(e.target.value)} /></div></div>
           <div className="btn-row"><button className="btn btn-primary" onClick={saveAPIKey}>Update Key</button></div>

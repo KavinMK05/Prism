@@ -324,19 +324,19 @@ export default function ModelsPanel() {
           {Object.entries(aliases).map(([k, v]) => (
             <div className="alias-row" key={k}>
               <input type="text" value={k} readOnly />
-              <span className="arrow">\u2192</span>
+              <span className="arrow">→</span>
               <select value={v}>
                 <option value="">Select a model...</option>
                 {Object.entries(modelGroups).map(([provName, ids]) => (
                   <optgroup key={provName} label={provName}>{ids.map(id => <option key={id} value={id}>{id}</option>)}</optgroup>
                 ))}
               </select>
-              <button className="btn-remove" onClick={() => removeAlias(k)}>\u00d7</button>
+              <button className="btn-remove" onClick={() => removeAlias(k)}>×</button>
             </div>
           ))}
           <div className="alias-row" style={{ marginTop: '8px' }}>
             <input type="text" placeholder="Incoming model name" value={newAliasFrom} onChange={e => setNewAliasFrom(e.target.value)} />
-            <span className="arrow">\u2192</span>
+            <span className="arrow">→</span>
             <select value={newAliasTo} onChange={e => setNewAliasTo(e.target.value)}>
               <option value="">Select a model...</option>
               {Object.entries(modelGroups).map(([provName, ids]) => (

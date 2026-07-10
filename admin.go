@@ -823,10 +823,21 @@ func startAdminServer(cfg *Config, port string) {
 		// Expose persisted Claude Code tier mappings so the UI can pre-select.
 		if id == "claude-code" {
 			tiers := map[string]string{}
-			if cfg := loadConfig(); cfg.AgentIntegrations != nil && cfg.AgentIntegrations.ClaudeCodeTiers != nil {
+			cfg := loadConfig()
+			if cfg.AgentIntegrations != nil && cfg.AgentIntegrations.ClaudeCodeTiers != nil {
 				tiers = cfg.AgentIntegrations.ClaudeCodeTiers
 			}
 			resp["tiers"] = tiers
+			// Provide known model IDs so the UI can populate tier dropdowns.
+			remap := loadModelRemapping()
+			modelOpts := make([]string, 0, len(remap.KnownModels))
+			for _, m := range remap.KnownModels {
+				modelOpts = append(modelOpts, m.ID)
+			}
+			if remap.DefaultModel != "" {
+				modelOpts = append(modelOpts, remap.DefaultModel)
+			}
+			resp["model_options"] = modelOpts
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)

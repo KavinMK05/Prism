@@ -1,3 +1,19 @@
+# Prism v0.3.9
+
+## Bug Fixes
+
+- **Fixed: Unicode escape sequences rendering as literal text in the React admin UI.** JSX text content in AgentsPanel, ModelsPanel, ProviderPanel, SearXNGPanel, and StatsPanel was using JavaScript escape sequences (`\u2014`, `\u2192`, `\u00d7`, `\u00b7`) which JSX renders verbatim instead of interpreting as Unicode characters. Replaced with actual Unicode characters (—, →, ×, ·) so em-dashes, arrows, multiplication signs, and middle dots render correctly throughout the admin interface.
+
+- **Fixed: Claude Code tier dropdown had no model options to choose from.** The `/api/agents/claude-code` status endpoint only returned persisted tier mappings but no list of available models, leaving the tier dropdowns empty. The endpoint now also returns `model_options` — a deduplicated list of known model IDs (from model remapping + default model) so the UI can populate the dropdown menus.
+
+## Improvements
+
+- **Heatmap grid layout corrected.** The stats heatmap was filling cells row-by-row instead of column-by-column, producing an incorrect calendar layout. Added `grid-auto-flow: column` so cells fill top-to-bottom then left-to-right, matching the standard GitHub-style contribution calendar.
+
+- **SearXNG panel styles extracted to CSS classes.** Inline styles for `.searx-status`, `.searx-install-msg`, and `.searx-form-section` (including `h4` headings) moved to `styles.css` for consistency with the rest of the admin UI.
+
+- **Removed obsolete `web/dist/.gitkeep`** — the placeholder is no longer needed since the frontend build generates the dist directory at build time.
+
 # Prism v0.3.8
 
 ## Features
