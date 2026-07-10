@@ -17,6 +17,7 @@ on:
       - 'rsrc/**'
       - 'Info.plist'
       - '.github/workflows/release.yml'
+      - 'web/**'
 
 permissions:
   contents: write
@@ -31,6 +32,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: npm ci && npm run build
 
       - name: Install go-winres
         run: go install github.com/tc-hib/go-winres@latest
@@ -67,6 +78,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: npm ci && npm run build
 
       - name: Import Apple Code Signing Certificate
         if: ${{ env.HAS_SIGNING == 'true' }}

@@ -17,6 +17,7 @@ import (
 
 //go:embed admin.html
 //go:embed icon.png
+//go:embed all:web/dist
 var adminFS embed.FS
 
 var (
@@ -379,8 +380,56 @@ func startAdminServer(cfg *Config, port string) {
 
 	mux := http.NewServeMux()
 
-	// Serve the single-page admin UI
+	// Serve the React admin UI (Vite build output in web/dist)
 	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html, err := adminFS.ReadFile("web/dist/index.html")
+		if err != nil {
+			w.Write([]byte("<!DOCTYPE html><html><body>Frontend not built. Run: cd web && npm install && npm run build</body></html>"))
+			return
+		}
+		w.Write(html)
+	})
+	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve static assets from Vite build (e.g. /admin/assets/index-abc.js)
+		path := strings.TrimPrefix(r.URL.Path, "/admin/")
+		if path == "" {
+			// /admin/ - serve index.html
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			html, err := adminFS.ReadFile("web/dist/index.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(html)
+			return
+		}
+		data, err := adminFS.ReadFile("web/dist/" + path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case strings.HasSuffix(path, ".js"):
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		case strings.HasSuffix(path, ".css"):
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		case strings.HasSuffix(path, ".svg"):
+			w.Header().Set("Content-Type", "image/svg+xml")
+		case strings.HasSuffix(path, ".png"):
+			w.Header().Set("Content-Type", "image/png")
+		default:
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
+		w.Write(data)
+	})
+
+	// Serve the legacy single-page admin UI (plain HTML, pre-React migration)
+	mux.HandleFunc("/admin-legacy", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
 			return

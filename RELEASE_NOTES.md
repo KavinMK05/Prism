@@ -1,3 +1,30 @@
+# Prism v0.3.8
+
+## Features
+
+- **Admin UI migrated from plain HTML to React + Vite + TypeScript.** The entire admin settings page (all 7 panels: Provider, OAuth, Models, Stats, Agents, Proxy, SearXNG) has been rewritten as a React application built with Vite. The production build is embedded into the Go binary via `go:embed`, preserving the single-binary distribution model. No Node.js is required at runtime.
+
+- **Chart.js integrated via npm with tree-shaking.** Stats panel charts (bar, line, sparkline) now use `chart.js` and `react-chartjs-2` imported from npm, with only the Bar and Line controllers registered for minimal bundle size. No more CDN dependency for Chart.js.
+
+- **Dev workflow with HMR.** Running `cd web && npm run dev` starts a Vite dev server with hot module replacement on `localhost:5173/admin/`, proxying API calls to the Go server on port 8765.
+
+## Infrastructure
+
+- **Build scripts (`build.ps1` / `build.sh`)** that build the frontend then the Go binary in one command.
+
+- **CI/CD updated** with Node.js 22 setup and `npm ci && npm run build` before `go build` in both Windows and macOS jobs. PR trigger paths now include `web/**`.
+
+- **TypeScript strict mode** with `any` escape hatch for untyped API responses.
+
+- **Legacy admin page preserved** at `/admin-legacy` for reference during migration.
+
+- **AGENTS.md updated** with new build commands and frontend dev instructions.
+
+## Notes
+
+- Local builds now require Node.js to be installed. Run `./build.ps1` (Windows) or `./build.sh` (macOS) instead of `go build` directly.
+- The frontend dev dependencies are in `web/package.json`. Run `cd web && npm install` before first build.
+
 # Prism v0.3.5
 
 ## Bug Fixes

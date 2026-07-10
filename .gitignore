@@ -10,3 +10,8 @@
 *.syso
 docs/
 droid-wiki/
+
+# Frontend (web/)
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
