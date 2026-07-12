@@ -63,6 +63,35 @@ func hasModelsSection(content string) bool {
 	return false
 }
 
+// stripPrismModelSections removes all [model.prism-*] section blocks from the
+// content. Each section starts with a [model.prism-...] header and runs until
+// the next section header (or EOF). This catches sections that were written
+// outside the managed block markers (e.g. by an older version of the code)
+// and would otherwise be duplicated on every re-sync.
+func stripPrismModelSections(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	skipping := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[model.prism-") {
+			skipping = true
+			continue
+		}
+		if skipping {
+			// End the skip when we hit any new section header or a managed marker
+			if strings.HasPrefix(t, "[") || t == codexManagedBegin || t == codexManagedEnd {
+				skipping = false
+				result = append(result, line)
+			}
+			// Otherwise skip the line (it's a key=value inside the prism section)
+		} else {
+			result = append(result, line)
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
 // buildGrokBuildModelSections writes one [model.prism-<key>] section per known
 // Prism model. Codex OAuth models use api_backend = "responses" (routed
 // through /v1/responses); all others use "chat_completions" (/v1/chat/completions).
@@ -113,6 +142,7 @@ func installGrokBuildConfig(port int, remap *ModelRemapping) error {
 		return fmt.Errorf("failed to read Grok Build config: %w", err)
 	}
 	cleaned := stripManagedBlocks(string(existing))
+	cleaned = stripPrismModelSections(cleaned)
 	ensureAgentBackup(p)
 
 	cfg := loadConfig()

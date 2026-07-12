@@ -1,6 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, apiPut } from '../api';
 import { useToast } from '../ToastContext';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 
 function getProviderDisplayName(providerId: string, config: any): string {
   if (!config) return providerId;
@@ -192,26 +197,29 @@ export default function ModelsPanel() {
 
   return (
     <>
-      <div className="card">
-        <h3>Default Model</h3>
-        <p className="card-description">When an unknown model is requested, route to this model instead.</p>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <select value={remap.default_model || ''} onChange={e => handleDefaultModelChange(e.target.value)} style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '14px' }}>
-            <option value="">Select a model...</option>
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Default Model</h3>
+        <p className="text-[13px] text-muted-foreground mb-4">When an unknown model is requested, route to this model instead.</p>
+        <Select value={remap.default_model || ''} onValueChange={handleDefaultModelChange}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="Select a model..." />
+          </SelectTrigger>
+          <SelectContent>
             {Object.entries(modelGroups).map(([provName, ids]) => (
-              <optgroup key={provName} label={provName}>
-                {ids.map(id => <option key={id} value={id}>{id}</option>)}
-              </optgroup>
+              <SelectGroup key={provName}>
+                <SelectLabel>{provName}</SelectLabel>
+                {ids.map(id => <SelectItem key={id} value={id}>{id}</SelectItem>)}
+              </SelectGroup>
             ))}
-          </select>
-        </div>
+          </SelectContent>
+        </Select>
       </div>
 
-      <div className="card">
-        <h3>Known Models</h3>
-        <p className="card-description">Models in this list pass through without remapping.</p>
-        <div className="model-rows">
-          {knownModels.length === 0 && <div style={{ color: 'var(--text-tertiary)', fontSize: '13px', fontStyle: 'italic', padding: '8px 0' }}>No known models yet.</div>}
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Known Models</h3>
+        <p className="text-[13px] text-muted-foreground mb-4">Models in this list pass through without remapping.</p>
+        <div className="flex flex-col">
+          {knownModels.length === 0 && <div className="text-muted-foreground/60 text-[13px] italic py-2">No known models yet.</div>}
           {knownModels.map((m: any, i: number) => {
             const id = typeof m === 'string' ? m : m.id;
             const provider = typeof m === 'string' ? '' : (m.provider || '');
@@ -220,50 +228,57 @@ export default function ModelsPanel() {
             const hasTools = caps?.tool_calling; const hasStruct = caps?.structured_outputs; const hasVision = caps?.vision;
             const es = editStates[i] || {};
             return (
-              <div className="model-row" key={i}>
-                <div className="row-main" onClick={() => toggleRow(i)}>
-                  <span className="model-name">{id}</span>
-                  {provider && <span className="row-provider">{getProviderDisplayName(provider, config)}</span>}
-                  <div className="cap-dots">
-                    <span className={`cap-dot ${reasoning ? 'reasoning' : ''}`} />
-                    <span className={`cap-dot ${hasTools ? 'on' : ''}`} />
-                    <span className={`cap-dot ${hasStruct ? 'on' : ''}`} />
-                    <span className={`cap-dot ${hasVision ? 'on' : ''}`} />
+              <div className="border-b border-border last:border-b-0" key={i}>
+                <div className="flex items-center gap-3 px-6 py-3.5 cursor-pointer transition-colors hover:bg-accent" onClick={() => toggleRow(i)}>
+                  <span className="text-sm font-medium text-foreground flex-1">{id}</span>
+                  {provider && <span className="text-[11px] text-muted-foreground bg-muted border border-border rounded-full px-2 py-0.5">{getProviderDisplayName(provider, config)}</span>}
+                  <div className="flex gap-1">
+                    <span className={`w-[7px] h-[7px] rounded-full ${reasoning ? 'bg-purple-500' : 'bg-border-strong'}`} />
+                    <span className={`w-[7px] h-[7px] rounded-full ${hasTools ? 'bg-green-500' : 'bg-border-strong'}`} />
+                    <span className={`w-[7px] h-[7px] rounded-full ${hasStruct ? 'bg-green-500' : 'bg-border-strong'}`} />
+                    <span className={`w-[7px] h-[7px] rounded-full ${hasVision ? 'bg-green-500' : 'bg-border-strong'}`} />
                   </div>
-                  <button className="expand-btn" onClick={e => { e.stopPropagation(); toggleRow(i); }}>
+                  <button className="w-6 h-6 border-none bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center rounded-sm transition-colors" onClick={e => { e.stopPropagation(); toggleRow(i); }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                   </button>
                 </div>
                 {expandedRows.has(i) && (
-                  <div className="row-detail open">
-                    <div className="detail-grid">
-                      <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Provider</label>
-                        <select value={es.provider || ''} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], provider: e.target.value } }))}>
-                          {buildProviderOptions(config).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
+                  <div className="px-6 pb-5">
+                    <div className="grid grid-cols-2 gap-3 mt-3">
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1">Provider</Label>
+                        <Select value={es.provider || ''} onValueChange={(val) => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], provider: val } }))}>
+                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {buildProviderOptions(config).map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Context Length</label>
-                        <input type="number" value={es.ctxLen || 0} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], ctxLen: e.target.value } }))} />
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1">Context Length</Label>
+                        <Input type="number" value={es.ctxLen || 0} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], ctxLen: e.target.value } }))} />
                       </div>
-                      <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Max Output Tokens</label>
-                        <input type="number" value={es.maxOut || 0} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], maxOut: e.target.value } }))} />
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1">Max Output Tokens</Label>
+                        <Input type="number" value={es.maxOut || 0} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], maxOut: e.target.value } }))} />
                       </div>
-                      <div className="full"><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Reasoning Effort Levels</label>
-                        <input type="text" placeholder="low,medium,high" value={es.effort || ''} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], effort: e.target.value } }))} />
+                      <div className="col-span-2">
+                        <Label className="text-xs text-muted-foreground mb-1">Reasoning Effort Levels</Label>
+                        <Input type="text" placeholder="low,medium,high" value={es.effort || ''} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], effort: e.target.value } }))} />
                       </div>
-                      <div className="full">
-                        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                      <div className="col-span-2">
+                        <div className="flex gap-4 flex-wrap">
                           {[['reasoning', 'Reasoning'], ['toolCall', 'Tools'], ['struct', 'Struct'], ['vision', 'Vision']].map(([key, label]) => (
-                            <label key={key} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
-                              <input type="checkbox" checked={!!es[key]} onChange={e => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], [key]: e.target.checked } }))} /> {label}
-                            </label>
+                            <Label key={key} className="text-xs flex items-center gap-1 cursor-pointer">
+                              <Checkbox checked={!!es[key]} onCheckedChange={(v) => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], [key]: !!v } }))} /> {label}
+                            </Label>
                           ))}
                         </div>
                       </div>
                     </div>
-                    <div className="detail-actions">
-                      <button className="btn btn-primary" onClick={() => saveModelEdit(i)}>Save Changes</button>
-                      <button className="btn btn-danger" onClick={() => removeKnownModel(i)}>Delete Model</button>
+                    <div className="flex gap-2 mt-3">
+                      <Button onClick={() => saveModelEdit(i)}>Save Changes</Button>
+                      <Button variant="destructive" onClick={() => removeKnownModel(i)}>Delete Model</Button>
                     </div>
                   </div>
                 )}
@@ -272,78 +287,77 @@ export default function ModelsPanel() {
           })}
         </div>
 
-        <div className="add-section">
-          <h4>Add Model</h4>
-          <div className="add-model-row" style={{ position: 'relative' }}>
-            <input type="text" placeholder="Model ID (e.g. deepseek-v4-flash:cloud)" value={searchQuery} onChange={e => onSearchInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { addKnownModel(); return false; } }} autoComplete="off" />
+        <div className="pt-5 mt-2 border-t border-border">
+          <h4 className="text-sm font-semibold mb-3">Add Model</h4>
+          <div className="flex gap-2.5 relative">
+            <Input type="text" placeholder="Model ID (e.g. deepseek-v4-flash:cloud)" value={searchQuery} onChange={e => onSearchInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { addKnownModel(); return false; } }} autoComplete="off" className="flex-1" />
             {showDropdown && (
-              <div className="model-search-dropdown">
+              <div className="absolute top-full left-0 min-w-[300px] max-w-[420px] max-h-[240px] overflow-y-auto bg-popover border border-border rounded-md shadow-[0_8px_24px_rgba(0,0,0,0.15)] z-[100] mt-0.5">
                 {searchResults.map(r => (
-                  <div key={r.id} className="ms-item" onClick={() => selectSearchModel(r.id)}>
-                    <span className="ms-id">{r.id}</span>
-                    <span className="ms-name">{r.name || ''}</span>
+                  <div key={r.id} className="px-3 py-2 cursor-pointer text-[13px] border-b border-border last:border-b-0 flex justify-between items-center hover:bg-accent" onClick={() => selectSearchModel(r.id)}>
+                    <span className="font-medium">{r.id}</span>
+                    <span className="text-muted-foreground text-xs ml-3">{r.name || ''}</span>
                   </div>
                 ))}
               </div>
             )}
-            <select style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '14px', minWidth: '140px' }} value={newModel.provider} onChange={e => setNewModel(prev => ({ ...prev, provider: e.target.value }))}>
-              <option value="ollama_cloud">Ollama Cloud</option>
-              <option value="opencode_go">OpenCode Go</option>
-              {(config.custom_providers || []).map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              {(config.oauth_accounts || []).map((a: any) => <option key={a.id} value={a.id}>{a.email || a.label || a.id} (OAuth)</option>)}
-            </select>
-            <button className="btn btn-ghost" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</button>
+            <Select value={newModel.provider} onValueChange={(val) => setNewModel(prev => ({ ...prev, provider: val }))}>
+              <SelectTrigger className="min-w-[140px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ollama_cloud">Ollama Cloud</SelectItem>
+                <SelectItem value="opencode_go">OpenCode Go</SelectItem>
+                {(config.custom_providers || []).map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                {(config.oauth_accounts || []).map((a: any) => <SelectItem key={a.id} value={a.id}>{a.email || a.label || a.id} (OAuth)</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</Button>
           </div>
-          <div style={{ marginTop: '8px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-            <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '2px' }}>Context Length</label>
-              <input type="number" placeholder="e.g. 128000" style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '13px' }} value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>
-            <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '2px' }}>Max Output Tokens</label>
-              <input type="number" placeholder="e.g. 16384" style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '13px' }} value={newModel.maxOut} onChange={e => setNewModel(prev => ({ ...prev, maxOut: e.target.value }))} /></div>
-            <div><label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '2px' }}>Reasoning Effort Levels</label>
-              <input type="text" placeholder="low,medium,high" style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '13px' }} value={newModel.effort} onChange={e => setNewModel(prev => ({ ...prev, effort: e.target.value }))} /></div>
-            <div style={{ display: 'flex', alignItems: 'end', gap: '12px', paddingBottom: '2px' }}>
-              <label className="reasoning-toggle" title="Reasoning model" style={{ marginBottom: 0 }}>
-                <input type="checkbox" checked={newModel.reasoning} onChange={e => setNewModel(prev => ({ ...prev, reasoning: e.target.checked }))} />
-                <span className="reasoning-slider" /><span className="reasoning-label">Reasoning</span>
-              </label>
-              <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }} title="Supports tool/function calling"><input type="checkbox" checked={newModel.toolCall} onChange={e => setNewModel(prev => ({ ...prev, toolCall: e.target.checked }))} /> Tools</label>
-              <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }} title="Supports structured/JSON output"><input type="checkbox" checked={newModel.struct} onChange={e => setNewModel(prev => ({ ...prev, struct: e.target.checked }))} /> Struct</label>
-              <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }} title="Supports image input"><input type="checkbox" checked={newModel.vision} onChange={e => setNewModel(prev => ({ ...prev, vision: e.target.checked }))} /> Vision</label>
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <div><Label className="text-xs text-muted-foreground mb-0.5">Context Length</Label><Input type="number" placeholder="e.g. 128000" value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>
+            <div><Label className="text-xs text-muted-foreground mb-0.5">Max Output Tokens</Label><Input type="number" placeholder="e.g. 16384" value={newModel.maxOut} onChange={e => setNewModel(prev => ({ ...prev, maxOut: e.target.value }))} /></div>
+            <div><Label className="text-xs text-muted-foreground mb-0.5">Reasoning Effort Levels</Label><Input type="text" placeholder="low,medium,high" value={newModel.effort} onChange={e => setNewModel(prev => ({ ...prev, effort: e.target.value }))} /></div>
+            <div className="flex items-end gap-3 pb-0.5">
+              <Label title="Reasoning model" className="flex items-center gap-1 cursor-pointer text-xs">
+                <Checkbox checked={newModel.reasoning} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, reasoning: !!v }))} /> Reasoning
+              </Label>
+              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports tool/function calling"><Checkbox checked={newModel.toolCall} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, toolCall: !!v }))} /> Tools</Label>
+              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports structured/JSON output"><Checkbox checked={newModel.struct} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, struct: !!v }))} /> Struct</Label>
+              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports image input"><Checkbox checked={newModel.vision} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, vision: !!v }))} /> Vision</Label>
             </div>
           </div>
-          {newModel.infoStatus && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{newModel.infoStatus}</div>}
-          <div className="btn-row"><button className="btn btn-primary" onClick={addKnownModel}>Add Model</button></div>
+          {newModel.infoStatus && <div className="text-xs text-muted-foreground mt-1">{newModel.infoStatus}</div>}
+          <div className="flex gap-2.5 mt-5 flex-wrap"><Button onClick={addKnownModel}>Add Model</Button></div>
         </div>
       </div>
 
-      <div className="card">
-        <h3>Aliases</h3>
-        <p className="card-description">Remap incoming model names to known models.</p>
-        <div className="alias-list">
-          {Object.entries(aliases).length === 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '13px', fontStyle: 'italic' }}>No aliases yet.</span>}
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Aliases</h3>
+        <p className="text-[13px] text-muted-foreground mb-4">Remap incoming model names to known models.</p>
+        <div className="flex flex-col gap-2.5">
+          {Object.entries(aliases).length === 0 && <span className="text-muted-foreground/60 text-[13px] italic">No aliases yet.</span>}
           {Object.entries(aliases).map(([k, v]) => (
-            <div className="alias-row" key={k}>
-              <input type="text" value={k} readOnly />
-              <span className="arrow">→</span>
-              <select value={v}>
-                <option value="">Select a model...</option>
-                {Object.entries(modelGroups).map(([provName, ids]) => (
-                  <optgroup key={provName} label={provName}>{ids.map(id => <option key={id} value={id}>{id}</option>)}</optgroup>
-                ))}
-              </select>
-              <button className="btn-remove" onClick={() => removeAlias(k)}>×</button>
+            <div className="flex items-center gap-2.5" key={k}>
+              <Input type="text" value={k} readOnly className="flex-1" />
+              <span className="text-muted-foreground text-sm font-medium shrink-0">&rarr;</span>
+              <Input type="text" value={v} readOnly className="flex-1" />
+              <Button variant="outline" size="icon-sm" onClick={() => removeAlias(k)}>&times;</Button>
             </div>
           ))}
-          <div className="alias-row" style={{ marginTop: '8px' }}>
-            <input type="text" placeholder="Incoming model name" value={newAliasFrom} onChange={e => setNewAliasFrom(e.target.value)} />
-            <span className="arrow">→</span>
-            <select value={newAliasTo} onChange={e => setNewAliasTo(e.target.value)}>
-              <option value="">Select a model...</option>
-              {Object.entries(modelGroups).map(([provName, ids]) => (
-                <optgroup key={provName} label={provName}>{ids.map(id => <option key={id} value={id}>{id}</option>)}</optgroup>
-              ))}
-            </select>
-            <button className="btn btn-ghost" onClick={addAlias}>Add</button>
+          <div className="flex items-center gap-2.5 mt-2">
+            <Input type="text" placeholder="Incoming model name" value={newAliasFrom} onChange={e => setNewAliasFrom(e.target.value)} className="flex-1" />
+            <span className="text-muted-foreground text-sm font-medium shrink-0">&rarr;</span>
+            <Select value={newAliasTo} onValueChange={setNewAliasTo}>
+              <SelectTrigger className="flex-1"><SelectValue placeholder="Select a model..." /></SelectTrigger>
+              <SelectContent>
+                {Object.entries(modelGroups).map(([provName, ids]) => (
+                  <SelectGroup key={provName}>
+                    <SelectLabel>{provName}</SelectLabel>
+                    {ids.map(id => <SelectItem key={id} value={id}>{id}</SelectItem>)}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" onClick={addAlias}>Add</Button>
           </div>
         </div>
       </div>

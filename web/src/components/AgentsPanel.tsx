@@ -1,10 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, apiPost } from '../api';
 import { useToast } from '../ToastContext';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const AGENTS = [
-  { id: 'claude-code', name: 'Claude Code', desc: 'Routes Claude Code through Prism by setting ANTHROPIC_BASE_URL and per-tier model mappings in ~/.claude/settings.json. Requires Claude Code to be installed.', hasTiers: true },
-  { id: 'factory-droid', name: 'Factory Droid', desc: 'Adds your Prism models as [Prism] custom models in ~/.factory/settings.json so they appear in Droid\u2019s /model picker. Requires Factory Droid to be installed.' },
+  { id: 'claude-code', name: 'Claude Code', desc: 'Routes Claude Code through Prism by setting ANTHROPIC_BASE_URL and per-tier model mappings in ~/.claude/settings.local.json. Requires Claude Code to be installed.', hasTiers: true },
+  { id: 'factory-droid', name: 'Factory Droid', desc: 'Adds your Prism models as [Prism] custom models in ~/.factory/settings.local.json so they appear in Droid\u2019s /model picker. Requires Factory Droid to be installed.' },
   { id: 'opencode', name: 'OpenCode', desc: 'Registers a prism provider with your Prism base URL in ~/.config/opencode/opencode.json so OpenCode can use your local models. Requires OpenCode to be installed.' },
   { id: 'zcode', name: 'ZCode', desc: 'Registers a prism provider in ~/.zcode/v2/config.json so ZCode can use your local models via Prism. Requires ZCode to be installed.' },
   { id: 'omp', name: 'Oh My Pi', desc: 'Registers prism and prism-codex providers in ~/.omp/agent/models.yml so Oh My Pi can use your local models via Prism. Requires Oh My Pi (omp) to be installed.' },
@@ -78,55 +81,60 @@ export default function AgentsPanel() {
   };
 
   const statusHTML = (s: any, displayName?: string) => {
-    if (!s) return <span style={{ color: 'var(--text-secondary)' }}>Checking...</span>;
-    if (!s.installed) return <span style={{ color: 'var(--text-secondary)' }}>{displayName || s.displayName || 'Not detected'}</span>;
-    if (s.active) return <span style={{ color: 'var(--success)' }}>Active — routed through Prism</span>;
-    return <span style={{ color: '#f59e0b' }}>Installed but not configured</span>;
+    if (!s) return <span className="text-muted-foreground">Checking...</span>;
+    if (!s.installed) return <span className="text-muted-foreground">{displayName || s.displayName || 'Not detected'}</span>;
+    if (s.active) return <span className="text-green-500">Active — routed through Prism</span>;
+    return <span className="text-amber-500">Installed but not configured</span>;
   };
 
   return (
     <>
-      <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px' }}>Agent Integrations</h3>
+      <h3 className="text-base font-semibold mb-4">Agent Integrations</h3>
 
-      <div className="card">
-        <h3>Codex Desktop Integration</h3>
-        <p className="card-description">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
-        <div style={{ margin: '12px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Codex Desktop Integration</h3>
+        <p className="text-[13px] text-muted-foreground mb-3">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
+        <div className="my-3 text-[13px] text-muted-foreground">
           {codexStatus ? (
             !codexStatus.installed ? <span>Codex Desktop not detected</span> :
-            codexStatus.active ? <span style={{ color: 'var(--success)' }}>Active — models synced to Codex Desktop</span> :
-            <span style={{ color: '#f59e0b' }}>Installed but not configured</span>
+            codexStatus.active ? <span className="text-green-500">Active — models synced to Codex Desktop</span> :
+            <span className="text-amber-500">Installed but not configured</span>
           ) : 'Checking...'}
         </div>
-        <div className="btn-row">
-          <button className="btn btn-primary" onClick={setupCodex}>Setup</button>
-          <button className="btn btn-ghost" onClick={restoreCodex}>Restore</button>
+        <div className="flex gap-2.5 flex-wrap">
+          <Button onClick={setupCodex}>Setup</Button>
+          <Button variant="outline" onClick={restoreCodex}>Restore</Button>
         </div>
       </div>
 
       {AGENTS.map(agent => (
-        <div className="card" key={agent.id}>
-          <h3>{agent.name}</h3>
-          <p className="card-description">{agent.desc}</p>
-          <div id={`agent-status-${agent.id}`} style={{ margin: '12px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4" key={agent.id}>
+          <h3 className="text-sm font-semibold tracking-tight mb-1">{agent.name}</h3>
+          <p className="text-[13px] text-muted-foreground mb-3">{agent.desc}</p>
+          <div id={`agent-status-${agent.id}`} className="my-3 text-[13px] text-muted-foreground">
             {statusHTML(agentStatuses[agent.id], agent.name)}
           </div>
           {agent.hasTiers && (
             <>
               {Object.entries(TIER_LABELS).map(([k, label]) => (
-                <div className="field" key={k}>
-                  <label>{label}</label>
-                  <select value={claudeCodeTiers[k] || ''} onChange={e => setClaudeCodeTiers(prev => ({ ...prev, [k]: e.target.value }))}>
-                    <option value="">Select a model...</option>
-                    {tierOptions.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
+                <div className="mb-5 last:mb-0" key={k}>
+                  <Label>{label}</Label>
+                  <Select value={claudeCodeTiers[k] || ''} onValueChange={(v) => setClaudeCodeTiers(prev => ({ ...prev, [k]: v }))}>
+                    <SelectTrigger className="w-full mt-1.5">
+                      <SelectValue placeholder="Select a model..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Select a model...</SelectItem>
+                      {tierOptions.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
               ))}
             </>
           )}
-          <div className="btn-row">
-            <button className="btn btn-primary" onClick={() => setupAgent(agent.id)}>Setup</button>
-            <button className="btn btn-ghost" onClick={() => restoreAgent(agent.id)}>Restore</button>
+          <div className="flex gap-2.5 flex-wrap">
+            <Button onClick={() => setupAgent(agent.id)}>Setup</Button>
+            <Button variant="outline" onClick={() => restoreAgent(agent.id)}>Restore</Button>
           </div>
         </div>
       ))}

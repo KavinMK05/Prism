@@ -163,13 +163,13 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
-		writeOpenAIError(w, 500, "server_error", "Failed to marshal Ollama request")
+		writeStreamingOpenAIError(w, 500, "server_error", "Failed to marshal Ollama request", openAIReq.Model)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.apiChatURL(), bytes.NewReader(body))
 	if err != nil {
-		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
+		writeStreamingOpenAIError(w, 500, "server_error", "Failed to create upstream request", openAIReq.Model)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -180,7 +180,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
-		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
+		writeStreamingOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error(), openAIReq.Model)
 		return
 	}
 	defer resp.Body.Close()
@@ -190,7 +190,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		writeOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		writeStreamingOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode), openAIReq.Model)
 		return
 	}
 
@@ -417,13 +417,13 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 
 	body, err := json.Marshal(openAIReq)
 	if err != nil {
-		writeOpenAIError(w, 500, "server_error", "Failed to marshal request")
+		writeStreamingOpenAIError(w, 500, "server_error", "Failed to marshal request", openAIReq.Model)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
-		writeOpenAIError(w, 500, "server_error", "Failed to create upstream request")
+		writeStreamingOpenAIError(w, 500, "server_error", "Failed to create upstream request", openAIReq.Model)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -434,7 +434,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 	resp, err := pr.client.Do(req)
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
-		writeOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
+		writeStreamingOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error(), openAIReq.Model)
 		return
 	}
 	defer resp.Body.Close()
@@ -444,7 +444,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		writeOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		writeStreamingOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode), openAIReq.Model)
 		return
 	}
 
@@ -454,26 +454,146 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 
 	flusher, canFlush := w.(http.Flusher)
 
+	// Fallback values for chunks missing required OpenAI fields.
+	// Some OpenAI-compatible providers omit "id", "object", "created",
+	// "model", or "choices" in streaming chunks, which causes strict serde
+	// clients (e.g. Grok Build) to fail deserialization.
+	respID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	createdAt := time.Now().Unix()
+
+	// Track tool call metadata (id, type, name) by index so we can inject
+	// these fields into subsequent argument-delta chunks. In the standard
+	// OpenAI streaming format, only the first chunk for a tool call contains
+	// id/type/name; subsequent chunks only carry arguments. Some strict
+	// clients (e.g. Grok Build) expect these fields on every chunk.
+	type toolCallMeta struct {
+		id, typ, name string
+	}
+	toolCalls := make(map[int]*toolCallMeta)
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Fprintf(w, "%s\n", line)
-		if canFlush {
-			flusher.Flush()
-		}
-		if line == "data: [DONE]" {
-			fmt.Fprintf(w, "\n")
-			if canFlush {
-				flusher.Flush()
-			}
-			break
-		}
 
-		// Track live token progress for stats
-		if strings.HasPrefix(line, "data: ") {
+		// For data: lines (not [DONE]), ensure the chunk has all required
+		// OpenAI chat completion chunk fields and tool call metadata.
+		if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
 			data := strings.TrimPrefix(line, "data: ")
+
+			var chunkMap map[string]interface{}
+			if json.Unmarshal([]byte(data), &chunkMap) == nil {
+				modified := false
+
+				// Inject required top-level fields if missing
+				if id, ok := chunkMap["id"].(string); !ok || id == "" {
+					chunkMap["id"] = respID
+					modified = true
+				}
+				if obj, ok := chunkMap["object"].(string); !ok || obj == "" {
+					chunkMap["object"] = "chat.completion.chunk"
+					modified = true
+				}
+				if _, ok := chunkMap["created"]; !ok {
+					chunkMap["created"] = createdAt
+					modified = true
+				}
+				if model, ok := chunkMap["model"].(string); !ok || model == "" {
+					chunkMap["model"] = openAIReq.Model
+					modified = true
+				}
+				if _, ok := chunkMap["choices"]; !ok {
+					chunkMap["choices"] = []interface{}{}
+					modified = true
+				}
+
+				// Track and inject tool call metadata (id, type, name)
+				if choices, ok := chunkMap["choices"].([]interface{}); ok {
+					for _, choice := range choices {
+						choiceMap, ok := choice.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						delta, ok := choiceMap["delta"].(map[string]interface{})
+						if !ok {
+							continue
+						}
+						tcs, ok := delta["tool_calls"].([]interface{})
+						if !ok {
+							continue
+						}
+						for _, tc := range tcs {
+							tcMap, ok := tc.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							idx := -1
+							if idxFloat, ok := tcMap["index"].(float64); ok {
+								idx = int(idxFloat)
+							}
+							if idx < 0 {
+								continue
+							}
+
+							funcObj, _ := tcMap["function"].(map[string]interface{})
+
+							// Capture metadata from first chunk
+							tcID, _ := tcMap["id"].(string)
+							tcType, _ := tcMap["type"].(string)
+							tcName := ""
+							if funcObj != nil {
+								tcName, _ = funcObj["name"].(string)
+							}
+							if tcID != "" || tcType != "" || tcName != "" {
+								if existing, ok := toolCalls[idx]; ok {
+									if tcID != "" {
+										existing.id = tcID
+									}
+									if tcType != "" {
+										existing.typ = tcType
+									}
+									if tcName != "" {
+										existing.name = tcName
+									}
+								} else {
+									toolCalls[idx] = &toolCallMeta{id: tcID, typ: tcType, name: tcName}
+								}
+							}
+
+							// Inject metadata into delta chunks that lack it
+							meta := toolCalls[idx]
+							if meta != nil {
+								if tcID, _ := tcMap["id"].(string); tcID == "" && meta.id != "" {
+									tcMap["id"] = meta.id
+									modified = true
+								}
+								if tcType, _ := tcMap["type"].(string); tcType == "" && meta.typ != "" {
+									tcMap["type"] = meta.typ
+									modified = true
+								}
+								if funcObj == nil {
+									funcObj = map[string]interface{}{}
+									tcMap["function"] = funcObj
+									modified = true
+								}
+								if name, _ := funcObj["name"].(string); name == "" && meta.name != "" {
+									funcObj["name"] = meta.name
+									modified = true
+								}
+							}
+						}
+					}
+				}
+
+				if modified {
+					if modifiedData, mErr := json.Marshal(chunkMap); mErr == nil {
+						line = "data: " + string(modifiedData)
+					}
+				}
+			}
+
+			// Track live token progress for stats
 			var chunk OpenAIStreamChunk
 			if json.Unmarshal([]byte(data), &chunk) == nil {
 				if len(chunk.Choices) > 0 {
@@ -495,6 +615,18 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 				}
 			}
 		}
+
+		fmt.Fprintf(w, "%s\n", line)
+		if canFlush {
+			flusher.Flush()
+		}
+		if line == "data: [DONE]" {
+			fmt.Fprintf(w, "\n")
+			if canFlush {
+				flusher.Flush()
+			}
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -508,6 +640,41 @@ func writeOpenAISSE(w io.Writer, flusher http.Flusher, canFlush bool, chunk Open
 		return
 	}
 	fmt.Fprintf(w, "data: %s\n\n", dataJSON)
+	if canFlush {
+		flusher.Flush()
+	}
+}
+
+// writeStreamingOpenAIError sends an error to the client in SSE format for
+// streaming requests. Some strict serde clients (e.g. Grok Build) attempt to
+// deserialize the response body as a chat completion chunk even on non-200
+// responses, which fails with "missing field `id`" on a plain JSON error.
+// Wrapping the error in an SSE chunk with an `id` field lets those clients
+// parse the response and detect the error via the `error` field.
+func writeStreamingOpenAIError(w http.ResponseWriter, statusCode int, errType string, message string, model string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(statusCode)
+
+	respID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	errorChunk := map[string]interface{}{
+		"id":      respID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []interface{}{},
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errType,
+			"code":    statusCode,
+		},
+	}
+	dataJSON, _ := json.Marshal(errorChunk)
+	fmt.Fprintf(w, "data: %s\n\n", dataJSON)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+
+	flusher, canFlush := w.(http.Flusher)
 	if canFlush {
 		flusher.Flush()
 	}

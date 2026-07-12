@@ -1,6 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, apiPut } from '../api';
 import { useToast } from '../ToastContext';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
 
 function maskKey(k: string): string {
   if (!k) return '(not set)';
@@ -105,7 +108,6 @@ export default function ProviderPanel() {
       await loadConfig();
     } catch (e) {
       toast('Failed to add provider: ' + (e as Error).message, 'error');
-      await loadConfig();
     }
   };
 
@@ -156,21 +158,24 @@ export default function ProviderPanel() {
 
   return (
     <>
-      <div className="card">
-        <h3>Default Provider</h3>
-        <div className="provider-cards">
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-4">Default Provider</h3>
+        <div className="flex flex-col gap-2">
           {providers.map(p => (
-            <div key={p.id} className={`provider-card ${p.isCustom ? 'custom-provider' : ''}`}>
-              <div className="info">
-                <div className="name">{p.name}</div>
-                <div className="url">{p.url}</div>
+            <div key={p.id} className="flex items-center gap-3.5 px-4 py-3.5 bg-card border border-border rounded-md hover:border-border-strong hover:bg-accent transition-colors cursor-default">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground">
+                  {p.name}
+                  {p.isCustom && <span className="ml-2 text-[10px] font-medium text-muted-foreground bg-muted border border-border rounded-full px-1.5 py-0.5">Custom</span>}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">{p.url}</div>
               </div>
-              <button className="edit-icon" title="Edit provider" onClick={() => openEdit(p.id)}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+              <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0 transition-colors" title="Edit provider" onClick={() => openEdit(p.id)}>
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
               </button>
               {p.isCustom && (
-                <button className="delete-icon" title="Delete provider" onClick={() => { setPendingDeleteId(p.id); setPendingDeleteName(p.name); setShowDeleteModal(true); }}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0 transition-colors" title="Delete provider" onClick={() => { setPendingDeleteId(p.id); setPendingDeleteName(p.name); setShowDeleteModal(true); }}>
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               )}
             </div>
@@ -179,58 +184,81 @@ export default function ProviderPanel() {
       </div>
 
       {showEdit && editingProvider && (
-        <div className="card">
-          <h3>Edit: {editingProvider.name}</h3>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4">
+          <h3 className="text-sm font-semibold tracking-tight mb-4">Edit: {editingProvider.name}</h3>
           {!isBuiltInEditing && (
-            <div className="field">
-              <label>Name</label>
-              <input type="text" placeholder="My Provider" value={editName} onChange={e => setEditName(e.target.value)} />
+            <div className="mb-5 last:mb-0">
+              <Label>Name</Label>
+              <Input type="text" placeholder="My Provider" value={editName} onChange={e => setEditName(e.target.value)} className="mt-1.5" />
             </div>
           )}
           {!isBuiltInEditing && (
-            <div className="field">
-              <label>Base URL</label>
-              <input type="text" placeholder="https://api.example.com" value={editBaseURL} onChange={e => setEditBaseURL(e.target.value)} />
+            <div className="mb-5 last:mb-0">
+              <Label>Base URL</Label>
+              <Input type="text" placeholder="https://api.example.com" value={editBaseURL} onChange={e => setEditBaseURL(e.target.value)} className="mt-1.5" />
             </div>
           )}
-          <div className="field">
-            <label>API Key</label>
-            <div className="input-with-icon">
-              <input type="password" placeholder={editingProvider.api_key ? 'Leave blank to keep current key' : 'Enter API key'} value={editAPIKey} onChange={e => setEditAPIKey(e.target.value)} />
+          <div className="mb-5 last:mb-0">
+            <Label>API Key</Label>
+            <div className="flex gap-2 items-center mt-1.5">
+              <Input type="password" placeholder={editingProvider.api_key ? 'Leave blank to keep current key' : 'Enter API key'} value={editAPIKey} onChange={e => setEditAPIKey(e.target.value)} />
             </div>
           </div>
-          <div className="btn-row">
-            <button className="btn btn-primary" onClick={saveEdit}>Save Changes</button>
-            {!isBuiltInEditing && <button className="btn btn-danger" onClick={() => { setPendingDeleteId(editingId); setPendingDeleteName(editingProvider.name); setShowDeleteModal(true); }}>Delete Provider</button>}
+          <div className="flex gap-2.5 mt-5 flex-wrap">
+            <Button onClick={saveEdit}>Save Changes</Button>
+            {!isBuiltInEditing && <Button variant="destructive" onClick={() => { setPendingDeleteId(editingId); setPendingDeleteName(editingProvider.name); setShowDeleteModal(true); }}>Delete Provider</Button>}
           </div>
         </div>
       )}
 
-      <div className="card">
-        <h3>Add Custom Provider</h3>
-        <div className="field"><label>Name</label><input type="text" placeholder="e.g. My OpenAI Endpoint" value={addName} onChange={e => setAddName(e.target.value)} /></div>
-        <div className="field"><label>Base URL</label><input type="text" placeholder="https://api.example.com" value={addBaseURL} onChange={e => setAddBaseURL(e.target.value)} /></div>
-        <div className="field"><label>API Key</label><div className="input-with-icon"><input type="password" placeholder="sk-..." value={addAPIKey} onChange={e => setAddAPIKey(e.target.value)} /></div></div>
-        <div className="btn-row"><button className="btn btn-primary" onClick={addProvider}>Add Provider</button></div>
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-4">Add Custom Provider</h3>
+        <div className="mb-5 last:mb-0">
+          <Label>Name</Label>
+          <Input type="text" placeholder="e.g. My OpenAI Endpoint" value={addName} onChange={e => setAddName(e.target.value)} className="mt-1.5" />
+        </div>
+        <div className="mb-5 last:mb-0">
+          <Label>Base URL</Label>
+          <Input type="text" placeholder="https://api.example.com" value={addBaseURL} onChange={e => setAddBaseURL(e.target.value)} className="mt-1.5" />
+        </div>
+        <div className="mb-5 last:mb-0">
+          <Label>API Key</Label>
+          <div className="flex gap-2 items-center mt-1.5">
+            <Input type="password" placeholder="sk-..." value={addAPIKey} onChange={e => setAddAPIKey(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex gap-2.5 mt-5 flex-wrap">
+          <Button onClick={addProvider}>Add Provider</Button>
+        </div>
       </div>
 
       {!oauthAcct && (
-        <div className="card">
-          <h3>API Key — {providerName}</h3>
-          <div className="field"><label>Current Key</label><div className="key-display">{maskKey(activeProvObj?.api_key || '')}</div></div>
-          <div className="field"><label>Set New Key</label><div className="input-with-icon"><input type="password" placeholder="Enter new API key" value={newAPIKey} onChange={e => setNewAPIKey(e.target.value)} /></div></div>
-          <div className="btn-row"><button className="btn btn-primary" onClick={saveAPIKey}>Update Key</button></div>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4">
+          <h3 className="text-sm font-semibold tracking-tight mb-4">API Key — {providerName}</h3>
+          <div className="mb-5 last:mb-0">
+            <Label>Current Key</Label>
+            <div className="font-mono text-[13px] bg-muted px-3 py-2.5 rounded-md border border-border text-muted-foreground mt-1.5 break-all">{maskKey(activeProvObj?.api_key || '')}</div>
+          </div>
+          <div className="mb-5 last:mb-0">
+            <Label>Set New Key</Label>
+            <div className="flex gap-2 items-center mt-1.5">
+              <Input type="password" placeholder="Enter new API key" value={newAPIKey} onChange={e => setNewAPIKey(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex gap-2.5 mt-5 flex-wrap">
+            <Button onClick={saveAPIKey}>Update Key</Button>
+          </div>
         </div>
       )}
 
       {showDeleteModal && (
-        <div className="modal-overlay show" onClick={() => setShowDeleteModal(false)}>
-          <div className="modal-card" onClick={e => e.stopPropagation()}>
-            <h3>Delete Provider</h3>
-            <p>Are you sure you want to delete &quot;{pendingDeleteName}&quot;? This action cannot be undone.</p>
-            <div className="btn-row">
-              <button className="btn btn-ghost" onClick={() => setShowDeleteModal(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={confirmDelete}>Delete</button>
+        <div className="fixed inset-0 bg-black/35 z-[10000] flex items-center justify-center opacity-100 pointer-events-auto" onClick={() => setShowDeleteModal(false)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-[420px] w-[calc(100%-48px)] shadow-[0_8px_30px_rgba(0,0,0,0.12)] translate-y-0 scale-100" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold tracking-tight mb-2">Delete Provider</h3>
+            <p className="text-[13px] text-muted-foreground leading-relaxed mb-5">Are you sure you want to delete &quot;{pendingDeleteName}&quot;? This action cannot be undone.</p>
+            <div className="flex gap-2.5 justify-end">
+              <Button variant="outline" onClick={() => setShowDeleteModal(false)}>Cancel</Button>
+              <Button variant="destructive" onClick={confirmDelete}>Delete</Button>
             </div>
           </div>
         </div>

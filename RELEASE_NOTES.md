@@ -1,3 +1,27 @@
+# Prism v0.3.11
+
+## Bug Fixes
+
+- **Fixed: Claude Code integration writes to settings.local.json to prevent config clobbering.** Claude Code watches and rewrites `settings.json`, which previously caused Prism's environment variables to be overwritten on file changes. Prism now writes to `settings.local.json` (the local-override file that Claude Code merges but never overwrites), preserving Prism's configuration across Claude Code restarts. Existing entries from `settings.json` are copied into the local file so they survive the merge.
+
+- **Fixed: Factory Droid customModels entries duplicated on every sync.** When Prism synced models, entries copied from `settings.json` into `settings.local.json` on a prior sync were re-read from both files on every subsequent sync, accumulating duplicates. Added deduplication by model name so entries are preserved without duplication.
+
+- **Fixed: Grok Build model sections duplicated on re-sync.** Older Prism versions wrote `[model.prism-*]` sections outside managed block markers. On re-sync, these would be duplicated because only the managed blocks were stripped. Added `stripPrismModelSections()` to clean all Prism model sections before re-writing.
+
+- **Fixed: Strict streaming clients (Grok Build) failed to parse error responses.** Some strict serde clients attempt to deserialize non-200 responses as chat completion chunks, failing with "missing field `id`". Streaming errors are now sent in SSE format with proper `id`/`object`/`created` fields so clients can parse and detect the error via the `error` field.
+
+- **Fixed: Strict streaming clients failed on incomplete tool call chunks.** Some OpenAI-compatible providers omit `id`, `type`, and `name` fields in subsequent tool call argument-delta chunks (only the first chunk carries metadata). Prism now tracks and injects these fields into every tool call chunk, ensuring strict clients can deserialize the stream.
+
+## Improvements
+
+- **Admin UI: Models panel shows provider display names instead of IDs.** The `/api/stats/models` endpoint now returns sorted `{id, name}` objects instead of raw provider ID strings, so the Models panel dropdown shows human-readable names (e.g. "Ollama Cloud" instead of "ollama_cloud").
+
+- **Admin UI: Tab icons added.** Each tab in the admin UI now has an SVG icon for visual clarity.
+
+- **Grok Build: Deduplication key for customModels.** Added `customModelKey()` helper that extracts the model name from custom model entries for deduplication, preventing accumulation of duplicate non-Prism entries.
+
+- **README updated** with admin UI screenshot.
+
 # Prism v0.3.9
 
 ## Bug Fixes

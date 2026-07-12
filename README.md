@@ -15,6 +15,8 @@ Prism is a one-stop agentic coding setup — point any AI coding agent (Claude C
 
 ![Prism screenshot](./preview.jpg)
 
+![Admin UI screenshot](./admin-ui-screenshot.png)
+
 </div>
 
 ---

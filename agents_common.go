@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -191,9 +192,24 @@ func isAgentActive(agentID string) bool {
 	}
 	switch agentID {
 	case "claude-code":
+		// Prism writes to settings.local.json (Claude Code doesn't overwrite
+		// it); fall back to settings.json for entries from older Prism versions.
 		if env, ok := m["env"].(map[string]interface{}); ok {
 			if _, set := env["ANTHROPIC_BASE_URL"]; set {
 				return true
+			}
+		}
+		if lp := claudeCodeLocalConfigPath(); lp != "" {
+			ld, err := os.ReadFile(lp)
+			if err == nil {
+				var lm map[string]interface{}
+				if json.Unmarshal(ld, &lm) == nil {
+					if env, ok := lm["env"].(map[string]interface{}); ok {
+						if _, set := env["ANTHROPIC_BASE_URL"]; set {
+							return true
+						}
+					}
+				}
 			}
 		}
 		return false
@@ -298,6 +314,19 @@ func stripPrismModels(arr []interface{}) ([]interface{}, int) {
 		out = append(out, item)
 	}
 	return out, removed
+}
+
+// customModelKey returns a deduplication key for a customModels entry (the
+// "model" field, falling back to the string representation of the entry for
+// non-map items). Used to avoid accumulating duplicate non-Prism entries when
+// merging customModels from settings.json and settings.local.json.
+func customModelKey(entry interface{}) string {
+	if mp, ok := entry.(map[string]interface{}); ok {
+		if model, _ := mp["model"].(string); model != "" {
+			return model
+		}
+	}
+	return fmt.Sprintf("%v", entry)
 }
 
 // hasPrismModels reports whether the array contains any Prism-tagged entry.

@@ -1,6 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, apiPost, apiPut } from '../api';
 import { useToast } from '../ToastContext';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 
 const PHASE_LABELS: Record<string, string> = {
   'downloading-python': 'Downloading Python',
@@ -91,95 +97,92 @@ export default function SearXNGPanel() {
 
   return (
     <>
-      <div className="card">
-        <h3>SearXNG</h3>
-        <p className="card-description">Managed local metasearch instance. Start creates an isolated Python venv and installs SearXNG (~80MB, a minute or two). If no system Python is found, Prism downloads a standalone interpreter first.</p>
-        <div className="searx-status">
-          <span className={`status-dot ${running ? 'running' : 'stopped'}`} />
-          <span className="badge">{running ? 'Running' : 'Stopped'}</span>
-          <a className="url" href={searxUrl} target="_blank" style={{ marginLeft: 'auto', fontSize: '13px' }}>{searxUrl}</a>
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">SearXNG</h3>
+        <p className="text-[13px] text-muted-foreground mb-4">Managed local metasearch instance. Start creates an isolated Python venv and installs SearXNG (~80MB, a minute or two). If no system Python is found, Prism downloads a standalone interpreter first.</p>
+        <div className="flex items-center gap-2.5 px-3.5 py-3 my-3 border border-border rounded-md bg-card">
+          <span className={`w-2 h-2 rounded-full inline-block ${running ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-destructive'}`} />
+          <span className="text-sm font-semibold">{running ? 'Running' : 'Stopped'}</span>
+          <a className="ml-auto text-[13px] text-muted-foreground hover:text-foreground hover:underline" href={searxUrl} target="_blank">{searxUrl}</a>
         </div>
-        <div className="btn-row">
-          <button className="btn btn-primary" disabled={running} onClick={handleStart}>Start</button>
-          <button className="btn btn-danger" disabled={!running} onClick={handleStop}>Stop</button>
-          <button className="btn btn-ghost" disabled={!running} onClick={handleRestart}>Restart</button>
+        <div className="flex gap-2.5 flex-wrap">
+          <Button disabled={running} onClick={handleStart}>Start</Button>
+          <Button variant="destructive" disabled={!running} onClick={handleStop}>Stop</Button>
+          <Button variant="outline" disabled={!running} onClick={handleRestart}>Restart</Button>
         </div>
-        <p className={`searx-install-msg ${installPhase === 'error' ? 'error' : ''}`} style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '10px 0', minHeight: '18px' }}>{installMsg}</p>
-        <div className="toggle-row" style={{ marginTop: '16px' }}>
+        <p className={`text-[13px] text-muted-foreground my-2.5 min-h-[18px] ${installPhase === 'error' ? 'text-destructive' : ''}`}>{installMsg}</p>
+        <div className="flex items-center justify-between gap-3 mt-4">
           <div>
-            <div className="toggle-label">Auto-start on Prism launch</div>
-            <div className="toggle-desc" id="searxAutostartNote">{status?.autostart ? (status.installed ? 'Auto-starts on Prism launch.' : 'SearXNG will auto-start once you install it with Start.') : 'Start SearXNG automatically when Prism launches'}</div>
+            <div className="text-sm font-medium text-foreground">Auto-start on Prism launch</div>
+            <div className="text-xs text-muted-foreground mt-0.5" id="searxAutostartNote">{status?.autostart ? (status.installed ? 'Auto-starts on Prism launch.' : 'SearXNG will auto-start once you install it with Start.') : 'Start SearXNG automatically when Prism launches'}</div>
           </div>
-          <label className="toggle-switch">
-            <input type="checkbox" checked={!!status?.autostart} onChange={e => handleAutostart(e.target.checked)} />
-            <span className="toggle-slider" />
-          </label>
+          <Switch checked={!!status?.autostart} onCheckedChange={(v) => handleAutostart(!!v)} />
         </div>
       </div>
 
       {settingsError ? (
-        <div className="card"><p className="card-description" style={{ color: 'var(--danger)' }}>{settingsError}</p></div>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4"><p className="text-[13px] text-destructive">{settingsError}</p></div>
       ) : settings && (
-        <div className="card">
-          <h3>Settings</h3>
-          <p className="card-description">Structured editor for the SearXNG instance. Changes require a Restart to take effect. Advanced keys (engines, outgoing, redis) are not exposed here — edit <code>settings.yml</code> directly if needed.</p>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4">
+          <h3 className="text-sm font-semibold tracking-tight mb-1">Settings</h3>
+          <p className="text-[13px] text-muted-foreground mb-5">Structured editor for the SearXNG instance. Changes require a Restart to take effect. Advanced keys (engines, outgoing, redis) are not exposed here — edit <code>settings.yml</code> directly if needed.</p>
 
-          <div className="searx-form-section" style={{ marginBottom: '20px' }}>
-            <h4 style={{ margin: '0 0 12px', paddingBottom: '8px', fontSize: '14px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>Server</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 18px' }}>
-              <div className="field" style={{ marginBottom: 0 }}><label>Port</label><input type="number" value={settings.port || ''} onChange={e => update('port', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Bind address</label><input type="text" value={settings.bind_address || ''} onChange={e => update('bind_address', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Base URL</label><input type="text" placeholder="(blank for local)" value={settings.base_url || ''} onChange={e => update('base_url', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Method</label><select value={settings.method || 'POST'} onChange={e => update('method', e.target.value)}><option value="POST">POST</option><option value="GET">GET</option></select></div>
-              <div className="field" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label>Secret key</label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
-                  <input type="text" style={{ flex: 1, fontFamily: 'monospace' }} value={settings.secret_key || ''} onChange={e => update('secret_key', e.target.value)} />
-                  <button className="btn btn-ghost" onClick={regenSecret}>Regenerate</button>
+          <div className="mb-5">
+            <h4 className="text-sm font-semibold m-0 pb-2 border-b border-border mb-3">Server</h4>
+            <div className="grid grid-cols-2 gap-3.5">
+              <div><Label>Port</Label><Input type="number" value={settings.port || ''} onChange={e => update('port', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Bind address</Label><Input type="text" value={settings.bind_address || ''} onChange={e => update('bind_address', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Base URL</Label><Input type="text" placeholder="(blank for local)" value={settings.base_url || ''} onChange={e => update('base_url', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Method</Label><Select value={settings.method || 'POST'} onValueChange={(v) => update('method', v)}><SelectTrigger className="w-full mt-1.5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="POST">POST</SelectItem><SelectItem value="GET">GET</SelectItem></SelectContent></Select></div>
+              <div className="col-span-2"><Label>Secret key</Label>
+                <div className="flex gap-2 items-center mt-1.5">
+                  <Input type="text" className="flex-1 font-mono" value={settings.secret_key || ''} onChange={e => update('secret_key', e.target.value)} />
+                  <Button variant="outline" onClick={regenSecret}>Regenerate</Button>
                 </div>
               </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '14px' }}>
+            <div className="flex flex-col gap-1 mt-3.5">
               {[['limiter', 'Rate limiter', 'Requires Valkey/Redis'], ['public_instance', 'Public instance', 'Expose to the network (not just localhost)'], ['image_proxy', 'Image proxy', 'Proxy image requests through SearXNG']].map(([key, label, desc]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
-                  <div><div className="toggle-label">{label}</div><div className="toggle-desc">{desc}</div></div>
-                  <label className="toggle-switch"><input type="checkbox" checked={!!settings[key]} onChange={e => update(key, e.target.checked)} /><span className="toggle-slider" /></label>
+                <div key={key} className="flex items-center justify-between py-2">
+                  <div><div className="text-sm font-medium text-foreground">{label}</div><div className="text-xs text-muted-foreground mt-0.5">{desc}</div></div>
+                  <Switch checked={!!settings[key]} onCheckedChange={(v) => update(key, !!v)} />
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="searx-form-section" style={{ marginBottom: '20px' }}>
-            <h4 style={{ margin: '0 0 12px', paddingBottom: '8px', fontSize: '14px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>Search</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 18px' }}>
-              <div className="field" style={{ marginBottom: 0 }}><label>Safe search</label><select value={String(settings.safe_search || 0)} onChange={e => update('safe_search', e.target.value)}><option value="0">None</option><option value="1">Moderate</option><option value="2">Strict</option></select></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Autocomplete</label><select value={settings.autocomplete || ''} onChange={e => update('autocomplete', e.target.value)}><option value="">(off)</option>{autocompleteOptions.filter(o => o).map(o => <option key={o} value={o}>{o}</option>)}</select></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Default language</label><input type="text" placeholder="(blank = browser)" value={settings.default_lang || ''} onChange={e => update('default_lang', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label>Output formats (html required)</label>
-                <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', padding: '4px 0' }}>
+          <div className="mb-5">
+            <h4 className="text-sm font-semibold m-0 pb-2 border-b border-border mb-3">Search</h4>
+            <div className="grid grid-cols-2 gap-3.5">
+              <div><Label>Safe search</Label><Select value={String(settings.safe_search || 0)} onValueChange={(v) => update('safe_search', v)}><SelectTrigger className="w-full mt-1.5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">None</SelectItem><SelectItem value="1">Moderate</SelectItem><SelectItem value="2">Strict</SelectItem></SelectContent></Select></div>
+              <div><Label>Autocomplete</Label><Select value={settings.autocomplete || ''} onValueChange={(v) => update('autocomplete', v)}><SelectTrigger className="w-full mt-1.5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">(off)</SelectItem>{autocompleteOptions.filter(o => o).map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>Default language</Label><Input type="text" placeholder="(blank = browser)" value={settings.default_lang || ''} onChange={e => update('default_lang', e.target.value)} className="mt-1.5" /></div>
+              <div className="col-span-2"><Label>Output formats (html required)</Label>
+                <div className="flex gap-4.5 flex-wrap py-1">
                   {[['html', '_fmtHtml'], ['json', '_fmtJson'], ['csv', '_fmtCsv'], ['rss', '_fmtRss']].map(([label, key]) => (
-                    <label key={label} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={!!(settings.formats || []).includes(label) || !!settings[key]} onChange={e => update(key, e.target.checked)} /> {label}
-                    </label>
+                    <Label key={label} className="flex items-center gap-2 cursor-pointer text-sm">
+                      <Checkbox checked={!!(settings.formats || []).includes(label) || !!settings[key]} onCheckedChange={(v) => update(key, !!v)} /> {label}
+                    </Label>
                   ))}
                 </div>
               </div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Default locale</label><input type="text" value={settings.default_locale || ''} onChange={e => update('default_locale', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Default theme</label><input type="text" value={settings.default_theme || ''} onChange={e => update('default_theme', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Simple style</label><input type="text" value={settings.simple_style || ''} onChange={e => update('simple_style', e.target.value)} /></div>
-              <div className="field" style={{ marginBottom: 0 }}><label>Hotkeys</label><input type="text" value={settings.hotkeys || ''} onChange={e => update('hotkeys', e.target.value)} /></div>
+              <div><Label>Default locale</Label><Input type="text" value={settings.default_locale || ''} onChange={e => update('default_locale', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Default theme</Label><Input type="text" value={settings.default_theme || ''} onChange={e => update('default_theme', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Simple style</Label><Input type="text" value={settings.simple_style || ''} onChange={e => update('simple_style', e.target.value)} className="mt-1.5" /></div>
+              <div><Label>Hotkeys</Label><Input type="text" value={settings.hotkeys || ''} onChange={e => update('hotkeys', e.target.value)} className="mt-1.5" /></div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '14px' }}>
+            <div className="flex flex-col gap-1 mt-3.5">
               {[['query_in_title', 'Query in title'], ['center_alignment', 'Center alignment'], ['results_on_new_tab', 'Results on new tab'], ['search_on_category_select', 'Search on category select']].map(([key, label]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
-                  <div className="toggle-label">{label}</div>
-                  <label className="toggle-switch"><input type="checkbox" checked={!!settings[key]} onChange={e => update(key, e.target.checked)} /><span className="toggle-slider" /></label>
+                <div key={key} className="flex items-center justify-between py-2">
+                  <div className="text-sm font-medium text-foreground">{label}</div>
+                  <Switch checked={!!settings[key]} onCheckedChange={(v) => update(key, !!v)} />
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="btn-row">
-            <button className="btn btn-primary" onClick={saveSettings}>Save Settings</button>
+          <div className="flex gap-2.5 flex-wrap">
+            <Button onClick={saveSettings}>Save Settings</Button>
           </div>
         </div>
       )}

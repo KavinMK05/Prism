@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../ToastContext';
+import { Button } from '@/components/ui/button';
 
 function fmtReset(ts: number): string {
   if (!ts) return '';
@@ -81,17 +82,17 @@ export default function OAuthPanel() {
   const activeAccount = accounts.find(a => a.active);
 
   const renderUsageBar = (label: string, pct: number, resetTs: number, period: string) => {
-    const cl = pct > 80 ? 'high' : pct > 50 ? 'medium' : 'low';
+    const barColor = pct > 80 ? 'bg-destructive' : pct > 50 ? 'bg-amber-500' : 'bg-green-500';
     const resetTxt = fmtReset(resetTs);
     return (
-      <div key={label} style={{ marginBottom: '10px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 500 }}>{label}</span>
-          <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{resetTxt || period || ''}</span>
+      <div key={label} className="mb-2.5">
+        <div className="flex justify-between items-center mb-1">
+          <span className="text-[13px] font-medium">{label}</span>
+          <span className="text-[11px] text-muted-foreground">{resetTxt || period || ''}</span>
         </div>
-        <div className="usage-bar-bg" onClick={refreshUsage} style={{ cursor: 'pointer' }}>
-          <div className={`usage-bar-fill ${cl}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-          <div className="usage-bar-label">{pct.toFixed(0)}% used</div>
+        <div className="w-full h-5 bg-muted rounded-sm overflow-hidden relative cursor-pointer" onClick={refreshUsage}>
+          <div className={`h-full rounded-sm transition-[width] duration-400 ${barColor}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[11px] font-semibold text-foreground" style={{ textShadow: '0 0 4px var(--surface)' }}>{pct.toFixed(0)}% used</div>
         </div>
       </div>
     );
@@ -112,44 +113,44 @@ export default function OAuthPanel() {
 
   return (
     <>
-      <div className="card">
-        <h3>Connected Accounts</h3>
-        <p className="card-description">Manage your OAuth-connected accounts for subscription-based access.</p>
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Connected Accounts</h3>
+        <p className="text-[13px] text-muted-foreground mb-4">Manage your OAuth-connected accounts for subscription-based access.</p>
         {accounts.length === 0 ? (
-          <div style={{ color: 'var(--text-secondary)', fontSize: '14px', padding: '16px 0', textAlign: 'center' }}>No OAuth accounts connected yet. Click &quot;Add Codex Account&quot; to get started.</div>
+          <div className="text-muted-foreground text-sm py-4 text-center">No OAuth accounts connected yet. Click &quot;Add Codex Account&quot; to get started.</div>
         ) : accounts.map(a => (
-          <div key={a.id} className={`oauth-account${a.active ? ' active' : ''}`}>
-            <div className="oauth-account-info">
-              <div className="oauth-account-email">{a.email || a.label || a.id}</div>
-              <div className="oauth-account-meta">{planLabel(a.plan_tier || '')} &middot; Token: {a.token_valid ? <span style={{ color: 'var(--success)' }}>Valid</span> : <span style={{ color: 'var(--danger)' }}>Expired</span>}{a.token_expiry ? ' &middot; Expires: ' + a.token_expiry : ''}</div>
+          <div key={a.id} className={`flex items-center justify-between px-4 py-3.5 border border-border rounded-md mb-2.5 transition-colors hover:border-border-strong hover:bg-accent ${a.active ? '!border-green-500/50 bg-green-500/5' : ''}`}>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">{a.email || a.label || a.id}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">{planLabel(a.plan_tier || '')} &middot; Token: {a.token_valid ? <span className="text-green-500">Valid</span> : <span className="text-destructive">Expired</span>}{a.token_expiry ? ' \u00b7 Expires: ' + a.token_expiry : ''}</div>
             </div>
-            <div className="oauth-account-actions">
-              <button className="btn btn-secondary" disabled={a.active} onClick={() => activateAccount(a.id)}>{a.active ? 'Active' : 'Activate'}</button>
-              <button className="btn btn-danger" onClick={() => removeAccount(a.id)}>Remove</button>
+            <div className="flex gap-2 items-center">
+              <Button variant="secondary" size="sm" disabled={a.active} onClick={() => activateAccount(a.id)}>{a.active ? 'Active' : 'Activate'}</Button>
+              <Button variant="destructive" size="sm" onClick={() => removeAccount(a.id)}>Remove</Button>
             </div>
           </div>
         ))}
-        <div className="btn-row" style={{ marginTop: '16px' }}>
-          <button className="btn btn-primary" onClick={addCodexAccount}>+ Add Codex Account</button>
+        <div className="flex gap-2.5 mt-4 flex-wrap">
+          <Button onClick={addCodexAccount}>+ Add Codex Account</Button>
         </div>
       </div>
 
       {activeAccount && (
-        <div className="card">
-          <h3>Usage</h3>
-          <p className="card-description">Usage for {activeAccount.email || activeAccount.label || activeAccount.id}</p>
+        <div className="rounded-xl border border-border bg-card p-6 mb-4">
+          <h3 className="text-sm font-semibold tracking-tight mb-1">Usage</h3>
+          <p className="text-[13px] text-muted-foreground mb-3">Usage for {activeAccount.email || activeAccount.label || activeAccount.id}</p>
           {activeAccount.usage_unavailable ? (
-            <div style={{ padding: '12px 0', color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.5 }}>
+            <div className="py-3 text-muted-foreground text-[13px] leading-relaxed">
               Usage data is temporarily unavailable. The ChatGPT usage endpoint may be rate-limited or the token may need refreshing.
             </div>
           ) : usageBars.length === 0 ? (
-            <div style={{ padding: '8px 0', color: 'var(--text-secondary)', fontSize: '13px' }}>No usage data yet. Usage will appear after your first API call.</div>
+            <div className="py-2 text-muted-foreground text-[13px]">No usage data yet. Usage will appear after your first API call.</div>
           ) : (
-            <div style={{ marginTop: '12px' }}>{usageBars}</div>
+            <div className="mt-3">{usageBars}</div>
           )}
-          {detailParts.length > 0 && <div className="usage-detail" style={{ marginTop: '8px' }} dangerouslySetInnerHTML={{ __html: detailParts.join(' &middot; ') }} />}
-          <div className="btn-row" style={{ marginTop: '12px' }}>
-            <button className="btn btn-secondary" onClick={refreshUsage}>&#8635; Refresh Usage</button>
+          {detailParts.length > 0 && <div className="text-xs text-muted-foreground mt-2">{detailParts.join(' \u00b7 ')}</div>}
+          <div className="flex gap-2.5 mt-3 flex-wrap">
+            <Button variant="secondary" onClick={refreshUsage}>&#8635; Refresh Usage</Button>
           </div>
         </div>
       )}

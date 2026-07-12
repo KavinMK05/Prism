@@ -1198,10 +1198,47 @@ func startAdminServer(cfg *Config, port string) {
 			}
 		}
 
+		// Build provider id -> display name map
+		providerNames := map[string]string{
+			"ollama_cloud": "Ollama Cloud",
+			"opencode_go":  "OpenCode Go",
+		}
+		for _, p := range cfg.CustomProviders {
+			if p.Name != "" {
+				providerNames[p.ID] = p.Name
+			}
+		}
+		for _, a := range cfg.OAuthAccounts {
+			name := a.Label
+			if name == "" {
+				name = a.Email
+			}
+			if name == "" {
+				name = a.ID
+			}
+			providerNames[a.ID] = name
+		}
+		// Convert to sorted list of {id, name} objects
+		type providerOption struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		sortedProviders := make([]providerOption, 0, len(dbProviders))
+		for _, id := range dbProviders {
+			name, ok := providerNames[id]
+			if !ok {
+				name = id
+			}
+			sortedProviders = append(sortedProviders, providerOption{ID: id, Name: name})
+		}
+		sort.Slice(sortedProviders, func(i, j int) bool {
+			return sortedProviders[i].Name < sortedProviders[j].Name
+		})
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"models":    models,
-			"providers": dbProviders,
+			"providers": sortedProviders,
 			"clients":   clients,
 		})
 	})

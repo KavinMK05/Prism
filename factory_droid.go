@@ -109,9 +109,21 @@ func installFactoryDroidConfig(port int, remap *ModelRemapping) error {
 	localExisting, _ := localCfg["customModels"].([]interface{})
 	mainCleaned, _ := stripPrismModels(mainExisting)
 	localCleaned, _ := stripPrismModels(localExisting)
-	cleaned := append(mainCleaned, localCleaned...)
-	cleaned = append(cleaned, buildFactoryDroidModels(remap, baseURL, cfg)...)
-	localCfg["customModels"] = cleaned
+	// Deduplicate non-Prism entries by "model" field. Without this, entries
+	// copied from settings.json into settings.local.json on a prior sync are
+	// re-read from both files on every sync, accumulating duplicates.
+	seen := map[string]bool{}
+	deduped := make([]interface{}, 0, len(mainCleaned)+len(localCleaned))
+	for _, entry := range append(append([]interface{}{}, mainCleaned...), localCleaned...) {
+		key := customModelKey(entry)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, entry)
+	}
+	deduped = append(deduped, buildFactoryDroidModels(remap, baseURL, cfg)...)
+	localCfg["customModels"] = deduped
 
 	if err := writeJSONConfig(localPath, localCfg); err != nil {
 		return fmt.Errorf("failed to write Factory Droid local config: %w", err)

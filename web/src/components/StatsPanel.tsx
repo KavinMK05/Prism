@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, memo } from 'react';
 import { api, apiPost } from '../api';
 import { useToast } from '../ToastContext';
 import { useTheme } from '../ThemeContext';
@@ -7,6 +7,9 @@ import {
   BarElement, PointElement, LineElement, Filler, Tooltip,
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 ChartJS.register(CategoryScale, LinearScale, BarController, LineController, BarElement, PointElement, LineElement, Filler, Tooltip);
 
@@ -39,6 +42,88 @@ function formatHeatmapDate(iso: string): string {
   return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+const FilterBar = memo(function FilterBar({
+  filterOpts, timeRange, onTimeRangeChange,
+  filterProvider, setFilterProvider,
+  filterModel, setFilterModel,
+  filterClient, setFilterClient,
+  showCustomDate, filterFrom, setFilterFrom, filterTo, setFilterTo,
+  refreshAll,
+}: {
+  filterOpts: { providers: { id: string; name: string }[]; models: string[]; clients: string[] };
+  timeRange: string;
+  onTimeRangeChange: (val: string) => void;
+  filterProvider: string;
+  setFilterProvider: (v: string) => void;
+  filterModel: string;
+  setFilterModel: (v: string) => void;
+  filterClient: string;
+  setFilterClient: (v: string) => void;
+  showCustomDate: boolean;
+  filterFrom: string;
+  setFilterFrom: (v: string) => void;
+  filterTo: string;
+  setFilterTo: (v: string) => void;
+  refreshAll: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 mb-5 items-center w-full">
+      <div className="flex gap-3 flex-wrap items-center w-full justify-between">
+        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Time Range</div>
+          <Select value={timeRange} onValueChange={(v) => onTimeRangeChange(v)}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="Time Range" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">Last 7 Days</SelectItem>
+              <SelectItem value="30">Last 30 Days</SelectItem>
+              <SelectItem value="90">Last 90 Days</SelectItem>
+              <SelectItem value="all">All Time</SelectItem>
+              <SelectItem value="custom">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Provider</div>
+          <Select value={filterProvider} onValueChange={(v) => setFilterProvider(v)}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="All Providers" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All Providers</SelectItem>
+              {filterOpts.providers.map((p: { id: string; name: string }) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Model</div>
+          <Select value={filterModel} onValueChange={(v) => setFilterModel(v)}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="All Models" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All Models</SelectItem>
+              {filterOpts.models.map((m: string) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Client</div>
+          <Select value={filterClient} onValueChange={(v) => setFilterClient(v)}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="All Clients" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All Clients</SelectItem>
+              {filterOpts.clients.map((c: string) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {showCustomDate && (
+        <div className="flex gap-3 items-center w-full justify-between">
+          <div className="flex gap-3 items-center">
+            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">From</div><Input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} /></div>
+            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">To</div><Input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} /></div>
+          </div>
+          <Button variant="outline" onClick={refreshAll} title="Refresh stats">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export default function StatsPanel() {
   const { toast } = useToast();
   const { theme } = useTheme();
@@ -54,6 +139,7 @@ export default function StatsPanel() {
   const [filterClient, setFilterClient] = useState('');
   const [tpsBuffer, setTpsBuffer] = useState<number[]>([]);
   const [showClearModal, setShowClearModal] = useState(false);
+  const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; date: string; input: number; output: number; total: number } | null>(null);
   const liveInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const historyInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -98,7 +184,7 @@ export default function StatsPanel() {
     return () => { if (liveInterval.current) clearInterval(liveInterval.current); if (historyInterval.current) clearInterval(historyInterval.current); };
   }, [refreshLive, loadHistory, loadFilterOpts, filterFrom, filterTo]);
 
-  const onTimeRangeChange = (val: string) => {
+  const onTimeRangeChange = useCallback((val: string) => {
     setTimeRange(val);
     if (val === 'custom') { setShowCustomDate(true); return; }
     setShowCustomDate(false);
@@ -108,9 +194,9 @@ export default function StatsPanel() {
     else fromDate = new Date(now.getTime() - parseInt(val) * 24 * 60 * 60 * 1000);
     setFilterFrom(fmtLocalDate(fromDate));
     setFilterTo(fmtLocalDate(now));
-  };
+  }, []);
 
-  const refreshAll = async () => { await refreshLive(); await loadHistory(); await loadFilterOpts(); };
+  const refreshAll = useCallback(async () => { await refreshLive(); await loadHistory(); await loadFilterOpts(); }, [refreshLive, loadHistory, loadFilterOpts]);
 
   const clearStats = async () => {
     setShowClearModal(false);
@@ -159,139 +245,165 @@ export default function StatsPanel() {
 
   const recentLines = (liveData?.recent_requests || []).slice().reverse().map((r: any) => {
     const t = new Date(r.timestamp).toLocaleTimeString();
-    return `${t}  ${r.client || 'Unknown'}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${r.tokens_per_sec.toFixed(1)}tok/s  ${r.duration_ms}ms`;
+    return `${t}  ${r.client || 'Unknown'}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${(r.tokens_per_sec ?? 0).toFixed(1)}tok/s  ${r.duration_ms}ms`;
   }).join('\n');
 
-  const byModelEntries = liveData?.by_model ? Object.entries(liveData.by_model) : [];
+  const byModelEntries = history?.by_model || [];
 
   return (
     <>
-      <div className="stats-filter-bar">
-        <div className="filter-row center">
-          <div className="filter-group"><div className="stats-filter-label">Time Range</div>
-            <select value={timeRange} onChange={e => onTimeRangeChange(e.target.value)}>
-              <option value="7">Last 7 Days</option><option value="30">Last 30 Days</option><option value="90">Last 90 Days</option><option value="all">All Time</option><option value="custom">Custom</option>
-            </select>
-          </div>
-          <div className="filter-group"><div className="stats-filter-label">Provider</div>
-            <select value={filterProvider} onChange={e => { setFilterProvider(e.target.value); }}><option value="">All Providers</option>{filterOpts.providers.map((p: string) => <option key={p} value={p}>{p}</option>)}</select>
-          </div>
-          <div className="filter-group"><div className="stats-filter-label">Model</div>
-            <select value={filterModel} onChange={e => { setFilterModel(e.target.value); }}><option value="">All Models</option>{filterOpts.models.map((m: string) => <option key={m} value={m}>{m}</option>)}</select>
-          </div>
-          <div className="filter-group"><div className="stats-filter-label">Client</div>
-            <select value={filterClient} onChange={e => { setFilterClient(e.target.value); }}><option value="">All Clients</option>{filterOpts.clients.map((c: string) => <option key={c} value={c}>{c}</option>)}</select>
-          </div>
-        </div>
-        {showCustomDate && (
-          <div className="filter-row between">
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <div className="filter-group"><div className="stats-filter-label">From</div><input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} /></div>
-              <div className="filter-group"><div className="stats-filter-label">To</div><input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} /></div>
-            </div>
-            <button className="stats-refresh-btn" onClick={refreshAll} title="Refresh stats">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Filter bar */}
+      <FilterBar
+        filterOpts={filterOpts}
+        timeRange={timeRange}
+        onTimeRangeChange={onTimeRangeChange}
+        filterProvider={filterProvider}
+        setFilterProvider={setFilterProvider}
+        filterModel={filterModel}
+        setFilterModel={setFilterModel}
+        filterClient={filterClient}
+        setFilterClient={setFilterClient}
+        showCustomDate={showCustomDate}
+        filterFrom={filterFrom}
+        setFilterFrom={setFilterFrom}
+        filterTo={filterTo}
+        setFilterTo={setFilterTo}
+        refreshAll={refreshAll}
+      />
 
-      <div className="stats-layout">
-        <div className="card heatmap-card">
-          <div className="chart-card-header"><span className="chart-card-title">Token Usage Heatmap</span></div>
-          <div className="heatmap-wrapper">
-            <div className="heatmap-grid">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Heatmap */}
+        <div className="rounded-xl border border-border bg-card p-6 col-span-1 lg:col-span-2">
+          <div className="flex items-center justify-between mb-3"><span className="text-[13px] font-semibold text-foreground">Token Usage Heatmap</span></div>
+          <div className="w-full overflow-visible pb-1">
+            <div className="grid grid-cols-[repeat(53,1fr)] grid-rows-7 grid-flow-col gap-[3px] w-full">
               {Array.from({ length: 7 * 53 }, (_, idx) => {
                 const dayIdx = idx % 7;
                 const weekIdx = Math.floor(idx / 7);
                 const day = weeks[weekIdx]?.[dayIdx];
-                if (!day) return <div key={idx} className="heatmap-cell level-0" style={{ visibility: 'hidden', pointerEvents: 'none' }} />;
+                if (!day) return <div key={idx} className="aspect-square rounded-[2px] border border-border bg-muted invisible" />;
                 const level = getHeatmapLevel(day.total, maxTotal);
-                return <div key={idx} className={`heatmap-cell level-${level}`} title={`${formatHeatmapDate(day.date)}: ${formatNumber(day.total)} total`} />;
+                return (
+                  <div
+                    key={idx}
+                    className={`aspect-square rounded-[2px] cursor-pointer transition-transform hover:scale-110 hover:z-[1] hover:border-muted-foreground/50 ${
+                      level === 0 ? 'bg-muted border border-border' :
+                      level === 1 ? 'bg-purple-500/18 border border-purple-500/18' :
+                      level === 2 ? 'bg-purple-500/35 border border-purple-500/30' :
+                      level === 3 ? 'bg-purple-500/55 border border-purple-500/45' :
+                      level === 4 ? 'bg-purple-500/75 border border-purple-500/60' :
+                      'bg-purple-500/95 border border-purple-500/85'
+                    }`}
+                    onMouseEnter={(e) => setHoveredCell({ x: e.clientX, y: e.clientY, date: day.date, input: day.input, output: day.output, total: day.total })}
+                    onMouseMove={(e) => setHoveredCell((prev) => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
+                    onMouseLeave={() => setHoveredCell(null)}
+                  />
+                );
               })}
             </div>
+            {hoveredCell && (
+              <div
+                className="fixed bg-card border border-border-strong rounded-md px-3 py-2 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap z-[9999] pointer-events-none transition-opacity"
+                style={{ left: Math.min(hoveredCell.x + 12, window.innerWidth - 210), top: Math.min(hoveredCell.y + 12, window.innerHeight - 110) }}
+              >
+                <div className="font-semibold mb-0.5">{formatHeatmapDate(hoveredCell.date)}</div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Input</span><span className="font-semibold tabular-nums text-purple-500">{formatNumber(hoveredCell.input)}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Output</span><span className="font-semibold tabular-nums text-purple-400">{formatNumber(hoveredCell.output)}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Total</span><span className="font-semibold tabular-nums">{formatNumber(hoveredCell.total)}</span></div>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="chart-card">
-          <div className="chart-card-header"><span className="chart-card-title">Tokens Per Day</span></div>
-          <div className="token-tooltip-wrapper">
-            <div className="chart-card-value">{formatNumber(dailyTotal)}<span className="unit">Total</span></div>
-            <div className="token-tooltip">
-              <div className="token-tooltip-row"><span className="token-tooltip-label">Input</span><span className="token-tooltip-value input-color">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.input, 0))}</span></div>
-              <div className="token-tooltip-row"><span className="token-tooltip-label">Output</span><span className="token-tooltip-value output-color">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.output, 0))}</span></div>
+        {/* Daily chart */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center justify-between mb-3"><span className="text-[13px] font-semibold text-foreground">Tokens Per Day</span></div>
+          <div className="relative group">
+            <div className="text-2xl font-bold text-foreground tracking-tight leading-tight">{formatNumber(dailyTotal)}<span className="text-xs font-medium text-muted-foreground ml-1">Total</span></div>
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.input, 0))}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.output, 0))}</span></div>
             </div>
           </div>
-          <div className="chart-container"><Bar data={{ labels: dailyData.map((d: any) => d.date.slice(5)), datasets: [{ label: 'Input', data: dailyData.map((d: any) => d.input), backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }, { label: 'Output', data: dailyData.map((d: any) => d.output), backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
+          <div className="relative h-[180px] w-full"><Bar data={{ labels: dailyData.map((d: any) => d.date.slice(5)), datasets: [{ label: 'Input', data: dailyData.map((d: any) => d.input), backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }, { label: 'Output', data: dailyData.map((d: any) => d.output), backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
         </div>
 
-        <div className="chart-card">
-          <div className="chart-card-header"><span className="chart-card-title">Tokens Per Month</span></div>
-          <div className="token-tooltip-wrapper">
-            <div className="chart-card-value">{formatNumber(monthlyTotal)}<span className="unit">Total</span></div>
-            <div className="token-tooltip">
-              <div className="token-tooltip-row"><span className="token-tooltip-label">Input</span><span className="token-tooltip-value input-color">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.input || 0), 0))}</span></div>
-              <div className="token-tooltip-row"><span className="token-tooltip-label">Output</span><span className="token-tooltip-value output-color">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.output || 0), 0))}</span></div>
+        {/* Monthly chart */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center justify-between mb-3"><span className="text-[13px] font-semibold text-foreground">Tokens Per Month</span></div>
+          <div className="relative group">
+            <div className="text-2xl font-bold text-foreground tracking-tight leading-tight">{formatNumber(monthlyTotal)}<span className="text-xs font-medium text-muted-foreground ml-1">Total</span></div>
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.input || 0), 0))}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.output || 0), 0))}</span></div>
             </div>
           </div>
-          <div className="chart-container"><Line data={{ labels: monthlyData.map((d: any) => d.month), datasets: [{ label: 'Tokens', data: monthlyData.map((d: any) => d.total), fill: true, backgroundColor: 'rgba(139,92,246,0.12)', borderColor: '#8b5cf6', borderWidth: 2, pointBackgroundColor: '#8b5cf6', pointRadius: 3, pointHoverRadius: 5, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
+          <div className="relative h-[180px] w-full"><Line data={{ labels: monthlyData.map((d: any) => d.month), datasets: [{ label: 'Tokens', data: monthlyData.map((d: any) => d.total), fill: true, backgroundColor: 'rgba(139,92,246,0.12)', borderColor: '#8b5cf6', borderWidth: 2, pointBackgroundColor: '#8b5cf6', pointRadius: 3, pointHoverRadius: 5, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
         </div>
 
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-            <h3 style={{ margin: 0 }}>Live TPS</h3>
-            {liveData?.request_active && <span className="live-badge-inline"><span className="pulse-dot" /> Updated just now</span>}
+        {/* Live TPS */}
+        <div className="rounded-xl border border-border bg-card p-6 col-span-1 lg:col-span-2">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold m-0">Live TPS</h3>
+            {liveData?.request_active && <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-green-500 bg-green-500/8 border border-green-500/20 rounded-full px-2 py-0.5 whitespace-nowrap"><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Updated just now</span>}
           </div>
-          <div className="stats-live">
-            <div className="stats-hero" style={{ flex: '0.3', minWidth: '160px' }}>
-              <div className={`stats-hero-value ${liveData?.request_active ? 'active' : ''}`}>{liveData?.request_active ? (liveTps > 0 ? liveTps.toFixed(1) : '0') : '--'}</div>
-              <div className="stats-hero-unit">tokens/sec</div>
-              <div className="stats-hero-label">{liveData?.request_active ? ((liveData.current_model || 'Processing...') + (liveData.current_provider ? ' via ' + liveData.current_provider : '')) : (liveData?.total_requests > 0 ? 'Idle \u2014 last: ' + (liveData.current_model || '') : 'No active request')}</div>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+            <div className="w-full sm:w-auto sm:min-w-[160px] text-center sm:text-center py-2 sm:py-5">
+              <div className={`text-4xl sm:text-5xl font-bold tracking-[-2px] leading-none ${liveData?.request_active ? 'text-green-500' : 'text-foreground'}`}>{liveData?.request_active ? (liveTps > 0 ? liveTps.toFixed(1) : '0') : '--'}</div>
+              <div className="text-[13px] text-muted-foreground mt-1 font-medium">tokens/sec</div>
+              <div className="text-xs text-muted-foreground/70 mt-1.5">{liveData?.request_active ? ((liveData.current_model || 'Processing...') + (liveData.current_provider ? ' via ' + liveData.current_provider : '')) : (liveData?.total_requests > 0 ? 'Idle \u2014 last: ' + (liveData.current_model || '') : 'No active request')}</div>
             </div>
-            <div style={{ flex: 1, position: 'relative', height: '120px' }}>
+            <div className="w-full sm:flex-1 relative h-[120px] min-w-0">
               <Line data={{ labels: tpsBuffer.map(() => ''), datasets: [{ data: tpsBuffer, borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.08)', borderWidth: 2, fill: true, pointRadius: 0, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true, mode: 'index', intersect: false, callbacks: { title: () => '', label: (ctx: any) => ctx.parsed.y != null ? ctx.parsed.y.toFixed(1) + ' tok/s' : '' } } }, scales: { x: { display: false }, y: { display: false, min: 0 } }, animation: { duration: 0 } }} />
             </div>
           </div>
-          <div className="stats-grid" style={{ marginTop: '16px' }}>
-            <div className="stats-item"><div className="stats-item-value">{liveData?.total_requests || 0}</div><div className="stats-item-label">Total Requests</div></div>
-            <div className="stats-item"><div className="stats-item-value">{formatNumber(liveData?.total_input_tokens || 0)}</div><div className="stats-item-label">Input Tokens</div></div>
-            <div className="stats-item"><div className="stats-item-value">{formatNumber(liveData?.total_output_tokens || 0)}</div><div className="stats-item-label">Output Tokens</div></div>
-            <div className="stats-item"><div className="stats-item-value">{liveData?.avg_tokens_per_sec > 0 ? liveData.avg_tokens_per_sec.toFixed(1) : '--'}</div><div className="stats-item-label">Avg tok/sec</div></div>
+          <div className="grid grid-cols-4 gap-3 mt-4">
+            <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{liveData?.total_requests || 0}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Total Requests</div></div>
+            <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{formatNumber(liveData?.total_input_tokens || 0)}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Input Tokens</div></div>
+            <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{formatNumber(liveData?.total_output_tokens || 0)}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Output Tokens</div></div>
+            <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{liveData?.avg_tokens_per_sec > 0 ? liveData.avg_tokens_per_sec.toFixed(1) : '--'}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Avg tok/sec</div></div>
           </div>
         </div>
 
-        <div className="card">
-          <div className="client-card-header"><div><div className="client-card-title">Usage by Client</div><div className="client-card-subtitle">Track API usage across your clients and tools.</div></div></div>
-          <div className="client-summary-row">
-            <div className="client-summary-item"><div className="client-summary-label">Total Clients</div><div className="client-summary-value">{clientArr.length}</div></div>
-            <div className="client-summary-item"><div className="client-summary-label">Total Tokens</div><div className="client-summary-value">{formatNumber(grandTotalTokens)}</div></div>
-            <div className="client-summary-item"><div className="client-summary-label">Total Requests</div><div className="client-summary-value">{formatNumber(grandTotalRequests)}</div></div>
+        {/* Client stats */}
+        <div className="rounded-xl border border-border bg-card p-6 col-span-1 lg:col-span-2">
+          <div className="flex items-start justify-between mb-5">
+            <div><div className="text-sm font-semibold text-foreground tracking-tight">Usage by Client</div><div className="text-xs text-muted-foreground mt-1">Track API usage across your clients and tools.</div></div>
           </div>
-          <div className="client-list-header"><div>Client</div><div>Tokens</div><div>Requests</div><div>% of Total</div></div>
-          {top3.length === 0 ? <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontStyle: 'italic', padding: '8px 0' }}>No data yet.</div> : top3.map((c, i) => {
-            const barClass = i === 0 ? 'client-bar-fill' : i === 1 ? 'client-bar-fill client-bar-fill-alt' : 'client-bar-fill client-bar-fill-alt2';
-            const tokenPct = ((c.total_tokens / grandTotalTokens) * 100).toFixed(1);
+          <div className="grid grid-cols-3 gap-4 mb-5 pb-4 border-b border-border">
+            <div><div className="text-[11px] text-muted-foreground font-medium mb-1">Total Clients</div><div className="text-[22px] font-bold text-foreground tracking-tight">{clientArr.length}</div></div>
+            <div><div className="text-[11px] text-muted-foreground font-medium mb-1">Total Tokens</div><div className="text-[22px] font-bold text-foreground tracking-tight">{formatNumber(grandTotalTokens)}</div></div>
+            <div><div className="text-[11px] text-muted-foreground font-medium mb-1">Total Requests</div><div className="text-[22px] font-bold text-foreground tracking-tight">{formatNumber(grandTotalRequests)}</div></div>
+          </div>
+          <div className="grid grid-cols-4 gap-3 py-2 text-[11px] text-muted-foreground font-medium border-b border-border mb-1">
+            <div>Client</div><div>Tokens</div><div>Requests</div><div>% of Total</div>
+          </div>
+          {top3.length === 0 ? <div className="text-muted-foreground text-[13px] italic py-2">No data yet.</div> : top3.map((c, i) => {
+            const barColors = ['bg-purple-500', 'bg-blue-500', 'bg-green-500'];
+            const barClass = barColors[i] || barColors[0];
+            const tokenPct = grandTotalTokens > 0 ? ((c.total_tokens / grandTotalTokens) * 100).toFixed(1) : '0.0';
             return (
-              <div className="client-list-row" key={c.client}>
-                <div><div className="client-info-name">{c.client}</div><div className="client-info-id">{c.client.toLowerCase().replace(/\s+/g, '-')}</div></div>
-                <div><div className="client-metric">{formatNumber(c.total_tokens)}</div><div className="client-bar-bg"><div className={barClass} style={{ width: `${(c.total_tokens / maxTokens) * 100}%` }} /></div></div>
-                <div><div className="client-metric">{formatNumber(c.requests)}</div><div className="client-bar-bg"><div className={barClass} style={{ width: `${(c.requests / maxRequests) * 100}%` }} /></div></div>
-                <div><div className="client-metric">{tokenPct}%</div><div className="client-bar-bg"><div className={barClass} style={{ width: `${tokenPct}%` }} /></div></div>
+              <div className="grid grid-cols-4 gap-3 py-2.5 border-b border-border items-center" key={c.client}>
+                <div><div className="text-[13px] font-semibold text-foreground">{c.client}</div><div className="text-[11px] text-muted-foreground/60 mt-0.5">{c.client.toLowerCase().replace(/\s+/g, '-')}</div></div>
+                <div><div className="text-[13px] font-medium text-foreground">{formatNumber(c.total_tokens)}</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${(c.total_tokens / maxTokens) * 100}%` }} /></div></div>
+                <div><div className="text-[13px] font-medium text-foreground">{formatNumber(c.requests)}</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${(c.requests / maxRequests) * 100}%` }} /></div></div>
+                <div><div className="text-[13px] font-medium text-foreground">{tokenPct}%</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${tokenPct}%` }} /></div></div>
               </div>
             );
           })}
         </div>
 
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}><h3 style={{ margin: 0 }}>TPS History (Tokens / Second)</h3></div>
-          <table className="tps-table">
-            <thead><tr><th>Model</th><th>Provider</th><th>Avg TPS</th><th>Max TPS</th></tr></thead>
+        {/* TPS History */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold m-0">TPS History (Tokens / Second)</h3></div>
+          <table className="w-full border-collapse text-[13px] mb-4">
+            <thead><tr><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Model</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Provider</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Avg TPS</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Max TPS</th></tr></thead>
             <tbody>
-              {byModel.length === 0 ? <tr><td colSpan={4} style={{ color: 'var(--text-secondary)', fontStyle: 'italic', textAlign: 'center', padding: '16px' }}>No data yet.</td></tr> :
-                byModel.map((m: any, i: number) => <tr key={i}><td><span className="model-dot" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />{m.model}</td><td>{m.provider}</td><td>{m.avg_tps.toFixed(1)}</td><td>{m.max_tps.toFixed(1)}</td></tr>)}
+              {byModel.length === 0 ? <tr><td colSpan={4} className="text-muted-foreground italic text-center py-4">No data yet.</td></tr> :
+                byModel.map((m: any, i: number) => <tr key={i}><td className="px-3 py-2 border-b border-border"><span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />{m.model}</td><td className="px-3 py-2 border-b border-border">{m.provider}</td><td className="px-3 py-2 border-b border-border">{(m.avg_tps ?? 0).toFixed(1)}</td><td className="px-3 py-2 border-b border-border">{(m.max_tps ?? 0).toFixed(1)}</td></tr>)}
             </tbody>
           </table>
-          <div className="chart-container" style={{ height: '220px' }}>
+          <div className="relative h-[220px] w-full">
             {(() => {
               const byModelMap: Record<string, any[]> = {};
               tpsHistoryData.forEach((p: any) => { if (!byModelMap[p.model]) byModelMap[p.model] = []; byModelMap[p.model].push(p); });
@@ -310,35 +422,38 @@ export default function StatsPanel() {
           </div>
         </div>
 
-        <div className="card">
-          <h3>By Model</h3>
-          {byModelEntries.length > 0 ? byModelEntries.map(([model, stats]: [string, any]) => (
-            <div className="model-stats-row" key={model}>
-              <span className="model-stats-name">{model}</span>
-              <span className="model-stats-detail">{stats.requests} req · {formatNumber(stats.input_tokens)} in / {formatNumber(stats.output_tokens)} out · {stats.avg_tokens_per_sec.toFixed(1)} tok/s</span>
+        {/* By Model */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <h3 className="text-sm font-semibold tracking-tight mb-4">By Model</h3>
+          {byModelEntries.length > 0 ? byModelEntries.map((m: any) => (
+            <div className="flex justify-between items-center py-2.5 border-b border-border last:border-b-0 text-[13px]" key={m.model}>
+              <span className="font-medium text-foreground">{m.model}</span>
+              <span className="text-muted-foreground">{m.requests} req &middot; {formatNumber(m.total_input ?? m.input_tokens ?? 0)} in / {formatNumber(m.total_output ?? m.output_tokens ?? 0)} out &middot; {(m.avg_tps ?? m.avg_tokens_per_sec ?? 0).toFixed(1)} tok/s</span>
             </div>
-          )) : <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontStyle: 'italic' }}>No data yet.</div>}
+          )) : <div className="text-muted-foreground text-[13px] italic">No data yet.</div>}
         </div>
 
-        <div className="card">
-          <h3>Recent Requests</h3>
-          <div className="log-view" style={{ maxHeight: '200px' }}>{recentLines || 'No data yet.'}</div>
+        {/* Recent Requests */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <h3 className="text-sm font-semibold tracking-tight mb-4">Recent Requests</h3>
+          <div className="bg-muted border border-border rounded-md p-3.5 max-h-[200px] overflow-y-auto font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">{recentLines || 'No data yet.'}</div>
         </div>
 
-        <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div><h3 style={{ margin: 0 }}>Data Management</h3><p className="card-description" style={{ marginBottom: 0 }}>Delete all persisted stats. This cannot be undone.</p></div>
-          <button className="btn btn-danger" onClick={() => setShowClearModal(true)}>Clear All Stats</button>
+        {/* Data Management */}
+        <div className="rounded-xl border border-border bg-card p-6 flex justify-between items-center">
+          <div><h3 className="text-sm font-semibold m-0">Data Management</h3><p className="text-[13px] text-muted-foreground mt-0.5 mb-0">Delete all persisted stats. This cannot be undone.</p></div>
+          <Button variant="destructive" onClick={() => setShowClearModal(true)}>Clear All Stats</Button>
         </div>
       </div>
 
       {showClearModal && (
-        <div className="modal-overlay show" onClick={() => setShowClearModal(false)}>
-          <div className="modal-card" onClick={e => e.stopPropagation()}>
-            <h3>Clear All Stats</h3>
-            <p>Are you sure you want to delete all persisted stats? This cannot be undone.</p>
-            <div className="btn-row">
-              <button className="btn btn-ghost" onClick={() => setShowClearModal(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={clearStats}>Delete</button>
+        <div className="fixed inset-0 bg-black/35 z-[10000] flex items-center justify-center" onClick={() => setShowClearModal(false)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-[420px] w-[calc(100%-48px)] shadow-[0_8px_30px_rgba(0,0,0,0.12)]" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold tracking-tight mb-2">Clear All Stats</h3>
+            <p className="text-[13px] text-muted-foreground leading-relaxed mb-5">Are you sure you want to delete all persisted stats? This cannot be undone.</p>
+            <div className="flex gap-2.5 justify-end">
+              <Button variant="outline" onClick={() => setShowClearModal(false)}>Cancel</Button>
+              <Button variant="destructive" onClick={clearStats}>Delete</Button>
             </div>
           </div>
         </div>
