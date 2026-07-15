@@ -12,21 +12,41 @@ import (
 	"time"
 )
 
+// responsesEmitter wraps an SSE writer with a per-response monotonic
+// sequence_number counter. The Responses API spec requires every streaming
+// event to carry a sequence_number; inject it here so call sites don't have to.
+type responsesEmitter struct {
+	w        http.ResponseWriter
+	flusher  http.Flusher
+	canFlush bool
+	seq      int
+}
+
+// emit writes a Responses SSE event, injecting an incrementing sequence_number
+// into map payloads (per the OpenAI Responses streaming-events spec).
+func (e *responsesEmitter) emit(event string, data interface{}) {
+	if m, ok := data.(map[string]interface{}); ok {
+		e.seq++
+		m["sequence_number"] = e.seq
+	}
+	emitResponsesEvent(e.w, e.flusher, e.canFlush, event, data)
+}
+
 // buildToolCallItem builds the output item map for a completed tool call.
 // For custom_tool_call (e.g. apply_patch), it uses the `input` field with the
 // raw extracted text instead of `arguments` (JSON string).
-func buildToolCallItem(itemID, outputType, callID, name, arguments, status string) map[string]interface{} {
+func buildToolCallItem(itemID, outputType, callID, name, namespace, arguments, status string) map[string]interface{} {
 	if outputType == "custom_tool_call" {
 		return map[string]interface{}{
-			"id":     itemID,
-			"type":   "custom_tool_call",
+			"id":      itemID,
+			"type":    "custom_tool_call",
 			"call_id": callID,
-			"name":   name,
-			"input":  extractCustomToolInput(arguments),
-			"status": status,
+			"name":    name,
+			"input":   extractCustomToolInput(arguments),
+			"status":  status,
 		}
 	}
-	return map[string]interface{}{
+	item := map[string]interface{}{
 		"id":        itemID,
 		"type":      outputType,
 		"call_id":   callID,
@@ -34,22 +54,26 @@ func buildToolCallItem(itemID, outputType, callID, name, arguments, status strin
 		"arguments": arguments,
 		"status":    status,
 	}
+	if namespace != "" {
+		item["namespace"] = namespace
+	}
+	return item
 }
 
 // buildToolCallAddedItem builds the output_item.added item for a new tool call.
 // For custom_tool_call, uses `input` instead of `arguments`.
-func buildToolCallAddedItem(itemID, outputType, callID, name string) map[string]interface{} {
+func buildToolCallAddedItem(itemID, outputType, callID, name, namespace string) map[string]interface{} {
 	if outputType == "custom_tool_call" {
 		return map[string]interface{}{
-			"id":     itemID,
-			"type":   "custom_tool_call",
+			"id":      itemID,
+			"type":    "custom_tool_call",
 			"call_id": callID,
-			"name":   name,
-			"input":  "",
-			"status": "in_progress",
+			"name":    name,
+			"input":   "",
+			"status":  "in_progress",
 		}
 	}
-	return map[string]interface{}{
+	item := map[string]interface{}{
 		"id":        itemID,
 		"type":      outputType,
 		"call_id":   callID,
@@ -57,24 +81,75 @@ func buildToolCallAddedItem(itemID, outputType, callID, name string) map[string]
 		"arguments": "",
 		"status":    "in_progress",
 	}
+	if namespace != "" {
+		item["namespace"] = namespace
+	}
+	return item
+}
+
+// streamingFuncCall holds the per-stream-index state for a single tool call
+// being assembled from OpenAI Chat Completions streaming deltas. OpenAI
+// streams parallel tool calls keyed by `index`: the id+name arrive on the first
+// chunk for each index, then later chunks carry only function.arguments
+// deltas. Keying by index (instead of a single active call) keeps each call's
+// arguments in its own buffer so they don't get mixed together.
+type streamingFuncCall struct {
+	outputIndex int
+	callID      string
+	itemID      string
+	name        string
+	childName   string
+	namespace   string
+	outputType  string
+	argsBuilder strings.Builder
+	itemAdded   bool
+	itemDone    bool
+}
+
+// finalizeFuncCalls emits the function_call_arguments.done / custom_tool_call
+// input.done and response.output_item.done events for every tool call tracked
+// in funcCalls that has been opened but not yet closed, in stream-index order.
+// Returns the closed output items so callers can append them to the
+// response.completed `output` aggregation. Safe to call multiple times (the
+// itemDone guard makes repeated calls no-ops).
+func finalizeFuncCalls(e *responsesEmitter, funcCalls map[int]*streamingFuncCall, funcCallOrder []int) []interface{} {
+	var items []interface{}
+	for _, idx := range funcCallOrder {
+		fc := funcCalls[idx]
+		if fc == nil || !fc.itemAdded || fc.itemDone {
+			continue
+		}
+		args := fc.argsBuilder.String()
+		emitToolCallDoneEvent(e, fc.outputType, fc.itemID, args, fc.outputIndex)
+		fcItem := buildToolCallItem(fc.itemID, fc.outputType, fc.callID, fc.childName, fc.namespace, args, "completed")
+		e.emit("response.output_item.done", map[string]interface{}{
+			"type":         "response.output_item.done",
+			"output_index": fc.outputIndex,
+			"item":         fcItem,
+		})
+		fc.itemDone = true
+		items = append(items, fcItem)
+	}
+	return items
 }
 
 // emitToolCallDoneEvent emits the appropriate "done" event for a tool call.
 // For custom_tool_call, emits response.custom_tool_call_input.done with `input`.
 // For function_call, emits response.function_call_arguments.done with `arguments`.
-func emitToolCallDoneEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool, outputType, callID string, arguments string, outputIndex int) {
+// Both events carry `item_id` (the function_call/custom_tool_call item id), per spec.
+func emitToolCallDoneEvent(e *responsesEmitter, outputType, itemID string, arguments string, outputIndex int) {
 	if outputType == "custom_tool_call" {
-		emitResponsesEvent(w, flusher, canFlush, "response.custom_tool_call_input.done", map[string]interface{}{
+		e.emit("response.custom_tool_call_input.done", map[string]interface{}{
 			"type":         "response.custom_tool_call_input.done",
 			"output_index": outputIndex,
-			"item_id":      callID,
+			"item_id":      itemID,
 			"input":        extractCustomToolInput(arguments),
 		})
 	} else {
-		emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.done", map[string]interface{}{
+		e.emit("response.function_call_arguments.done", map[string]interface{}{
 			"type":         "response.function_call_arguments.done",
 			"output_index": outputIndex,
-			"call_id":      callID,
+			"item_id":      itemID,
 			"arguments":    arguments,
 		})
 	}
@@ -87,21 +162,21 @@ func emitToolCallDoneEvent(w http.ResponseWriter, flusher http.Flusher, canFlush
 // Desktop to accumulate JSON fragments as the input, producing invalid patch
 // text. Instead, we only emit the done event with the fully extracted input.
 // For function_call, emits response.function_call_arguments.delta as normal.
-func emitToolCallDeltaEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool, outputType, callID string, delta string, outputIndex int) {
+func emitToolCallDeltaEvent(e *responsesEmitter, outputType, itemID string, delta string, outputIndex int) {
 	if outputType == "custom_tool_call" {
 		// Skip delta events for custom_tool_call — the done event carries
 		// the correct extracted input.
 		return
 	}
-	emitResponsesEvent(w, flusher, canFlush, "response.function_call_arguments.delta", map[string]interface{}{
+	e.emit("response.function_call_arguments.delta", map[string]interface{}{
 		"type":         "response.function_call_arguments.delta",
 		"output_index": outputIndex,
-		"call_id":      callID,
+		"item_id":      itemID,
 		"delta":        delta,
 	})
 }
 
-func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
+func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string, toolNamespaces map[string]string) {
 	reqStart := time.Now()
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
@@ -161,6 +236,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, canFlush := w.(http.Flusher)
+	e := &responsesEmitter{w: w, flusher: flusher, canFlush: canFlush}
 
 	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
 	createdAt := time.Now().Unix()
@@ -168,12 +244,9 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	contentIndex := 0
 	var messageItemID string
 	var textContentPartID string
-	var funcCallItemID string
-	var funcCallCallID string
-	var funcCallName string
-	var funcCallOutputType string
+	funcCalls := map[int]*streamingFuncCall{}
+	funcCallOrder := []int{}
 	var accumulatedText string
-	var accumulatedArgs string
 	var outputTokens int
 	var inputTokens int
 	var liveOutputTokens int
@@ -188,16 +261,18 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	var reasoningSummaryPartAdded bool
 	var accumulatedReasoning string
 	var completedOutput []interface{} // accumulated output items for response.completed
-	var completedOutputText string   // accumulated output text for response.completed
+	var completedOutputText string    // accumulated output text for response.completed
 
 	// Emit response.created
-	emitResponsesEvent(w, flusher, canFlush, "response.created", map[string]interface{}{
+	e.emit("response.created", map[string]interface{}{
 		"type": "response.created",
 		"response": map[string]interface{}{
 			"id":         respID,
 			"object":     "response",
 			"created_at": createdAt,
 			"model":      respReq.Model,
+			"background": false,
+			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
 			"usage":      map[string]interface{}{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -250,7 +325,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				reasoningSummaryIndex = 0
 				reasoningSummaryPartAdded = false
 				accumulatedReasoning = ""
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				e.emit("response.output_item.added", map[string]interface{}{
 					"type":         "response.output_item.added",
 					"output_index": outputIndex,
 					"item": map[string]interface{}{
@@ -264,7 +339,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			// Add summary part on first reasoning chunk
 			if !reasoningSummaryPartAdded {
 				reasoningSummaryPartAdded = true
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.added", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.added", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.added",
 					"output_index":  outputIndex,
 					"summary_index": reasoningSummaryIndex,
@@ -279,7 +354,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			liveOutputTokens++
 			globalStats.AddTokens(1)
 			accumulatedReasoning += *choice.Delta.ReasoningContent
-			emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_text.delta", map[string]interface{}{
+			e.emit("response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
 				"output_index":  outputIndex,
 				"summary_index": reasoningSummaryIndex,
@@ -292,7 +367,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 			// Close summary part if it was opened
 			if reasoningSummaryPartAdded {
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.done",
 					"output_index":  outputIndex,
 					"summary_index": reasoningSummaryIndex,
@@ -310,7 +385,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				"type":    "reasoning",
 				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 			}
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
 				"item":         reasoningItem,
@@ -323,13 +398,13 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		if len(delta.ToolCalls) > 0 {
 			// Close text content part if active
 			if textContentPartID != "" {
-				emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
-				emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
@@ -350,7 +425,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"role":    "assistant",
 					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         msgItem,
@@ -360,42 +435,49 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			}
 
 			for _, tc := range delta.ToolCalls {
-				if tc.ID != "" && tc.Function.Name != "" {
-					// Close previous function call if any
-					if funcCallItemID != "" {
-						emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, accumulatedArgs, outputIndex)
-						fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
-						emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
-							"type":         "response.output_item.done",
-							"output_index": outputIndex,
-							"item":         fcItem,
-						})
-						completedOutput = append(completedOutput, fcItem)
-					}
-
-				outputIndex++
-				funcCallCallID = tc.ID
-				if funcCallCallID == "" {
-					funcCallCallID = generateID("fc_")
+				// Track tool calls per stream-index so parallel calls keep separate
+				// argument buffers. OpenAI sends id+name on the first chunk for each
+				// index and bare argument deltas on later chunks.
+				idx := 0
+				if tc.Index != nil {
+					idx = *tc.Index
 				}
-				funcCallItemID = funcCallCallID
-				funcCallName = tc.Function.Name
-				funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
-				log.Printf("[RESP] streaming tool call: name=%s resolved_type=%s toolTypes=%v", funcCallName, funcCallOutputType, toolTypes)
-				accumulatedArgs = ""
-					emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				fc, exists := funcCalls[idx]
+				if !exists {
+					fc = &streamingFuncCall{}
+					funcCalls[idx] = fc
+					funcCallOrder = append(funcCallOrder, idx)
+					outputIndex++
+					fc.outputIndex = outputIndex
+				}
+				if tc.ID != "" && fc.callID == "" {
+					fc.callID = tc.ID
+				}
+				if tc.Function.Name != "" && fc.name == "" {
+					fc.name = tc.Function.Name
+				}
+				// Open the item once we know its name (first chunk for this index).
+				if !fc.itemAdded && fc.name != "" {
+					if fc.callID == "" {
+						fc.callID = generateID("call_")
+					}
+					fc.itemID = "fc_" + fc.callID
+					fc.outputType = resolveToolOutputType(fc.name, toolTypes)
+					fc.childName, fc.namespace = splitToolNamespace(fc.name, toolNamespaces)
+					fc.itemAdded = true
+					log.Printf("[RESP] streaming tool call: name=%s idx=%d resolved_type=%s toolTypes=%v", fc.name, idx, fc.outputType, toolTypes)
+					e.emit("response.output_item.added", map[string]interface{}{
 						"type":         "response.output_item.added",
-						"output_index": outputIndex,
-						"item":         buildToolCallAddedItem(funcCallItemID, funcCallOutputType, tc.ID, tc.Function.Name),
+						"output_index": fc.outputIndex,
+						"item":         buildToolCallAddedItem(fc.itemID, fc.outputType, fc.callID, fc.childName, fc.namespace),
 					})
 				}
-
 				if tc.Function.Arguments != "" {
-					accumulatedArgs += tc.Function.Arguments
+					fc.argsBuilder.WriteString(tc.Function.Arguments)
 					liveOutputTokens++
 					globalStats.AddTokens(1)
-					if tc.Function.Arguments != "{}" {
-						emitToolCallDeltaEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, tc.Function.Arguments, outputIndex)
+					if fc.itemAdded && tc.Function.Arguments != "{}" {
+						emitToolCallDeltaEvent(e, fc.outputType, fc.itemID, tc.Function.Arguments, fc.outputIndex)
 					}
 				}
 			}
@@ -407,20 +489,21 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			if messageItemID == "" {
 				outputIndex++
 				messageItemID = generateID("msg_")
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				e.emit("response.output_item.added", map[string]interface{}{
 					"type":         "response.output_item.added",
 					"output_index": outputIndex,
 					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": "in_progress",
-						"role":   "assistant",
+						"id":      messageItemID,
+						"type":    "message",
+						"status":  "in_progress",
+						"role":    "assistant",
+						"content": []interface{}{},
 					},
 				})
 				// Start content part
 				contentIndex = 0
 				textContentPartID = generateID("cont_")
-				emitResponsesEvent(w, flusher, canFlush, "response.content_part.added", map[string]interface{}{
+				e.emit("response.content_part.added", map[string]interface{}{
 					"type":          "response.content_part.added",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
@@ -435,7 +518,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			completedOutputText += *delta.Content
 			liveOutputTokens++
 			globalStats.AddTokens(1)
-			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
+			e.emit("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
@@ -452,13 +535,13 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 			// Close text content part if active
 			if textContentPartID != "" {
-				emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
-				emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
@@ -476,7 +559,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 				// Close summary part if open
 				if reasoningSummaryPartAdded {
-					emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 						"type":          "response.reasoning_summary_part.done",
 						"output_index":  outputIndex,
 						"summary_index": reasoningSummaryIndex,
@@ -494,7 +577,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 						"type":    "reasoning",
 						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 					}
-					emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+					e.emit("response.output_item.done", map[string]interface{}{
 						"type":         "response.output_item.done",
 						"output_index": outputIndex,
 						"item":         reasoningItem,
@@ -513,7 +596,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"role":    "assistant",
 					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         msgItem,
@@ -522,18 +605,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				messageItemID = ""
 			}
 
-			// Close function call if active
-			if funcCallItemID != "" {
-				emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, accumulatedArgs, outputIndex)
-				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
-					"type":         "response.output_item.done",
-					"output_index": outputIndex,
-					"item":         fcItem,
-				})
-				completedOutput = append(completedOutput, fcItem)
-				funcCallItemID = ""
-			}
+			// Close any active function calls (in stream-index order).
+			completedOutput = append(completedOutput, finalizeFuncCalls(e, funcCalls, funcCallOrder)...)
 
 			// Emit completed with accumulated output
 			completedResp := map[string]interface{}{
@@ -541,6 +614,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				"object":      "response",
 				"created_at":  createdAt,
 				"model":       respReq.Model,
+				"background":  false,
+				"error":       nil,
 				"status":      status,
 				"output":      completedOutput,
 				"output_text": completedOutputText,
@@ -550,7 +625,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"total_tokens":  inputTokens + outputTokens,
 				},
 			}
-			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
+			mergeResponsesEchoFields(completedResp, respReq)
+			e.emit("response.completed", map[string]interface{}{
 				"type":     "response.completed",
 				"response": completedResp,
 			})
@@ -566,13 +642,13 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	if !completedEmitted {
 		// Close text content part if active
 		if textContentPartID != "" {
-			emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+			e.emit("response.output_text.done", map[string]interface{}{
 				"type":          "response.output_text.done",
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
 				"text":          accumulatedText,
 			})
-			emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+			e.emit("response.content_part.done", map[string]interface{}{
 				"type":          "response.content_part.done",
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
@@ -591,7 +667,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				"role":    "assistant",
 				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 			}
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
 				"item":         msgItem,
@@ -599,15 +675,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			completedOutput = append(completedOutput, msgItem)
 		}
 
-		if funcCallItemID != "" {
-			fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, accumulatedArgs, "completed")
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
-				"type":         "response.output_item.done",
-				"output_index": outputIndex,
-				"item":         fcItem,
-			})
-			completedOutput = append(completedOutput, fcItem)
-		}
+		completedOutput = append(completedOutput, finalizeFuncCalls(e, funcCalls, funcCallOrder)...)
 
 		// Close reasoning if still active
 		if reasoningActive {
@@ -615,7 +683,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 			// Close summary part if open
 			if reasoningSummaryPartAdded {
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.done",
 					"output_index":  outputIndex,
 					"summary_index": reasoningSummaryIndex,
@@ -633,7 +701,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":    "reasoning",
 					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         reasoningItem,
@@ -643,27 +711,31 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			reasoningItemID = ""
 		}
 
-		emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
-			"type": "response.completed",
-			"response": map[string]interface{}{
-				"id":          respID,
-				"object":      "response",
-				"created_at":  createdAt,
-				"model":       respReq.Model,
-				"status":      "completed",
-				"output":      completedOutput,
-				"output_text": completedOutputText,
-				"usage": map[string]interface{}{
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"total_tokens":  inputTokens + outputTokens,
-				},
+		completedResp := map[string]interface{}{
+			"id":          respID,
+			"object":      "response",
+			"created_at":  createdAt,
+			"model":       respReq.Model,
+			"background":  false,
+			"error":       nil,
+			"status":      "completed",
+			"output":      completedOutput,
+			"output_text": completedOutputText,
+			"usage": map[string]interface{}{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"total_tokens":  inputTokens + outputTokens,
 			},
+		}
+		mergeResponsesEchoFields(completedResp, respReq)
+		e.emit("response.completed", map[string]interface{}{
+			"type":     "response.completed",
+			"response": completedResp,
 		})
 	}
 }
 
-func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string) {
+func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string, toolNamespaces map[string]string) {
 	reqStart := time.Now()
 
 	ollamaReq := translateResponsesAPIToOllama(respReq)
@@ -706,6 +778,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, canFlush := w.(http.Flusher)
+	e := &responsesEmitter{w: w, flusher: flusher, canFlush: canFlush}
 
 	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
 	createdAt := time.Now().Unix()
@@ -716,6 +789,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	var funcCallItemID string
 	var funcCallCallID string
 	var funcCallName string
+	var funcCallChildName string
+	var funcCallNamespace string
 	var funcCallOutputType string
 	var outputTokens int
 	var inputTokens int
@@ -732,16 +807,18 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	var completedEmitted bool
 	var toolCallsEmitted int
 	var completedOutput []interface{} // accumulated output items for response.completed
-	var completedOutputText string   // accumulated output text for response.completed
+	var completedOutputText string    // accumulated output text for response.completed
 
 	// Emit response.created
-	emitResponsesEvent(w, flusher, canFlush, "response.created", map[string]interface{}{
+	e.emit("response.created", map[string]interface{}{
 		"type": "response.created",
 		"response": map[string]interface{}{
 			"id":         respID,
 			"object":     "response",
 			"created_at": createdAt,
 			"model":      respReq.Model,
+			"background": false,
+			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
 			"usage":      map[string]interface{}{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -780,7 +857,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				thinkingSummaryIndex = 0
 				thinkingSummaryPartAdded = false
 				accumulatedReasoning = ""
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				e.emit("response.output_item.added", map[string]interface{}{
 					"type":         "response.output_item.added",
 					"output_index": outputIndex,
 					"item": map[string]interface{}{
@@ -794,7 +871,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			// Add summary part on first thinking chunk
 			if !thinkingSummaryPartAdded {
 				thinkingSummaryPartAdded = true
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.added", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.added", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.added",
 					"output_index":  outputIndex,
 					"summary_index": thinkingSummaryIndex,
@@ -807,7 +884,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 			// Stream the thinking text as a summary delta
 			accumulatedReasoning += chunk.Message.Thinking
-			emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_text.delta", map[string]interface{}{
+			e.emit("response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
 				"output_index":  outputIndex,
 				"summary_index": thinkingSummaryIndex,
@@ -822,7 +899,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 			// Close summary part if open
 			if thinkingSummaryPartAdded {
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.done",
 					"output_index":  outputIndex,
 					"summary_index": thinkingSummaryIndex,
@@ -841,7 +918,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":    "reasoning",
 					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         reasoningItem,
@@ -856,13 +933,13 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			// Close message item if active
 			if messageItemID != "" {
 				if contentPartID != "" {
-					emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+					e.emit("response.output_text.done", map[string]interface{}{
 						"type":          "response.output_text.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"text":          accumulatedText,
 					})
-					emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+					e.emit("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
@@ -880,7 +957,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"role":    "assistant",
 					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         msgItem,
@@ -900,30 +977,36 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 				globalStats.AddTokens(1)
 
-			outputIndex++
-			funcCallCallID = fmt.Sprintf("call_%s_%d", toolName, outputIndex)
-			funcCallItemID = funcCallCallID
-			funcCallName = toolName
-			funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
+				outputIndex++
+				funcCallCallID = fmt.Sprintf("call_%s_%d", toolName, outputIndex)
+				// Responses API distinguishes the item `id` (fc_*) from `call_id` (call_*).
+				funcCallItemID = "fc_" + funcCallCallID
+				funcCallName = toolName
+				funcCallOutputType = resolveToolOutputType(funcCallName, toolTypes)
+				funcCallChildName, funcCallNamespace = splitToolNamespace(funcCallName, toolNamespaces)
 
-			argsJSON, _ := json.Marshal(tc.Function.Arguments)
-			argsStr := string(argsJSON)
+				argsJSON, _ := json.Marshal(tc.Function.Arguments)
+				argsStr := string(argsJSON)
 
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
-				"type":         "response.output_item.added",
-				"output_index": outputIndex,
-				"item":         buildToolCallAddedItem(funcCallItemID, funcCallOutputType, funcCallCallID, toolName),
-			})
+				e.emit("response.output_item.added", map[string]interface{}{
+					"type":         "response.output_item.added",
+					"output_index": outputIndex,
+					"item":         buildToolCallAddedItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallChildName, funcCallNamespace),
+				})
 
-				emitToolCallDoneEvent(w, flusher, canFlush, funcCallOutputType, funcCallCallID, argsStr, outputIndex)
+				emitToolCallDoneEvent(e, funcCallOutputType, funcCallItemID, argsStr, outputIndex)
 
-				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, toolName, argsStr, "completed")
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallChildName, funcCallNamespace, argsStr, "completed")
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         fcItem,
 				})
 				completedOutput = append(completedOutput, fcItem)
+				// Ollama emits complete tool calls in a single chunk, so close the
+				// item immediately and clear the active-call handle to avoid a
+				// duplicate output_item.done at stream end.
+				funcCallItemID = ""
 				toolCallsEmitted++
 			}
 		}
@@ -933,19 +1016,20 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			if messageItemID == "" {
 				outputIndex++
 				messageItemID = generateID("msg_")
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.added", map[string]interface{}{
+				e.emit("response.output_item.added", map[string]interface{}{
 					"type":         "response.output_item.added",
 					"output_index": outputIndex,
 					"item": map[string]interface{}{
-						"id":     messageItemID,
-						"type":   "message",
-						"status": "in_progress",
-						"role":   "assistant",
+						"id":      messageItemID,
+						"type":    "message",
+						"status":  "in_progress",
+						"role":    "assistant",
+						"content": []interface{}{},
 					},
 				})
 				contentIndex = 0
 				contentPartID = generateID("cont_")
-				emitResponsesEvent(w, flusher, canFlush, "response.content_part.added", map[string]interface{}{
+				e.emit("response.content_part.added", map[string]interface{}{
 					"type":          "response.content_part.added",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
@@ -959,7 +1043,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			accumulatedText += chunk.Message.Content
 			completedOutputText += chunk.Message.Content
 			globalStats.AddTokens(1)
-			emitResponsesEvent(w, flusher, canFlush, "response.output_text.delta", map[string]interface{}{
+			e.emit("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
@@ -975,7 +1059,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 				// Close summary part if open
 				if thinkingSummaryPartAdded {
-					emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+					e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 						"type":          "response.reasoning_summary_part.done",
 						"output_index":  outputIndex,
 						"summary_index": thinkingSummaryIndex,
@@ -993,7 +1077,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 						"type":    "reasoning",
 						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 					}
-					emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+					e.emit("response.output_item.done", map[string]interface{}{
 						"type":         "response.output_item.done",
 						"output_index": outputIndex,
 						"item":         reasoningItem,
@@ -1006,13 +1090,13 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			// Close message item if active
 			if messageItemID != "" {
 				if contentPartID != "" {
-					emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+					e.emit("response.output_text.done", map[string]interface{}{
 						"type":          "response.output_text.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"text":          accumulatedText,
 					})
-					emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+					e.emit("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
@@ -1036,7 +1120,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"role":    "assistant",
 					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         msgItem,
@@ -1047,8 +1131,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 			// Close function call if active
 			if funcCallItemID != "" {
-				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, "{}", "completed")
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallChildName, funcCallNamespace, "{}", "completed")
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         fcItem,
@@ -1068,6 +1152,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"object":      "response",
 				"created_at":  createdAt,
 				"model":       respReq.Model,
+				"background":  false,
+				"error":       nil,
 				"status":      status,
 				"output":      completedOutput,
 				"output_text": completedOutputText,
@@ -1077,7 +1163,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"total_tokens":  inputTokens + outputTokens,
 				},
 			}
-			emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
+			mergeResponsesEchoFields(completedResp, respReq)
+			e.emit("response.completed", map[string]interface{}{
 				"type":     "response.completed",
 				"response": completedResp,
 			})
@@ -1096,7 +1183,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 			// Close summary part if open
 			if thinkingSummaryPartAdded {
-				emitResponsesEvent(w, flusher, canFlush, "response.reasoning_summary_part.done", map[string]interface{}{
+				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.done",
 					"output_index":  outputIndex,
 					"summary_index": thinkingSummaryIndex,
@@ -1114,7 +1201,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":    "reasoning",
 					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
 				}
-				emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
 					"output_index": outputIndex,
 					"item":         reasoningItem,
@@ -1126,13 +1213,13 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 		if messageItemID != "" {
 			if contentPartID != "" {
-				emitResponsesEvent(w, flusher, canFlush, "response.output_text.done", map[string]interface{}{
+				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
-				emitResponsesEvent(w, flusher, canFlush, "response.content_part.done", map[string]interface{}{
+				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
@@ -1150,7 +1237,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"role":    "assistant",
 				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
 			}
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
 				"item":         msgItem,
@@ -1159,8 +1246,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		}
 
 		if funcCallItemID != "" {
-			fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallName, "{}", "completed")
-			emitResponsesEvent(w, flusher, canFlush, "response.output_item.done", map[string]interface{}{
+			fcItem := buildToolCallItem(funcCallItemID, funcCallOutputType, funcCallCallID, funcCallChildName, funcCallNamespace, "{}", "completed")
+			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
 				"output_index": outputIndex,
 				"item":         fcItem,
@@ -1168,22 +1255,26 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			completedOutput = append(completedOutput, fcItem)
 		}
 
-		emitResponsesEvent(w, flusher, canFlush, "response.completed", map[string]interface{}{
-			"type": "response.completed",
-			"response": map[string]interface{}{
-				"id":          respID,
-				"object":      "response",
-				"created_at":  createdAt,
-				"model":       respReq.Model,
-				"status":      "completed",
-				"output":      completedOutput,
-				"output_text": completedOutputText,
-				"usage": map[string]interface{}{
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"total_tokens":  inputTokens + outputTokens,
-				},
+		completedResp := map[string]interface{}{
+			"id":          respID,
+			"object":      "response",
+			"created_at":  createdAt,
+			"model":       respReq.Model,
+			"background":  false,
+			"error":       nil,
+			"status":      "completed",
+			"output":      completedOutput,
+			"output_text": completedOutputText,
+			"usage": map[string]interface{}{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"total_tokens":  inputTokens + outputTokens,
 			},
+		}
+		mergeResponsesEchoFields(completedResp, respReq)
+		e.emit("response.completed", map[string]interface{}{
+			"type":     "response.completed",
+			"response": completedResp,
 		})
 	}
 }

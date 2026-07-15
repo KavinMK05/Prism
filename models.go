@@ -164,18 +164,19 @@ type SSEEvent struct {
 }
 
 type OpenAIChatRequest struct {
-	Model           string               `json:"model"`
-	Messages        []OpenAIChatMessage  `json:"messages"`
-	Stream          bool                 `json:"stream"`
-	Temperature     *float64             `json:"temperature,omitempty"`
-	TopP            *float64             `json:"top_p,omitempty"`
-	MaxTokens       int                  `json:"max_tokens,omitempty"`
-	Stop            interface{}          `json:"stop,omitempty"`
-	Tools           []OpenAITool         `json:"tools,omitempty"`
-	ToolChoice      interface{}          `json:"tool_choice,omitempty"`
-	ResponseFormat  interface{}          `json:"response_format,omitempty"`
-	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
-	StreamOptions   *OpenAIStreamOptions `json:"stream_options,omitempty"`
+	Model             string               `json:"model"`
+	Messages          []OpenAIChatMessage  `json:"messages"`
+	Stream            bool                 `json:"stream"`
+	Temperature       *float64             `json:"temperature,omitempty"`
+	TopP              *float64             `json:"top_p,omitempty"`
+	MaxTokens         int                  `json:"max_tokens,omitempty"`
+	Stop              interface{}          `json:"stop,omitempty"`
+	Tools             []OpenAITool         `json:"tools,omitempty"`
+	ToolChoice        interface{}          `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat    interface{}          `json:"response_format,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	StreamOptions     *OpenAIStreamOptions `json:"stream_options,omitempty"`
 }
 
 type OpenAIStreamOptions struct {

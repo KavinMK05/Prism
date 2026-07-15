@@ -32,30 +32,31 @@ func translateResponsesAPIToChatCompletions(req *ResponsesAPIRequest) *OpenAICha
 				})
 			}
 		case []interface{}:
-			// Build a call_id -> name mapping from function_call items for tool name lookup
-			callIDToName := buildResponsesCallIDToNameMap(input)
-			for _, item := range input {
-				msgs := translateResponseInputItemToChatMessage(item, callIDToName)
-				messages = append(messages, msgs...)
-			}
+			messages = append(messages, translateResponsesInputToChatMessages(input)...)
 		}
 	}
 
 	chatReq := &OpenAIChatRequest{
-		Model:       req.Model,
-		Messages:    messages,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
+		Model:             req.Model,
+		Messages:          messages,
+		Stream:            req.Stream,
+		Temperature:       req.Temperature,
+		TopP:               req.TopP,
+		ToolChoice:        req.ToolChoice,
+		ParallelToolCalls: req.ParallelToolCalls,
 	}
 
 	if req.MaxOutputTokens > 0 {
 		chatReq.MaxTokens = req.MaxOutputTokens
 	}
 
-	// Handle tools
-	if len(req.Tools) > 0 {
-		chatReq.Tools = translateResponseToolsToChatCompletions(req.Tools)
+	// Handle tools (merge top-level tools with any "additional_tools" input
+	// items; Codex Desktop "Responses Lite" declares tools inside the input
+	// array instead of the top-level field). Without this merge, those tools
+	// never reach the upstream and the model cannot emit tool calls.
+	allTools := collectAllResponseTools(req)
+	if len(allTools) > 0 {
+		chatReq.Tools = translateResponseToolsToChatCompletions(allTools)
 	}
 
 	// Handle reasoning
@@ -92,6 +93,399 @@ func translateResponsesAPIToChatCompletions(req *ResponsesAPIRequest) *OpenAICha
 	return chatReq
 }
 
+// collectAllResponseTools merges the top-level tools array with any
+// "additional_tools" input items (used by Codex Desktop "Responses Lite" to
+// declare tools inside the input array instead of the top-level field).
+// Returns a single combined slice preserving order: top-level tools first,
+// then additional_tools items in input order.
+func collectAllResponseTools(req *ResponsesAPIRequest) []interface{} {
+	tools := []interface{}{}
+	if len(req.Tools) > 0 {
+		tools = append(tools, req.Tools...)
+	}
+	if req.Input != nil {
+		if input, ok := req.Input.([]interface{}); ok {
+			for _, item := range input {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if t, _ := m["type"].(string); t == "additional_tools" {
+					if at, ok := m["tools"].([]interface{}); ok {
+						tools = append(tools, at...)
+					}
+				}
+			}
+		}
+	}
+	return tools
+}
+
+// translateResponsesInputToChatMessages converts the Responses API input
+// array into a Chat Completions messages array. It buffers consecutive
+// function_call / custom_tool_call items into a single assistant message
+// (providers require parallel tool calls in one assistant message) and keeps
+// assistant(tool_calls) -> tool(output) adjacency strict by deferring any
+// interleaved non-tool messages until all pending tool outputs arrive.
+// Mirrors the buffering strategy used by the CLIProxyAPI reference
+// implementation.
+func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMessage {
+	callIDToName := buildResponsesCallIDToNameMap(input)
+
+	// First pass: collect call_ids that have outputs in this input, so we can
+	// tell which pending tool calls are still awaiting outputs (and therefore
+	// must keep any interleaved messages deferred to preserve adjacency).
+	outputCallIDs := map[string]struct{}{}
+	for _, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		t, _ := m["type"].(string)
+		if t != "function_call_output" && t != "custom_tool_call_output" {
+			continue
+		}
+		callID := strings.TrimSpace(getMapString(m, "call_id"))
+		if callID != "" {
+			outputCallIDs[callID] = struct{}{}
+		}
+	}
+
+	var messages []OpenAIChatMessage
+	var pendingToolCalls []OpenAIToolCall
+	var pendingToolCallIDs []string
+	pendingReasoningContent := ""
+	awaitingToolOutputs := map[string]struct{}{}
+	var deferredMessages []OpenAIChatMessage
+
+	takePendingReasoning := func() string {
+		rc := pendingReasoningContent
+		pendingReasoningContent = ""
+		return rc
+	}
+	flushPendingToolCalls := func() {
+		if len(pendingToolCalls) == 0 {
+			return
+		}
+		msg := OpenAIChatMessage{
+			Role:      "assistant",
+			ToolCalls: pendingToolCalls,
+		}
+		if rc := takePendingReasoning(); rc != "" {
+			msg.ReasoningContent = &rc
+		}
+		messages = append(messages, msg)
+		for _, id := range pendingToolCallIDs {
+			if strings.TrimSpace(id) != "" {
+				awaitingToolOutputs[id] = struct{}{}
+			}
+		}
+		pendingToolCalls = nil
+		pendingToolCallIDs = nil
+	}
+	flushDeferred := func() {
+		messages = append(messages, deferredMessages...)
+		deferredMessages = nil
+	}
+	hasAwaitingOutput := func() bool {
+		for id := range awaitingToolOutputs {
+			if _, ok := outputCallIDs[id]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	appendRegular := func(msg OpenAIChatMessage) {
+		// Keep tool-call adjacency strict for providers that require
+		// assistant(tool_calls) -> tool(tool_call_id) with no message in between.
+		if hasAwaitingOutput() {
+			deferredMessages = append(deferredMessages, msg)
+			return
+		}
+		messages = append(messages, msg)
+	}
+	appendPendingReasoningMessage := func() {
+		rc := takePendingReasoning()
+		if rc == "" {
+			return
+		}
+		appendRegular(OpenAIChatMessage{Role: "assistant", Content: "", ReasoningContent: &rc})
+	}
+
+	for _, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		itemType, _ := m["type"].(string)
+		if itemType == "" {
+			if _, hasRole := m["role"]; hasRole {
+				itemType = "message"
+			}
+		}
+		// Anything that is not a tool call flushes buffered tool calls first so
+		// consecutive function_call/custom_tool_call items group together.
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			flushPendingToolCalls()
+		}
+
+		switch itemType {
+		case "message", "":
+			role, _ := m["role"].(string)
+			if role == "developer" {
+				role = "user"
+			}
+			if role != "assistant" {
+				appendPendingReasoningMessage()
+			}
+			msg := buildResponsesMessageToChat(m, role)
+			if role == "assistant" {
+				// Attach reasoning: prefer the item's own, else pending.
+				rc := getMapString(m, "reasoning_content")
+				if rc == "" {
+					rc = takePendingReasoning()
+				} else {
+					pendingReasoningContent = ""
+				}
+				if rc != "" {
+					msg.ReasoningContent = &rc
+				}
+			}
+			appendRegular(msg)
+
+		case "reasoning":
+			rc := responsesReasoningSummaryText(item)
+			if pendingReasoningContent == "" {
+				pendingReasoningContent = rc
+			} else {
+				pendingReasoningContent += rc
+			}
+
+		case "function_call":
+			callID, _ := m["call_id"].(string)
+			name, _ := m["name"].(string)
+			arguments := getMapString(m, "arguments")
+			pendingToolCalls = append(pendingToolCalls, OpenAIToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: OpenAIToolCallFunc{
+					Name:      name,
+					Arguments: arguments,
+				},
+			})
+			if cid := strings.TrimSpace(callID); cid != "" {
+				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+			}
+
+		case "custom_tool_call":
+			// Codex freeform tool call replay: wrap the raw input so it matches
+			// the {"input": string} function shape used when converting custom
+			// tool definitions for the chat-completions upstream.
+			callID, _ := m["call_id"].(string)
+			name, _ := m["name"].(string)
+			inputVal := getMapString(m, "input")
+			wrapped, _ := json.Marshal(map[string]interface{}{"input": inputVal})
+			pendingToolCalls = append(pendingToolCalls, OpenAIToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: OpenAIToolCallFunc{
+					Name:      name,
+					Arguments: string(wrapped),
+				},
+			})
+			if cid := strings.TrimSpace(callID); cid != "" {
+				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+			}
+
+		case "function_call_output":
+			callID, _ := m["call_id"].(string)
+			output := responsesToolOutputText(m["output"])
+			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: output}
+			if name, ok := callIDToName[callID]; ok {
+				msg.Name = name
+			}
+			// Tool outputs emit directly (never deferred) so they immediately
+			// follow the assistant(tool_calls) message.
+			messages = append(messages, msg)
+			if cid := strings.TrimSpace(callID); cid != "" {
+				delete(awaitingToolOutputs, cid)
+			}
+			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+				flushDeferred()
+			}
+
+		case "custom_tool_call_output":
+			callID, _ := m["call_id"].(string)
+			output := responsesToolOutputText(m["output"])
+			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: output}
+			if name, ok := callIDToName[callID]; ok {
+				msg.Name = name
+			}
+			messages = append(messages, msg)
+			if cid := strings.TrimSpace(callID); cid != "" {
+				delete(awaitingToolOutputs, cid)
+			}
+			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+				flushDeferred()
+			}
+
+		default:
+			// Unrecognized type with a role -> role-based fallback.
+			role, _ := m["role"].(string)
+			if role == "" {
+				continue
+			}
+			if role == "developer" {
+				role = "user"
+			}
+			appendRegular(OpenAIChatMessage{Role: role, Content: getMapString(m, "content")})
+		}
+	}
+	flushPendingToolCalls()
+	appendPendingReasoningMessage()
+	flushDeferred()
+	return messages
+}
+
+// buildResponsesMessageToChat builds a Chat Completions message from a
+// Responses API "message" item, handling string content, structured content
+// arrays (text/input_text/input_image/input_file/image_url), and image
+// passthrough.
+func buildResponsesMessageToChat(m map[string]interface{}, role string) OpenAIChatMessage {
+	c, hasContent := m["content"]
+	if !hasContent || c == nil {
+		return OpenAIChatMessage{Role: role, Content: ""}
+	}
+	if contentStr, ok := c.(string); ok {
+		return OpenAIChatMessage{Role: role, Content: contentStr}
+	}
+	contentArray, ok := c.([]interface{})
+	if !ok {
+		b, _ := json.Marshal(c)
+		return OpenAIChatMessage{Role: role, Content: string(b)}
+	}
+
+	// Scan for image/file content parts to decide between string and structured content.
+	hasMedia := false
+	for _, part := range contentArray {
+		if pMap, ok := part.(map[string]interface{}); ok {
+			pType, _ := pMap["type"].(string)
+			if pType == "input_image" || pType == "input_file" || pType == "image_url" {
+				hasMedia = true
+				break
+			}
+		}
+	}
+
+	if hasMedia {
+		contentParts := []interface{}{}
+		for _, part := range contentArray {
+			if s, ok := part.(string); ok {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "text",
+					"text": s,
+				})
+				continue
+			}
+			pMap, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			pType, _ := pMap["type"].(string)
+			switch pType {
+			case "text", "input_text":
+				if t, ok := pMap["text"].(string); ok {
+					contentParts = append(contentParts, map[string]interface{}{
+						"type": "text",
+						"text": t,
+					})
+				}
+			case "input_image":
+				imageURL, _ := pMap["image_url"].(string)
+				if imageURL != "" {
+					imageURLObj := map[string]interface{}{"url": imageURL}
+					if detail, ok := pMap["detail"].(string); ok && detail != "" {
+						imageURLObj["detail"] = detail
+					}
+					contentParts = append(contentParts, map[string]interface{}{
+						"type":      "image_url",
+						"image_url": imageURLObj,
+					})
+				}
+			case "input_file":
+				if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
+					contentParts = append(contentParts, map[string]interface{}{
+						"type":      "image_url",
+						"image_url": map[string]interface{}{"url": fileData},
+					})
+				} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
+					contentParts = append(contentParts, map[string]interface{}{
+						"type":      "image_url",
+						"image_url": map[string]interface{}{"url": fileURL},
+					})
+				}
+			case "image_url":
+				contentParts = append(contentParts, pMap)
+			}
+		}
+		return OpenAIChatMessage{Role: role, Content: contentParts}
+	}
+
+	// No media — flatten to string.
+	parts := []string{}
+	for _, part := range contentArray {
+		if s, ok := part.(string); ok {
+			parts = append(parts, s)
+			continue
+		}
+		if pMap, ok := part.(map[string]interface{}); ok {
+			if pType, _ := pMap["type"].(string); pType == "text" || pType == "input_text" {
+				if t, ok := pMap["text"].(string); ok {
+					parts = append(parts, t)
+				}
+			}
+		}
+	}
+	return OpenAIChatMessage{Role: role, Content: strings.Join(parts, "")}
+}
+
+// responsesToolOutputText flattens a tool output value that may be a plain
+// string or an array of content parts ({"type":"...","text":...}) into a
+// single text payload for a Chat Completions tool message.
+func responsesToolOutputText(output interface{}) string {
+	if output == nil {
+		return ""
+	}
+	if s, ok := output.(string); ok {
+		return s
+	}
+	if arr, ok := output.([]interface{}); ok {
+		var sb strings.Builder
+		for _, part := range arr {
+			if s, ok := part.(string); ok {
+				sb.WriteString(s)
+				continue
+			}
+			if pm, ok := part.(map[string]interface{}); ok {
+				if t, ok := pm["text"].(string); ok {
+					sb.WriteString(t)
+				}
+			}
+		}
+		return sb.String()
+	}
+	b, _ := json.Marshal(output)
+	return string(b)
+}
+
+// getMapString returns m[key] as a string, or "" when absent / non-string.
+func getMapString(m map[string]interface{}, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
 // buildResponsesCallIDToNameMap builds a mapping from call_id to function name
 // by scanning tool-call items in the input array. Covers all Responses API
 // tool-call output item types (function_call, custom_tool_call, web_search_call,
@@ -119,279 +513,233 @@ func buildResponsesCallIDToNameMap(items []interface{}) map[string]string {
 	return idToName
 }
 
-func translateResponseInputItemToChatMessage(item interface{}, callIDToName map[string]string) []OpenAIChatMessage {
+// responsesReasoningSummaryText returns the concatenated summary_text from a
+// "reasoning" input item, or "" if the item is not a reasoning item or has no
+// summary text. Used to buffer reasoning content and attach it to the next
+// assistant message.
+func responsesReasoningSummaryText(item interface{}) string {
 	itemMap, ok := item.(map[string]interface{})
 	if !ok {
-		return nil
+		return ""
 	}
-
-	itemType, _ := itemMap["type"].(string)
-
-	switch itemType {
-	case "":
-		// Fallback: try role-based item
-		role, _ := itemMap["role"].(string)
-		if role != "" {
-			content := ""
-			if c, ok := itemMap["content"].(string); ok {
-				content = c
-			} else if c, ok := itemMap["content"]; ok && c != nil {
-				b, _ := json.Marshal(c)
-				content = string(b)
+	if t, _ := itemMap["type"].(string); t != "reasoning" {
+		return ""
+	}
+	var sb strings.Builder
+	if summary, ok := itemMap["summary"].([]interface{}); ok {
+		for _, s := range summary {
+			m, ok := s.(map[string]interface{})
+			if !ok {
+				continue
 			}
-			return []OpenAIChatMessage{{Role: role, Content: content}}
-		}
-	case "message":
-		role, _ := itemMap["role"].(string)
-		// Handle content
-		if c, ok := itemMap["content"]; ok && c != nil {
-			if contentStr, ok := c.(string); ok {
-				return []OpenAIChatMessage{{Role: role, Content: contentStr}}
+			if t, _ := m["type"].(string); t != "" && t != "summary_text" {
+				continue
 			}
-			if contentArray, ok := c.([]interface{}); ok {
-				// Scan for image/file content parts to decide between string and structured content
-				hasMedia := false
-				for _, part := range contentArray {
-					if pMap, ok := part.(map[string]interface{}); ok {
-						pType, _ := pMap["type"].(string)
-						if pType == "input_image" || pType == "input_file" || pType == "image_url" {
-							hasMedia = true
-							break
-						}
-					}
-				}
-
-				if hasMedia {
-					// Build structured content array with text + image/file parts
-					contentParts := []interface{}{}
-					for _, part := range contentArray {
-						if s, ok := part.(string); ok {
-							contentParts = append(contentParts, map[string]interface{}{
-								"type": "text",
-								"text": s,
-							})
-							continue
-						}
-						pMap, ok := part.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						pType, _ := pMap["type"].(string)
-						switch pType {
-						case "text", "input_text":
-							if t, ok := pMap["text"].(string); ok {
-								contentParts = append(contentParts, map[string]interface{}{
-									"type": "text",
-									"text": t,
-								})
-							}
-						case "input_image":
-							imageURL, _ := pMap["image_url"].(string)
-							if imageURL != "" {
-								imageURLObj := map[string]interface{}{
-									"url": imageURL,
-								}
-								if detail, ok := pMap["detail"].(string); ok && detail != "" {
-									imageURLObj["detail"] = detail
-								}
-								contentParts = append(contentParts, map[string]interface{}{
-									"type":      "image_url",
-									"image_url": imageURLObj,
-								})
-							}
-						case "input_file":
-							// input_file can have file_data (data URI) or file_url
-							if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
-								contentParts = append(contentParts, map[string]interface{}{
-									"type": "image_url",
-									"image_url": map[string]interface{}{
-										"url": fileData,
-									},
-								})
-							} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
-								contentParts = append(contentParts, map[string]interface{}{
-									"type": "image_url",
-									"image_url": map[string]interface{}{
-										"url": fileURL,
-									},
-								})
-							}
-						case "image_url":
-							// Already in OpenAI Chat Completions format, pass through
-							contentParts = append(contentParts, pMap)
-						}
-					}
-					return []OpenAIChatMessage{{Role: role, Content: contentParts}}
-				}
-
-				// No media — flatten to string
-				parts := []string{}
-				for _, part := range contentArray {
-					if s, ok := part.(string); ok {
-						parts = append(parts, s)
-					} else if pMap, ok := part.(map[string]interface{}); ok {
-						if pType, ok := pMap["type"].(string); ok && (pType == "text" || pType == "input_text") {
-							if t, ok := pMap["text"].(string); ok {
-								parts = append(parts, t)
-							}
-						}
-					}
-				}
-				return []OpenAIChatMessage{{Role: role, Content: strings.Join(parts, "")}}
+			if text, ok := m["text"].(string); ok {
+				sb.WriteString(text)
 			}
-			// Fallback for non-array content
-			b, _ := json.Marshal(c)
-			return []OpenAIChatMessage{{Role: role, Content: string(b)}}
-		}
-		return []OpenAIChatMessage{{Role: role, Content: ""}}
-
-	case "function_call":
-		callID, _ := itemMap["call_id"].(string)
-		name, _ := itemMap["name"].(string)
-		arguments := ""
-		if a, ok := itemMap["arguments"].(string); ok {
-			arguments = a
-		}
-		return []OpenAIChatMessage{{
-			Role: "assistant",
-			ToolCalls: []OpenAIToolCall{{
-				ID:   callID,
-				Type: "function",
-				Function: OpenAIToolCallFunc{
-					Name:      name,
-					Arguments: arguments,
-				},
-			}},
-		}}
-
-	case "function_call_output", "custom_tool_call_output":
-		callID, _ := itemMap["call_id"].(string)
-		output := ""
-		if o, ok := itemMap["output"].(string); ok {
-			output = o
-		} else if o, ok := itemMap["output"]; ok && o != nil {
-			b, _ := json.Marshal(o)
-			output = string(b)
-		}
-		msg := OpenAIChatMessage{
-			Role:   "tool",
-			ToolID: callID,
-			Content: output,
-		}
-		// Look up the function name from the corresponding function_call item
-		if callIDToName != nil {
-			if name, ok := callIDToName[callID]; ok {
-				msg.Name = name
-			}
-		}
-		return []OpenAIChatMessage{msg}
-
-	case "reasoning":
-		// Reasoning items contain prior thinking content from the model.
-		// We translate them to an assistant message with reasoning_content.
-		var summaryText string
-		if summary, ok := itemMap["summary"].([]interface{}); ok {
-			for _, s := range summary {
-				if m, ok := s.(map[string]interface{}); ok {
-					if t, ok := m["text"].(string); ok {
-						summaryText += t
-					}
-				}
-			}
-		}
-		if summaryText != "" {
-			return []OpenAIChatMessage{{
-				Role:             "assistant",
-				Content:          "",
-				ReasoningContent: &summaryText,
-			}}
-		}
-		return nil
-
-	default:
-		// Try role-based fallback
-		role, _ := itemMap["role"].(string)
-		if role != "" {
-			content := ""
-			if c, ok := itemMap["content"].(string); ok {
-				content = c
-			}
-			return []OpenAIChatMessage{{Role: role, Content: content}}
 		}
 	}
-
-	return nil
+	return sb.String()
 }
 
 func translateResponseToolsToChatCompletions(tools []interface{}) []OpenAITool {
-	emptyParams := map[string]interface{}{"type": "object"}
 	result := []OpenAITool{}
 	for _, tool := range tools {
-		toolMap, ok := tool.(map[string]interface{})
+		result = append(result, convertResponsesToolToOpenAIChatTools(tool)...)
+	}
+	return result
+}
+
+// convertResponsesToolToOpenAIChatTools converts a single Responses API tool
+// definition into one or more Chat Completions function tools. "function" and
+// freeform "custom" tools map to a single function tool; "namespace" (MCP)
+// tools expand into one function tool per qualified child; Codex built-in
+// tool types (apply_patch, web_search, local_shell, ...) are rewrapped as a
+// function tool named after the built-in so the upstream chat-completions
+// model can invoke them.
+func convertResponsesToolToOpenAIChatTools(tool interface{}) []OpenAITool {
+	toolMap, ok := tool.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	toolType := strings.TrimSpace(getMapString(toolMap, "type"))
+	switch toolType {
+	case "", "function":
+		if t, ok := convertResponsesFunctionToolToOpenAIChat(toolMap, ""); ok {
+			return []OpenAITool{t}
+		}
+	case "custom":
+		if t, ok := convertResponsesCustomToolToOpenAIChat(toolMap, ""); ok {
+			return []OpenAITool{t}
+		}
+	case "namespace":
+		return convertResponsesNamespaceToolToOpenAIChat(toolMap)
+	default:
+		return []OpenAITool{convertResponsesBuiltinToolToOpenAIChat(toolMap, toolType)}
+	}
+	return nil
+}
+
+func convertResponsesFunctionToolToOpenAIChat(toolMap map[string]interface{}, overrideName string) (OpenAITool, bool) {
+	name := strings.TrimSpace(overrideName)
+	if name == "" {
+		name = responsesToolName(toolMap)
+	}
+	if name == "" {
+		return OpenAITool{}, false
+	}
+	parameters := responsesToolParameters(toolMap)
+	if parameters == nil {
+		parameters = map[string]interface{}{"type": "object"}
+	}
+	return OpenAITool{
+		Type: "function",
+		Function: OpenAIToolDef{
+			Name:        name,
+			Description: responsesToolDescription(toolMap),
+			Parameters:  parameters,
+		},
+	}, true
+}
+
+// convertResponsesCustomToolToOpenAIChat maps a Responses freeform ("custom")
+// tool onto a Chat Completions function tool with a single freeform "input"
+// string, mirroring the function-based shape Codex uses for apply_patch.
+func convertResponsesCustomToolToOpenAIChat(toolMap map[string]interface{}, overrideName string) (OpenAITool, bool) {
+	name := strings.TrimSpace(overrideName)
+	if name == "" {
+		name = responsesToolName(toolMap)
+	}
+	if name == "" {
+		return OpenAITool{}, false
+	}
+	return OpenAITool{
+		Type: "function",
+		Function: OpenAIToolDef{
+			Name:        name,
+			Description: responsesToolDescription(toolMap),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"input": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"input"},
+			},
+		},
+	}, true
+}
+
+func convertResponsesNamespaceToolToOpenAIChat(toolMap map[string]interface{}) []OpenAITool {
+	namespaceName := strings.TrimSpace(getMapString(toolMap, "name"))
+	children, ok := toolMap["tools"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var out []OpenAITool
+	for _, child := range children {
+		childMap, ok := child.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		toolType, _ := toolMap["type"].(string)
-		if toolType == "function" {
-			// Internally tagged: {type, name, description, parameters}
-			// Nested: {type: "function", function: {name, description, parameters}}
-			name, _ := toolMap["name"].(string)
-			description, _ := toolMap["description"].(string)
-			parameters := toolMap["parameters"]
-			if name == "" {
-				if fn, ok := toolMap["function"].(map[string]interface{}); ok {
-					name, _ = fn["name"].(string)
-					if description == "" {
-						description, _ = fn["description"].(string)
-					}
-					if parameters == nil {
-						parameters = fn["parameters"]
-					}
-				}
+		childName := responsesToolName(childMap)
+		qualifiedName := qualifyResponsesNamespaceToolName(namespaceName, childName)
+		switch strings.TrimSpace(getMapString(childMap, "type")) {
+		case "", "function":
+			if t, ok := convertResponsesFunctionToolToOpenAIChat(childMap, qualifiedName); ok {
+				out = append(out, t)
 			}
-			if parameters == nil {
-				parameters = emptyParams
+		case "custom":
+			if t, ok := convertResponsesCustomToolToOpenAIChat(childMap, qualifiedName); ok {
+				out = append(out, t)
 			}
-			result = append(result, OpenAITool{
-				Type: "function",
-				Function: OpenAIToolDef{
-					Name:        name,
-					Description: description,
-					Parameters:  parameters,
-				},
-			})
-		} else {
-			// Codex built-in / native tool (apply_patch, local_shell, web_search,
-			// computer_use, mcp__*, ...). The Chat Completions API only accepts
-			// "function" tools, so rewrap as a function tool named after the
-			// built-in. buildToolTypeMap preserves the original type so the
-			// response translator maps the call back to the correct Responses
-			// output item type (custom_tool_call / web_search_call).
-			normalizedType := strings.ToLower(strings.TrimSpace(toolType))
-			name, _ := toolMap["name"].(string)
-			if name == "" {
-				name = nativeToolFunctionName(normalizedType)
-			}
-			name = sanitizeToolName(name)
-			description, _ := toolMap["description"].(string)
-			if description == "" {
-				description = nativeToolDescription(normalizedType)
-			}
-			parameters := toolMap["parameters"]
-			if parameters == nil {
-				parameters = nativeToolParameters(normalizedType)
-			}
-			result = append(result, OpenAITool{
-				Type: "function",
-				Function: OpenAIToolDef{
-					Name:        name,
-					Description: description,
-					Parameters:  parameters,
-				},
-			})
 		}
 	}
-	return result
+	return out
+}
+
+// convertResponsesBuiltinToolToOpenAIChat rewraps a Codex built-in / native
+// tool (apply_patch, local_shell, web_search, computer_use, mcp__*, ...) as a
+// Chat Completions function tool, synthesizing a name/description/parameters
+// when the request did not supply them.
+func convertResponsesBuiltinToolToOpenAIChat(toolMap map[string]interface{}, toolType string) OpenAITool {
+	normalizedType := strings.ToLower(strings.TrimSpace(toolType))
+	name := getMapString(toolMap, "name")
+	if name == "" {
+		name = nativeToolFunctionName(normalizedType)
+	}
+	name = sanitizeToolName(name)
+	description := getMapString(toolMap, "description")
+	if description == "" {
+		description = nativeToolDescription(normalizedType)
+	}
+	parameters := toolMap["parameters"]
+	if parameters == nil {
+		parameters = nativeToolParameters(normalizedType)
+	}
+	return OpenAITool{
+		Type: "function",
+		Function: OpenAIToolDef{
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		},
+	}
+}
+
+func responsesToolName(toolMap map[string]interface{}) string {
+	if name := strings.TrimSpace(getMapString(toolMap, "name")); name != "" {
+		return name
+	}
+	if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+		if name := strings.TrimSpace(getMapString(fn, "name")); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func responsesToolDescription(toolMap map[string]interface{}) string {
+	if d := getMapString(toolMap, "description"); d != "" {
+		return d
+	}
+	if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+		return getMapString(fn, "description")
+	}
+	return ""
+}
+
+func responsesToolParameters(toolMap map[string]interface{}) interface{} {
+	for _, key := range []string{"parameters", "parametersJsonSchema", "input_schema"} {
+		if v, ok := toolMap[key]; ok && v != nil {
+			return v
+		}
+	}
+	if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+		for _, key := range []string{"parameters", "parametersJsonSchema"} {
+			if v, ok := fn[key]; ok && v != nil {
+				return v
+			}
+		}
+	}
+	return nil
+}
+
+// qualifyResponsesNamespaceToolName builds the Chat Completions function name
+// for a namespace (MCP) child tool: "namespace__child" (or "mcp__..." when the
+// child already carries that prefix). Mirrors the CLIProxyAPI reference.
+func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {
+	childName = strings.TrimSpace(childName)
+	if childName == "" || namespaceName == "" || strings.HasPrefix(childName, "mcp__") {
+		return childName
+	}
+	if strings.HasPrefix(childName, namespaceName) {
+		return childName
+	}
+	if strings.HasSuffix(namespaceName, "__") {
+		return namespaceName + childName
+	}
+	return namespaceName + "__" + childName
 }
 
 func instructionsToString(instructions interface{}) string {
@@ -452,12 +800,7 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 				})
 			}
 		case []interface{}:
-			// Build a call_id -> name mapping from function_call items for tool name lookup
-			callIDToName := buildResponsesCallIDToNameMap(input)
-			for _, item := range input {
-				msgs := translateResponseInputItemToOllama(item, callIDToName)
-				messages = append(messages, msgs...)
-			}
+			messages = append(messages, translateResponsesInputToOllamaMessages(input)...)
 		}
 	}
 
@@ -467,9 +810,11 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 		Stream:   req.Stream,
 	}
 
-	// Handle tools (Ollama only understands function tools)
-	if len(req.Tools) > 0 {
-		ollamaReq.Tools = translateResponseToolsToOllama(req.Tools)
+	// Handle tools (Ollama only understands function tools). Merge top-level
+	// tools with any "additional_tools" input items.
+	allTools := collectAllResponseTools(req)
+	if len(allTools) > 0 {
+		ollamaReq.Tools = translateResponseToolsToOllama(allTools)
 	}
 
 	// Handle options
@@ -506,233 +851,412 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 	return ollamaReq
 }
 
-func translateResponseInputItemToOllama(item interface{}, callIDToName map[string]string) []OllamaMessage {
-	itemMap, ok := item.(map[string]interface{})
-	if !ok {
-		return nil
+// translateResponsesInputToOllamaMessages mirrors
+// translateResponsesInputToChatMessages for the Ollama provider: consecutive
+// function_call / custom_tool_call items are buffered into a single assistant
+// message and tool-call -> tool adjacency is preserved.
+func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessage {
+	callIDToName := buildResponsesCallIDToNameMap(input)
+
+	outputCallIDs := map[string]struct{}{}
+	for _, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		t, _ := m["type"].(string)
+		if t != "function_call_output" && t != "custom_tool_call_output" {
+			continue
+		}
+		callID := strings.TrimSpace(getMapString(m, "call_id"))
+		if callID != "" {
+			outputCallIDs[callID] = struct{}{}
+		}
 	}
 
-	itemType, _ := itemMap["type"].(string)
+	var messages []OllamaMessage
+	var pendingToolCalls []OllamaToolCall
+	var pendingToolCallIDs []string
+	pendingReasoningContent := ""
+	awaitingToolOutputs := map[string]struct{}{}
+	var deferredMessages []OllamaMessage
 
-	switch itemType {
-	case "", "message":
-		role, _ := itemMap["role"].(string)
-		if role == "" {
-			role = "user"
+	takePendingReasoning := func() string {
+		rc := pendingReasoningContent
+		pendingReasoningContent = ""
+		return rc
+	}
+	flushPendingToolCalls := func() {
+		if len(pendingToolCalls) == 0 {
+			return
 		}
-
-		if c, ok := itemMap["content"]; ok && c != nil {
-			if contentStr, ok := c.(string); ok {
-				return []OllamaMessage{{Role: role, Content: contentStr}}
+		msg := OllamaMessage{Role: "assistant", ToolCalls: pendingToolCalls}
+		if rc := takePendingReasoning(); rc != "" {
+			msg.Thinking = rc
+		}
+		messages = append(messages, msg)
+		for _, id := range pendingToolCallIDs {
+			if strings.TrimSpace(id) != "" {
+				awaitingToolOutputs[id] = struct{}{}
 			}
-			if contentArray, ok := c.([]interface{}); ok {
-				textParts := []string{}
-				images := []string{}
-				for _, part := range contentArray {
-					if s, ok := part.(string); ok {
-						textParts = append(textParts, s)
-						continue
-					}
-					pMap, ok := part.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					pType, _ := pMap["type"].(string)
-					switch pType {
-					case "text", "input_text":
-						if t, ok := pMap["text"].(string); ok {
-							textParts = append(textParts, t)
-						}
-					case "input_image":
-						if imageURL, ok := pMap["image_url"].(string); ok && imageURL != "" {
-							if strings.HasPrefix(imageURL, "data:") {
-								parts := strings.SplitN(imageURL, ",", 2)
-								if len(parts) == 2 {
-									images = append(images, parts[1])
-								}
-							} else {
-								log.Printf("[WARN] input_image with HTTP URL not supported for Ollama provider, skipping: %s", imageURL)
-							}
-						}
-					case "input_file":
-						if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
-							if strings.HasPrefix(fileData, "data:") {
-								parts := strings.SplitN(fileData, ",", 2)
-								if len(parts) == 2 {
-									images = append(images, parts[1])
-								}
-							} else {
-								images = append(images, fileData)
-							}
-						} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
-							log.Printf("[WARN] input_file with file_url not supported for Ollama provider, skipping: %s", fileURL)
-						}
-					}
-				}
-				msg := OllamaMessage{
-					Role:    role,
-					Content: strings.Join(textParts, ""),
-				}
-				if len(images) > 0 {
-					msg.Images = images
-				}
-				return []OllamaMessage{msg}
+		}
+		pendingToolCalls = nil
+		pendingToolCallIDs = nil
+	}
+	flushDeferred := func() {
+		messages = append(messages, deferredMessages...)
+		deferredMessages = nil
+	}
+	hasAwaitingOutput := func() bool {
+		for id := range awaitingToolOutputs {
+			if _, ok := outputCallIDs[id]; ok {
+				return true
 			}
-			// Fallback for non-array content
-			b, _ := json.Marshal(c)
-			return []OllamaMessage{{Role: role, Content: string(b)}}
 		}
-		return []OllamaMessage{{Role: role, Content: ""}}
+		return false
+	}
+	appendRegular := func(msg OllamaMessage) {
+		if hasAwaitingOutput() {
+			deferredMessages = append(deferredMessages, msg)
+			return
+		}
+		messages = append(messages, msg)
+	}
+	appendPendingReasoningMessage := func() {
+		rc := takePendingReasoning()
+		if rc == "" {
+			return
+		}
+		appendRegular(OllamaMessage{Role: "assistant", Content: "", Thinking: rc})
+	}
 
-	case "function_call":
-		name, _ := itemMap["name"].(string)
-		arguments := ""
-		if a, ok := itemMap["arguments"].(string); ok {
-			arguments = a
+	for _, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
 		}
-		var args map[string]interface{}
-		if arguments != "" {
-			json.Unmarshal([]byte(arguments), &args)
+		itemType, _ := m["type"].(string)
+		if itemType == "" {
+			if _, hasRole := m["role"]; hasRole {
+				itemType = "message"
+			}
 		}
-		if args == nil {
-			args = map[string]interface{}{}
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			flushPendingToolCalls()
 		}
-		return []OllamaMessage{{
-			Role: "assistant",
-			ToolCalls: []OllamaToolCall{{
+
+		switch itemType {
+		case "message", "":
+			role, _ := m["role"].(string)
+			if role == "" {
+				role = "user"
+			}
+			if role == "developer" {
+				role = "user"
+			}
+			if role != "assistant" {
+				appendPendingReasoningMessage()
+			}
+			msg := buildResponsesMessageToOllama(m, role)
+			if role == "assistant" {
+				rc := getMapString(m, "reasoning_content")
+				if rc == "" {
+					rc = takePendingReasoning()
+				} else {
+					pendingReasoningContent = ""
+				}
+				if rc != "" {
+					msg.Thinking = rc
+				}
+			}
+			appendRegular(msg)
+
+		case "reasoning":
+			rc := responsesReasoningSummaryText(item)
+			if pendingReasoningContent == "" {
+				pendingReasoningContent = rc
+			} else {
+				pendingReasoningContent += rc
+			}
+
+		case "function_call":
+			callID, _ := m["call_id"].(string)
+			name, _ := m["name"].(string)
+			arguments := getMapString(m, "arguments")
+			var args map[string]interface{}
+			if arguments != "" {
+				json.Unmarshal([]byte(arguments), &args)
+			}
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			pendingToolCalls = append(pendingToolCalls, OllamaToolCall{
+				ID: callID,
 				Function: OllamaToolCallFunction{
 					Name:      name,
 					Arguments: args,
 				},
-			}},
-		}}
+			})
+			if cid := strings.TrimSpace(callID); cid != "" {
+				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+			}
 
-	case "function_call_output", "custom_tool_call_output":
-		callID, _ := itemMap["call_id"].(string)
-		output := ""
-		if o, ok := itemMap["output"].(string); ok {
-			output = o
-		} else if o, ok := itemMap["output"]; ok && o != nil {
-			b, _ := json.Marshal(o)
-			output = string(b)
-		}
-		ollamaMsg := OllamaMessage{
-			Role:    "tool",
-			Content: output,
-		}
-		if callID != "" {
-			ollamaMsg.ToolCallID = callID
-		}
-		// Look up the function name from the corresponding function_call item
-		if callIDToName != nil {
+		case "custom_tool_call":
+			callID, _ := m["call_id"].(string)
+			name, _ := m["name"].(string)
+			inputVal := getMapString(m, "input")
+			var args map[string]interface{}
+			if inputVal != "" {
+				args = map[string]interface{}{"input": inputVal}
+			} else {
+				args = map[string]interface{}{}
+			}
+			pendingToolCalls = append(pendingToolCalls, OllamaToolCall{
+				ID: callID,
+				Function: OllamaToolCallFunction{
+					Name:      name,
+					Arguments: args,
+				},
+			})
+			if cid := strings.TrimSpace(callID); cid != "" {
+				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+			}
+
+		case "function_call_output", "custom_tool_call_output":
+			callID, _ := m["call_id"].(string)
+			output := responsesToolOutputText(m["output"])
+			msg := OllamaMessage{Role: "tool", Content: output}
+			if callID != "" {
+				msg.ToolCallID = callID
+			}
 			if name, ok := callIDToName[callID]; ok {
-				ollamaMsg.ToolName = name
+				msg.ToolName = name
 			}
-		}
-		return []OllamaMessage{ollamaMsg}
+			messages = append(messages, msg)
+			if cid := strings.TrimSpace(callID); cid != "" {
+				delete(awaitingToolOutputs, cid)
+			}
+			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+				flushDeferred()
+			}
 
-	case "reasoning":
-		// Reasoning items contain prior thinking content.
-		// Translate to an assistant message with thinking field for Ollama.
-		var summaryText string
-		if summary, ok := itemMap["summary"].([]interface{}); ok {
-			for _, s := range summary {
-				if m, ok := s.(map[string]interface{}); ok {
-					if t, ok := m["text"].(string); ok {
-						summaryText += t
-					}
-				}
+		default:
+			role, _ := m["role"].(string)
+			if role == "" {
+				continue
 			}
-		}
-		if summaryText != "" {
-			return []OllamaMessage{{
-				Role:     "assistant",
-				Content:  "",
-				Thinking: summaryText,
-			}}
-		}
-		return nil
-
-	default:
-		role, _ := itemMap["role"].(string)
-		if role != "" {
-			content := ""
-			if c, ok := itemMap["content"].(string); ok {
-				content = c
+			if role == "developer" {
+				role = "user"
 			}
-			return []OllamaMessage{{Role: role, Content: content}}
+			appendRegular(OllamaMessage{Role: role, Content: getMapString(m, "content")})
 		}
 	}
+	flushPendingToolCalls()
+	appendPendingReasoningMessage()
+	flushDeferred()
+	return messages
+}
 
-	return nil
+// buildResponsesMessageToOllama builds an Ollama message from a Responses API
+// "message" item, flattening text parts and extracting base64 image data.
+func buildResponsesMessageToOllama(m map[string]interface{}, role string) OllamaMessage {
+	c, hasContent := m["content"]
+	if !hasContent || c == nil {
+		return OllamaMessage{Role: role, Content: ""}
+	}
+	if contentStr, ok := c.(string); ok {
+		return OllamaMessage{Role: role, Content: contentStr}
+	}
+	contentArray, ok := c.([]interface{})
+	if !ok {
+		b, _ := json.Marshal(c)
+		return OllamaMessage{Role: role, Content: string(b)}
+	}
+
+	textParts := []string{}
+	images := []string{}
+	for _, part := range contentArray {
+		if s, ok := part.(string); ok {
+			textParts = append(textParts, s)
+			continue
+		}
+		pMap, ok := part.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		pType, _ := pMap["type"].(string)
+		switch pType {
+		case "text", "input_text":
+			if t, ok := pMap["text"].(string); ok {
+				textParts = append(textParts, t)
+			}
+		case "input_image":
+			if imageURL, ok := pMap["image_url"].(string); ok && imageURL != "" {
+				if strings.HasPrefix(imageURL, "data:") {
+					parts := strings.SplitN(imageURL, ",", 2)
+					if len(parts) == 2 {
+						images = append(images, parts[1])
+					}
+				} else {
+					log.Printf("[WARN] input_image with HTTP URL not supported for Ollama provider, skipping: %s", imageURL)
+				}
+			}
+		case "input_file":
+			if fileData, ok := pMap["file_data"].(string); ok && fileData != "" {
+				if strings.HasPrefix(fileData, "data:") {
+					parts := strings.SplitN(fileData, ",", 2)
+					if len(parts) == 2 {
+						images = append(images, parts[1])
+					}
+				} else {
+					images = append(images, fileData)
+				}
+			} else if fileURL, ok := pMap["file_url"].(string); ok && fileURL != "" {
+				log.Printf("[WARN] input_file with file_url not supported for Ollama provider, skipping: %s", fileURL)
+			}
+		}
+	}
+	msg := OllamaMessage{Role: role, Content: strings.Join(textParts, "")}
+	if len(images) > 0 {
+		msg.Images = images
+	}
+	return msg
 }
 
 func translateResponseToolsToOllama(tools []interface{}) []OllamaTool {
 	result := []OllamaTool{}
 	for _, tool := range tools {
-		toolMap, ok := tool.(map[string]interface{})
+		result = append(result, convertResponsesToolToOllamaTools(tool)...)
+	}
+	return result
+}
+
+// convertResponsesToolToOllamaTools is the Ollama counterpart of
+// convertResponsesToolToOpenAIChatTools. Ollama only accepts "function" tools,
+// so custom and namespace tools are rewrapped and qualified the same way.
+func convertResponsesToolToOllamaTools(tool interface{}) []OllamaTool {
+	toolMap, ok := tool.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	toolType := strings.TrimSpace(getMapString(toolMap, "type"))
+	switch toolType {
+	case "", "function":
+		if t, ok := convertResponsesFunctionToolToOllama(toolMap, ""); ok {
+			return []OllamaTool{t}
+		}
+	case "custom":
+		if t, ok := convertResponsesCustomToolToOllama(toolMap, ""); ok {
+			return []OllamaTool{t}
+		}
+	case "namespace":
+		return convertResponsesNamespaceToolToOllama(toolMap)
+	default:
+		return []OllamaTool{convertResponsesBuiltinToolToOllama(toolMap, toolType)}
+	}
+	return nil
+}
+
+func convertResponsesFunctionToolToOllama(toolMap map[string]interface{}, overrideName string) (OllamaTool, bool) {
+	name := strings.TrimSpace(overrideName)
+	if name == "" {
+		name = responsesToolName(toolMap)
+	}
+	if name == "" {
+		return OllamaTool{}, false
+	}
+	parameters := responsesToolParameters(toolMap)
+	if parameters == nil {
+		parameters = map[string]interface{}{"type": "object"}
+	}
+	return OllamaTool{
+		Type: "function",
+		Function: OllamaToolFunc{
+			Name:        name,
+			Description: responsesToolDescription(toolMap),
+			Parameters:  parameters,
+		},
+	}, true
+}
+
+func convertResponsesCustomToolToOllama(toolMap map[string]interface{}, overrideName string) (OllamaTool, bool) {
+	name := strings.TrimSpace(overrideName)
+	if name == "" {
+		name = responsesToolName(toolMap)
+	}
+	if name == "" {
+		return OllamaTool{}, false
+	}
+	return OllamaTool{
+		Type: "function",
+		Function: OllamaToolFunc{
+			Name:        name,
+			Description: responsesToolDescription(toolMap),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"input": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"input"},
+			},
+		},
+	}, true
+}
+
+func convertResponsesNamespaceToolToOllama(toolMap map[string]interface{}) []OllamaTool {
+	namespaceName := strings.TrimSpace(getMapString(toolMap, "name"))
+	children, ok := toolMap["tools"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var out []OllamaTool
+	for _, child := range children {
+		childMap, ok := child.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		toolType, _ := toolMap["type"].(string)
-		normalizedType := strings.ToLower(strings.TrimSpace(toolType))
-		name, _ := toolMap["name"].(string)
-		description, _ := toolMap["description"].(string)
-		parameters := toolMap["parameters"]
-
-		if normalizedType == "function" {
-			// Internally tagged or nested function tool — pass through as-is.
-			if name == "" {
-				if fn, ok := toolMap["function"].(map[string]interface{}); ok {
-					if fnName, ok := fn["name"].(string); ok {
-						name = fnName
-					}
-					if description == "" {
-						if d, ok := fn["description"].(string); ok {
-							description = d
-						}
-					}
-					if parameters == nil {
-						parameters = fn["parameters"]
-					}
-				}
+		childName := responsesToolName(childMap)
+		qualifiedName := qualifyResponsesNamespaceToolName(namespaceName, childName)
+		switch strings.TrimSpace(getMapString(childMap, "type")) {
+		case "", "function":
+			if t, ok := convertResponsesFunctionToolToOllama(childMap, qualifiedName); ok {
+				out = append(out, t)
 			}
-		} else {
-			// Codex built-in / native tool (apply_patch, local_shell, web_search,
-			// computer_use, mcp__*, ...). Ollama only understands "function"
-			// tools, so rewrap as a function tool named after the built-in so the
-			// model can invoke it. buildToolTypeMap preserves the original type
-			// so the response translator maps the call back to the correct
-			// Responses output item type (custom_tool_call / web_search_call).
-			if name == "" {
-				name = nativeToolFunctionName(normalizedType)
-			}
-			name = sanitizeToolName(name)
-			if description == "" {
-				description = nativeToolDescription(normalizedType)
-			}
-			if parameters == nil {
-				parameters = nativeToolParameters(normalizedType)
+		case "custom":
+			if t, ok := convertResponsesCustomToolToOllama(childMap, qualifiedName); ok {
+				out = append(out, t)
 			}
 		}
-
-		if name == "" {
-			continue
-		}
-		if parameters == nil {
-			parameters = map[string]interface{}{"type": "object"}
-		}
-
-		result = append(result, OllamaTool{
-			Type: "function",
-			Function: OllamaToolFunc{
-				Name:        name,
-				Description: description,
-				Parameters:  parameters,
-			},
-		})
 	}
-	return result
+	return out
+}
+
+func convertResponsesBuiltinToolToOllama(toolMap map[string]interface{}, toolType string) OllamaTool {
+	normalizedType := strings.ToLower(strings.TrimSpace(toolType))
+	name := getMapString(toolMap, "name")
+	if name == "" {
+		name = nativeToolFunctionName(normalizedType)
+	}
+	name = sanitizeToolName(name)
+	description := getMapString(toolMap, "description")
+	if description == "" {
+		description = nativeToolDescription(normalizedType)
+	}
+	parameters := toolMap["parameters"]
+	if parameters == nil {
+		parameters = nativeToolParameters(normalizedType)
+	}
+	if parameters == nil {
+		parameters = map[string]interface{}{"type": "object"}
+	}
+	return OllamaTool{
+		Type: "function",
+		Function: OllamaToolFunc{
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		},
+	}
 }
 
 // nativeToolFunctionName maps a Codex built-in tool type to the function name
@@ -754,36 +1278,117 @@ func nativeToolFunctionName(toolType string) string {
 	}
 }
 
-// buildToolTypeMap extracts a mapping from tool name to tool type from the request's tools array.
-// Used to preserve original tool types (apply_patch, web_search, etc.) so responses emit
-// the correct output type (custom_tool_call, web_search_call, etc.).
+// buildToolTypeMap extracts a mapping from tool name to tool type from the
+// request's tools array (which should already be the merged set including
+// additional_tools). Used to preserve original tool types (apply_patch,
+// web_search, custom, namespace children, etc.) so responses emit the correct
+// output type (custom_tool_call, web_search_call, function_call).
 func buildToolTypeMap(tools []interface{}) map[string]string {
 	result := map[string]string{}
-	for _, tool := range tools {
-		toolMap, ok := tool.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		toolType, _ := toolMap["type"].(string)
-		if toolType == "" {
-			continue
-		}
-		// Extract name from function.name or name field (fall back to the tool
-		// type itself, matching codex-shim's _responses_tool_function_name).
-		name := toolType
-		if fn, ok := toolMap["function"].(map[string]interface{}); ok {
-			if fnName, ok := fn["name"].(string); ok && fnName != "" {
-				name = fnName
+	var collect func(tools []interface{}, namespaceName string)
+	collect = func(tools []interface{}, namespaceName string) {
+		for _, tool := range tools {
+			toolMap, ok := tool.(map[string]interface{})
+			if !ok {
+				continue
 			}
-		} else if n, ok := toolMap["name"].(string); ok && n != "" {
-			name = n
+			toolType := strings.TrimSpace(getMapString(toolMap, "type"))
+			switch toolType {
+			case "", "function":
+				name := responsesToolName(toolMap)
+				if name == "" {
+					continue
+				}
+				if namespaceName != "" {
+					name = qualifyResponsesNamespaceToolName(namespaceName, name)
+				}
+				result[sanitizeToolName(name)] = "function"
+			case "custom":
+				name := responsesToolName(toolMap)
+				if name == "" {
+					continue
+				}
+				if namespaceName != "" {
+					name = qualifyResponsesNamespaceToolName(namespaceName, name)
+				}
+				result[sanitizeToolName(name)] = "custom"
+			case "namespace":
+				ns := strings.TrimSpace(getMapString(toolMap, "name"))
+				if children, ok := toolMap["tools"].([]interface{}); ok {
+					collect(children, ns)
+				}
+			default:
+				// built-in / native tool: fall back to the tool type as the name
+				// (matching codex-shim's _responses_tool_function_name).
+				name := responsesToolName(toolMap)
+				if name == "" {
+					name = toolType
+				}
+				result[sanitizeToolName(name)] = strings.ToLower(strings.TrimSpace(toolType))
+			}
 		}
-		// Map the (sanitized) function name to the ORIGINAL tool type so the
-		// response translator can emit the correct output item type
-		// (custom_tool_call for apply_patch, web_search_call for web_search*).
-		result[sanitizeToolName(name)] = strings.ToLower(strings.TrimSpace(toolType))
 	}
+	collect(tools, "")
 	return result
+}
+
+// buildToolNamespaceMap builds a mapping from sanitized qualified tool name to
+// the namespace name, for namespace (MCP) child tools. Used by the response
+// translators to split a qualified function_call name back into name + namespace
+// fields on the Responses API output item.
+func buildToolNamespaceMap(tools []interface{}) map[string]string {
+	result := map[string]string{}
+	var collect func(tools []interface{}, namespaceName string)
+	collect = func(tools []interface{}, namespaceName string) {
+		for _, tool := range tools {
+			toolMap, ok := tool.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			toolType := strings.TrimSpace(getMapString(toolMap, "type"))
+			switch toolType {
+			case "namespace":
+				ns := strings.TrimSpace(getMapString(toolMap, "name"))
+				if children, ok := toolMap["tools"].([]interface{}); ok {
+					collect(children, ns)
+				}
+			case "", "function", "custom":
+				if namespaceName == "" {
+					continue
+				}
+				name := responsesToolName(toolMap)
+				qualified := qualifyResponsesNamespaceToolName(namespaceName, name)
+				if qualified != "" {
+					result[sanitizeToolName(qualified)] = namespaceName
+				}
+			}
+		}
+	}
+	collect(tools, "")
+	return result
+}
+
+// splitToolNamespace returns (childName, namespace) for a qualified function
+// call name using the namespace map built from the request. If the name is not
+// a namespace child, returns (name, "").
+func splitToolNamespace(qualifiedName string, nsMap map[string]string) (string, string) {
+	if nsMap == nil {
+		return qualifiedName, ""
+	}
+	if ns, ok := nsMap[sanitizeToolName(qualifiedName)]; ok && ns != "" {
+		child := qualifiedName
+		switch {
+		case strings.HasPrefix(child, ns+"__"):
+			child = strings.TrimPrefix(child, ns+"__")
+		case strings.HasSuffix(ns, "__") && strings.HasPrefix(child, ns):
+			child = strings.TrimPrefix(child, ns)
+		}
+		if child == "" {
+			child = qualifiedName
+		}
+		return child, ns
+	}
+	return qualifiedName, ""
 }
 
 // resolveToolOutputType returns the correct Responses API output item type for a
@@ -793,7 +1398,7 @@ func buildToolTypeMap(tools []interface{}) map[string]string {
 // cannot bind the call to its built-in handler and aborts the tool call.
 //
 // Mapping (mirrors codex-shim server.py ResponsesStreamState._open_tool):
-//   - apply_patch            -> custom_tool_call  (freeform; no enum validation)
+//   - apply_patch / custom   -> custom_tool_call  (freeform; no enum validation)
 //   - web_search / web_search_preview / web_search* -> web_search_call
 //   - everything else        -> function_call     (incl. local_shell/shell,
 //     computer_use, and plain function tools, which Codex accepts as
@@ -804,7 +1409,7 @@ func resolveToolOutputType(name string, toolTypes map[string]string) string {
 		originalType = t
 	}
 	switch {
-	case originalType == "apply_patch":
+	case originalType == "apply_patch" || originalType == "custom":
 		return "custom_tool_call"
 	case strings.HasPrefix(originalType, "web_search"):
 		return "web_search_call"

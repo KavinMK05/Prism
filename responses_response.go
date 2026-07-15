@@ -39,7 +39,80 @@ func extractCustomToolInput(arguments string) string {
 	return arguments
 }
 
-func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string) *ResponsesAPIResponse {
+// responsesEchoFields returns request fields that the Responses API spec
+// expects to be echoed back on the response object (response.completed and
+// non-streaming responses). Returns nil when nothing needs echoing.
+func responsesEchoFields(req *ResponsesAPIRequest) map[string]interface{} {
+	if req == nil {
+		return nil
+	}
+	m := map[string]interface{}{}
+	if req.Instructions != nil {
+		m["instructions"] = req.Instructions
+	}
+	if req.MaxOutputTokens > 0 {
+		m["max_output_tokens"] = req.MaxOutputTokens
+	}
+	if req.MaxToolCalls > 0 {
+		m["max_tool_calls"] = req.MaxToolCalls
+	}
+	if req.Temperature != nil {
+		m["temperature"] = req.Temperature
+	}
+	if req.TopP != nil {
+		m["top_p"] = req.TopP
+	}
+	if req.Reasoning != nil {
+		m["reasoning"] = req.Reasoning
+	}
+	if req.Text != nil {
+		m["text"] = req.Text
+	}
+	if req.ToolChoice != nil {
+		m["tool_choice"] = req.ToolChoice
+	}
+	if len(req.Tools) > 0 {
+		m["tools"] = req.Tools
+	}
+	if req.ParallelToolCalls != nil {
+		m["parallel_tool_calls"] = req.ParallelToolCalls
+	}
+	if req.PreviousResponseID != "" {
+		m["previous_response_id"] = req.PreviousResponseID
+	}
+	if req.Store != nil {
+		m["store"] = req.Store
+	}
+	if req.ServiceTier != "" {
+		m["service_tier"] = req.ServiceTier
+	}
+	if req.PromptCacheKey != "" {
+		m["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if req.Truncation != nil {
+		m["truncation"] = req.Truncation
+	}
+	if req.User != nil {
+		m["user"] = req.User
+	}
+	if req.Metadata != nil {
+		m["metadata"] = req.Metadata
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// mergeResponsesEchoFields copies echoed request fields into a response map
+// (used for the streaming response.completed payload).
+func mergeResponsesEchoFields(m map[string]interface{}, req *ResponsesAPIRequest) {
+	for k, v := range responsesEchoFields(req) {
+		m[k] = v
+	}
+}
+
+func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string, toolNamespaces map[string]string) *ResponsesAPIResponse {
 	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
 	createdAt := time.Now().Unix()
 	output := []interface{}{}
@@ -48,26 +121,50 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 
 	if len(resp.Choices) == 0 {
 		return &ResponsesAPIResponse{
-			ID:         respID,
-			Object:     "response",
-			CreatedAt:  createdAt,
-			Model:      resp.Model,
-			Status:     status,
-			Output:     output,
-			OutputText: outputText,
-			Usage:      translateOpenAIUsageToResponses(resp.Usage),
+			ID:                 respID,
+			Object:             "response",
+			CreatedAt:          createdAt,
+			Model:              resp.Model,
+			Status:             status,
+			Background:         false,
+			Error:              nil,
+			IncompleteDetails:  nil,
+			Output:             output,
+			OutputText:         outputText,
+			Usage:              translateOpenAIUsageToResponses(resp.Usage),
+			Instructions:       req.Instructions,
+			MaxOutputTokens:    req.MaxOutputTokens,
+			Temperature:        req.Temperature,
+			TopP:               req.TopP,
+			Reasoning:          req.Reasoning,
+			Text:               req.Text,
+			ToolChoice:         req.ToolChoice,
+			Tools:              req.Tools,
+			ParallelToolCalls:  req.ParallelToolCalls,
+			PreviousResponseID: req.PreviousResponseID,
+			Store:              req.Store,
+			ServiceTier:        req.ServiceTier,
+			PromptCacheKey:     req.PromptCacheKey,
+			Truncation:         req.Truncation,
+			User:               req.User,
+			Metadata:           req.Metadata,
 		}
 	}
 
 	choice := resp.Choices[0]
 	msg := choice.Message
 
-	// Handle reasoning content (always first in output)
+	// Handle reasoning content (always first in output). Populate the summary
+	// with the actual reasoning text so it is not lost (the previous code
+	// emitted an empty summary array).
 	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
 		reasoningItem := ResponsesAPIReasoningItem{
-			ID:      generateID("rs_"),
-			Type:    "reasoning",
-			Summary: []ResponsesAPIReasoningSummary{},
+			ID:   generateID("rs_"),
+			Type: "reasoning",
+			Summary: []ResponsesAPIReasoningSummary{{
+				Type: "summary_text",
+				Text: *msg.ReasoningContent,
+			}},
 		}
 		output = append(output, reasoningItem)
 	}
@@ -98,52 +195,52 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 		}
 	}
 
-	// Always create a message output item (even if only tool calls)
-	if len(contentParts) == 0 {
-		contentParts = append(contentParts, ResponsesAPIContentPart{
-			Type: "output_text",
-			Text: "",
-		})
+	// Only create a message output item when there is text content. When the
+	// model returns only tool calls, the Responses API output should contain
+	// just the function_call items (no empty assistant message).
+	if len(contentParts) > 0 {
+		msgItem := ResponsesAPIOutputMessage{
+			ID:      generateID("msg_"),
+			Type:    "message",
+			Status:  "completed",
+			Role:    "assistant",
+			Content: contentParts,
+		}
+		output = append(output, msgItem)
 	}
-
-	msgItem := ResponsesAPIOutputMessage{
-		ID:      generateID("msg_"),
-		Type:    "message",
-		Status:  "completed",
-		Role:    "assistant",
-		Content: contentParts,
-	}
-	output = append(output, msgItem)
 
 	// Handle tool calls -> function_call/custom_tool_call/web_search_call items (always after message)
 	if len(msg.ToolCalls) > 0 {
 		for _, tc := range msg.ToolCalls {
 			outputType := resolveToolOutputType(tc.Function.Name, toolTypes)
 			log.Printf("[RESP] tool call: name=%s resolved_type=%s toolTypes=%v", tc.Function.Name, outputType, toolTypes)
-			itemID := tc.ID
-			if itemID == "" {
-				itemID = generateID("fc_")
+			callID := tc.ID
+			if callID == "" {
+				callID = generateID("call_")
 			}
-			// For custom_tool_call, use `input` (raw string) instead of `arguments` (JSON string).
-			// The model emits {"patch": "..."} as arguments; we extract the raw patch text.
+			// The Responses API distinguishes the item `id` (fc_*) from the
+			// `call_id` (call_*). Keep them distinct so clients can round-trip.
+			itemID := "fc_" + callID
 			if outputType == "custom_tool_call" {
 				rawInput := extractCustomToolInput(tc.Function.Arguments)
 				output = append(output, map[string]interface{}{
-					"id":     itemID,
-					"type":   "custom_tool_call",
-					"call_id": itemID,
-					"name":   tc.Function.Name,
-					"input":  rawInput,
-					"status": "completed",
+					"id":      itemID,
+					"type":    "custom_tool_call",
+					"call_id": callID,
+					"name":    tc.Function.Name,
+					"input":   rawInput,
+					"status":  "completed",
 				})
 			} else {
+				childName, namespace := splitToolNamespace(tc.Function.Name, toolNamespaces)
 				funcCall := ResponsesAPIFunctionCallItem{
 					ID:        itemID,
 					Type:      outputType,
-					CallID:    itemID,
-					Name:      tc.Function.Name,
+					CallID:    callID,
+					Name:      childName,
 					Arguments: tc.Function.Arguments,
 					Status:    "completed",
+					Namespace: namespace,
 				}
 				output = append(output, funcCall)
 			}
@@ -156,22 +253,41 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 	}
 
 	return &ResponsesAPIResponse{
-		ID:         respID,
-		Object:     "response",
-		CreatedAt:  createdAt,
-		Model:      resp.Model,
-		Status:     status,
-		Output:     output,
-		OutputText: outputText,
-		Usage:      translateOpenAIUsageToResponses(resp.Usage),
+		ID:                 respID,
+		Object:             "response",
+		CreatedAt:          createdAt,
+		Model:              resp.Model,
+		Status:             status,
+		Background:         false,
+		Error:              nil,
+		IncompleteDetails:  nil,
+		Output:             output,
+		OutputText:         outputText,
+		Usage:              translateOpenAIUsageToResponses(resp.Usage),
+		Instructions:       req.Instructions,
+		MaxOutputTokens:    req.MaxOutputTokens,
+		Temperature:        req.Temperature,
+		TopP:               req.TopP,
+		Reasoning:          req.Reasoning,
+		Text:               req.Text,
+		ToolChoice:         req.ToolChoice,
+		Tools:              req.Tools,
+		ParallelToolCalls:  req.ParallelToolCalls,
+		PreviousResponseID: req.PreviousResponseID,
+		Store:              req.Store,
+		ServiceTier:        req.ServiceTier,
+		PromptCacheKey:     req.PromptCacheKey,
+		Truncation:         req.Truncation,
+		User:               req.User,
+		Metadata:           req.Metadata,
 	}
 }
 
-func translateOllamaToResponsesAPI(ollama *OllamaChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string) *ResponsesAPIResponse {
+func translateOllamaToResponsesAPI(ollama *OllamaChatResponse, req *ResponsesAPIRequest, toolTypes map[string]string, toolNamespaces map[string]string) *ResponsesAPIResponse {
 	// Chain: Ollama -> OpenAI Chat Completions -> Responses API
 	chatReq := &OpenAIChatRequest{Model: ollama.Model}
 	openAIResp := translateOllamaToOpenAI(ollama, chatReq)
-	return translateChatCompletionsToResponsesAPI(&openAIResp, req, toolTypes)
+	return translateChatCompletionsToResponsesAPI(&openAIResp, req, toolTypes, toolNamespaces)
 }
 
 func translateOpenAIUsageToResponses(usage OpenAIUsage) ResponsesAPIUsage {
