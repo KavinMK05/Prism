@@ -885,6 +885,18 @@ func startAdminServer(cfg *Config, port string) {
 					return
 				}
 			}
+			// Keep the in-memory adminConfig in sync. Background handlers (OAuth
+			// token exchange, background usage refresh) and the Provider panel's
+			// /config round-trip snapshot adminConfig and call saveConfig, which
+			// would otherwise overwrite config.json with a stale agent_integrations
+			// and - because the JSON tag is omitempty - drop the tier mappings
+			// entirely, silently reverting the user's setup. See the analogous
+			// SearXNGAutoStart fix in /admin/searxng/autostart.
+			adminMu.Lock()
+			if adminConfig != nil {
+				adminConfig.AgentIntegrations = cfg.AgentIntegrations
+			}
+			adminMu.Unlock()
 			if err := installClaudeCodeConfig(proxyPortFromEnv(), cfg.AgentIntegrations.ClaudeCodeTiers); err != nil {
 				writeJSONError(w, "failed to install config: "+err.Error(), 500)
 				return

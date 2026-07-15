@@ -287,6 +287,15 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Dump the original request, translated request, original Ollama response
+	// and translated response to disk for debugging. wrapWriter tees the bytes
+	// we send back to the client into the capture (#4).
+	dbg := newTranslationDebugCapture("messages", false, anthroReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+	dbg.writeJSON("1_original_request.json", anthroReq)
+	dbg.writeJSON("2_translated_request.json", ollamaReq)
+
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to marshal Ollama request")
@@ -321,7 +330,9 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	var ollamaResp OllamaChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+	// teeBody mirrors resp.Body into the debug capture (#3 original response);
+	// returns resp.Body unchanged when the capture is nil.
+	if err := json.NewDecoder(dbg.teeBody(resp.Body)).Decode(&ollamaResp); err != nil {
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Failed to parse Ollama response: %v", err))
 		return
 	}
@@ -487,8 +498,23 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 				textParts = append(textParts, text)
 			}
 		case "thinking":
-			if thinking, ok := blockMap["thinking"].(string); ok {
-				thinkingContent += thinking
+			// Do not replay prior-turn thinking to a non-Claude upstream.
+			// Anthropic thinking blocks carry a `signature` that clients use to
+			// round-trip them; prism is the terminating server (not the Anthropic
+			// API) and never signs thinking, so any thinking the client replays has
+			// an empty or foreign signature. Forwarding a concatenation of every
+			// prior turn's reasoning biases the model — e.g. it re-reads its own
+			// stale "I need to run go build" intent and re-proposes the same tool
+			// call every turn (an infinite loop). Drop thinking blocks whose
+			// signature is empty/missing so the upstream reasons fresh from the
+			// tool calls + results. (Matches CLIProxyAPI's
+			// shouldMapClaudeThinkingToGPTReasoning, which skips empty-signature
+			// thinking when routing Claude history to a non-Claude provider.)
+			sig, _ := blockMap["signature"].(string)
+			if strings.TrimSpace(sig) != "" {
+				if thinking, ok := blockMap["thinking"].(string); ok {
+					thinkingContent += thinking
+				}
 			}
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {

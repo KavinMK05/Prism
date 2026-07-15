@@ -131,7 +131,16 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string, toolNamespaces map[string]string) {
 	reqStart := time.Now()
 
+	// Dump the original request, translated request, original Ollama response
+	// and translated response to disk when PRISM_DEBUG_RESPONSES is set. All
+	// methods are no-ops when the capture is nil (debug disabled).
+	dbg := newTranslationDebugCapture("responses", false, respReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+
 	ollamaReq := translateResponsesAPIToOllama(respReq)
+	dbg.writeJSON("1_original_request.json", respReq)
+	dbg.writeJSON("2_translated_request.json", ollamaReq)
 
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
@@ -167,7 +176,9 @@ func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *h
 	}
 
 	var ollamaResp OllamaChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+	// teeBody mirrors resp.Body into the debug capture (#3 original response)
+	// when enabled; returns resp.Body unchanged otherwise.
+	if err := json.NewDecoder(dbg.teeBody(resp.Body)).Decode(&ollamaResp); err != nil {
 		writeOpenAIError(w, 502, "server_error", "Failed to parse Ollama response: "+err.Error())
 		return
 	}

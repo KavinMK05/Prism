@@ -269,6 +269,15 @@ func (s *streamState) usagePayload(outputTokens int) map[string]interface{} {
 func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaReq *OllamaChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
 	reqStart := time.Now()
 
+	// Dump the original request, translated request, original Ollama response
+	// and translated response to disk for debugging. wrapWriter tees every SSE
+	// frame we emit to the client into the capture (#4).
+	dbg := newTranslationDebugCapture("messages", true, anthroReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+	dbg.writeJSON("1_original_request.json", anthroReq)
+	dbg.writeJSON("2_translated_request.json", ollamaReq)
+
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to marshal Ollama request")
@@ -335,7 +344,9 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	stopPings := state.startPings()
 	defer stopPings()
 
-	scanner := bufio.NewScanner(resp.Body)
+	// teeBody mirrors resp.Body into the debug capture (#3 original response);
+	// returns resp.Body unchanged when the capture is nil.
+	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {

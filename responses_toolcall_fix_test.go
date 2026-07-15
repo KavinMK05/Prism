@@ -113,6 +113,118 @@ func TestTranslateResponsesInputToChatMessages_BuffersParallelToolCalls(t *testi
 	}
 }
 
+// --- Bug: assistant message content parts with type "output_text" must not be dropped ---
+
+func TestTranslateResponsesInputToChatMessages_PreservesOutputText(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "message", "role": "user", "content": "hi"},
+		map[string]interface{}{"type": "reasoning", "summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": "thinking about it"}}},
+		map[string]interface{}{"type": "message", "role": "assistant", "content": []interface{}{map[string]interface{}{"type": "output_text", "text": "I was checking the repo URL."}}},
+		map[string]interface{}{"type": "message", "role": "user", "content": "ok"},
+	}
+	msgs := translateResponsesInputToChatMessages(input)
+	var asst string
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			if s, ok := m.Content.(string); ok {
+				asst = s
+			} else {
+				b, _ := json.Marshal(m.Content)
+				asst = string(b)
+			}
+		}
+	}
+	if !strings.Contains(asst, "I was checking the repo URL.") {
+		t.Errorf("assistant output_text content was dropped; assistant content = %q", asst)
+	}
+}
+
+func TestTranslateResponsesInputToOllamaMessages_PreservesOutputText(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "message", "role": "user", "content": "hi"},
+		map[string]interface{}{"type": "reasoning", "summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": "thinking about it"}}},
+		map[string]interface{}{"type": "message", "role": "assistant", "content": []interface{}{map[string]interface{}{"type": "output_text", "text": "I was checking the repo URL."}}},
+		map[string]interface{}{"type": "message", "role": "user", "content": "ok"},
+	}
+	msgs := translateResponsesInputToOllamaMessages(input)
+	var asst OllamaMessage
+	for _, m := range msgs {
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 {
+			asst = m
+		}
+	}
+	if asst.Content != "I was checking the repo URL." {
+		t.Errorf("assistant output_text content was dropped; got content=%q thinking=%q", asst.Content, asst.Thinking)
+	}
+	// The preceding reasoning should attach as thinking, not clobber content.
+	if asst.Thinking != "thinking about it" {
+		t.Errorf("expected reasoning carried as thinking, got %q", asst.Thinking)
+	}
+}
+
+func TestConvertResponsesCustomToolToOllama_PreservesFormatGrammar(t *testing.T) {
+	toolMap := map[string]interface{}{
+		"type":        "custom",
+		"name":         "apply_patch",
+		"description":  "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+		"format": map[string]interface{}{
+			"type":       "grammar",
+			"syntax":     "lark",
+			"definition": "start: begin_patch hunk+ end_patch\r\nbegin_patch: \"*** Begin Patch\" LF\r\nend_patch: \"*** End Patch\" LF?\r\n",
+		},
+	}
+	tool, ok := convertResponsesCustomToolToOllama(toolMap, "")
+	if !ok {
+		t.Fatalf("expected tool to convert")
+	}
+	desc := tool.Function.Description
+	if !strings.Contains(desc, "*** Begin Patch") {
+		t.Errorf("grammar definition dropped from description: %q", desc)
+	}
+	if !strings.Contains(desc, "do not wrap the patch in JSON") {
+		t.Errorf("original description lost: %q", desc)
+	}
+	// CRLF must be normalized to LF so the model doesn't see literal \r\n.
+	if strings.Contains(desc, "\r\n") {
+		t.Errorf("CRLF not normalized in description: %q", desc)
+	}
+}
+
+func TestConvertResponsesCustomToolToOpenAIChat_PreservesFormatGrammar(t *testing.T) {
+	toolMap := map[string]interface{}{
+		"type":        "custom",
+		"name":         "apply_patch",
+		"description":  "Use the `apply_patch` tool to edit files.",
+		"format": map[string]interface{}{
+			"type":       "grammar",
+			"syntax":     "lark",
+			"definition": "begin_patch: \"*** Begin Patch\" LF",
+		},
+	}
+	tool, ok := convertResponsesCustomToolToOpenAIChat(toolMap, "")
+	if !ok {
+		t.Fatalf("expected tool to convert")
+	}
+	if !strings.Contains(tool.Function.Description, "*** Begin Patch") {
+		t.Errorf("grammar definition dropped from description: %q", tool.Function.Description)
+	}
+}
+
+func TestConvertResponsesCustomTool_NoFormatKeepsPlainDescription(t *testing.T) {
+	toolMap := map[string]interface{}{
+		"type":        "custom",
+		"name":         "freeform",
+		"description":  "do anything",
+	}
+	tool, ok := convertResponsesCustomToolToOllama(toolMap, "")
+	if !ok {
+		t.Fatalf("expected tool to convert")
+	}
+	if tool.Function.Description != "do anything" {
+		t.Errorf("description should be unchanged without format, got %q", tool.Function.Description)
+	}
+}
+
 func TestTranslateResponsesInputToChatMessages_CustomToolCallWrapsInput(t *testing.T) {
 	input := []interface{}{
 		map[string]interface{}{"type": "custom_tool_call", "call_id": "call_x", "name": "apply_patch", "input": "*** Begin Patch\n+hi\n*** End Patch"},

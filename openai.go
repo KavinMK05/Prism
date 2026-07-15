@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -142,8 +143,21 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 				textParts = append(textParts, text)
 			}
 		case "thinking":
-			if thinking, ok := blockMap["thinking"].(string); ok {
-				thinkingContent += thinking
+			// Do not replay prior-turn thinking to a non-Claude upstream. prism
+			// never signs thinking blocks (it is not the Anthropic API), so any
+			// thinking the client replays carries an empty/foreign signature.
+			// Forwarding stale reasoning biases the model into re-proposing the
+			// same tool call (e.g. re-running a build that already succeeded).
+			// Drop thinking blocks whose signature is empty/missing so the
+			// upstream reasons fresh from tool calls + results. Mirrors
+			// CLIProxyAPI's shouldMapClaudeThinkingToGPTReasoning, which skips
+			// empty-signature thinking when routing Claude history to a
+			// non-Claude provider.
+			sig, _ := blockMap["signature"].(string)
+			if strings.TrimSpace(sig) != "" {
+				if thinking, ok := blockMap["thinking"].(string); ok {
+					thinkingContent += thinking
+				}
 			}
 		case "tool_use":
 			id, _ := blockMap["id"].(string)

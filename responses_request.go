@@ -393,7 +393,7 @@ func buildResponsesMessageToChat(m map[string]interface{}, role string) OpenAICh
 			}
 			pType, _ := pMap["type"].(string)
 			switch pType {
-			case "text", "input_text":
+			case "text", "input_text", "output_text":
 				if t, ok := pMap["text"].(string); ok {
 					contentParts = append(contentParts, map[string]interface{}{
 						"type": "text",
@@ -439,7 +439,7 @@ func buildResponsesMessageToChat(m map[string]interface{}, role string) OpenAICh
 			continue
 		}
 		if pMap, ok := part.(map[string]interface{}); ok {
-			if pType, _ := pMap["type"].(string); pType == "text" || pType == "input_text" {
+			if pType, _ := pMap["type"].(string); pType == "text" || pType == "input_text" || pType == "output_text" {
 				if t, ok := pMap["text"].(string); ok {
 					parts = append(parts, t)
 				}
@@ -618,7 +618,7 @@ func convertResponsesCustomToolToOpenAIChat(toolMap map[string]interface{}, over
 		Type: "function",
 		Function: OpenAIToolDef{
 			Name:        name,
-			Description: responsesToolDescription(toolMap),
+			Description: responsesCustomToolDescriptionWithFormat(toolMap),
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -723,6 +723,48 @@ func responsesToolParameters(toolMap map[string]interface{}) interface{} {
 		}
 	}
 	return nil
+}
+
+// responsesCustomToolDescriptionWithFormat returns the custom tool description
+// augmented with the tool's `format` grammar when present. Responses-API
+// freeform tools (e.g. apply_patch) carry a lark grammar in `format` that
+// describes the exact text the `input` field must contain. Neither Ollama nor
+// Chat Completions understand a `format` field, so without this the model only
+// sees a vague "do not wrap the patch in JSON" hint and guesses the wrong patch
+// syntax. Embedding the grammar definition into the description preserves that
+// contract.
+func responsesCustomToolDescriptionWithFormat(toolMap map[string]interface{}) string {
+	desc := responsesToolDescription(toolMap)
+	formatRaw, ok := toolMap["format"]
+	if !ok || formatRaw == nil {
+		return desc
+	}
+	formatMap, ok := formatRaw.(map[string]interface{})
+	if !ok {
+		return desc
+	}
+	definition := strings.TrimSpace(getMapString(formatMap, "definition"))
+	if definition == "" {
+		return desc
+	}
+	// Normalize CRLF line endings from the grammar definition for readability.
+	definition = strings.ReplaceAll(definition, "\r\n", "\n")
+	var b strings.Builder
+	b.WriteString(desc)
+	if !strings.HasSuffix(desc, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\nThe `input` string must conform to the following grammar (do not deviate from it):\n")
+	if syntax := strings.TrimSpace(getMapString(formatMap, "syntax")); syntax != "" {
+		b.WriteString("(syntax: ")
+		b.WriteString(syntax)
+		b.WriteString(")\n")
+	}
+	b.WriteString(definition)
+	if !strings.HasSuffix(definition, "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // qualifyResponsesNamespaceToolName builds the Chat Completions function name
@@ -1086,7 +1128,7 @@ func buildResponsesMessageToOllama(m map[string]interface{}, role string) Ollama
 		}
 		pType, _ := pMap["type"].(string)
 		switch pType {
-		case "text", "input_text":
+		case "text", "input_text", "output_text":
 			if t, ok := pMap["text"].(string); ok {
 				textParts = append(textParts, t)
 			}
@@ -1191,7 +1233,7 @@ func convertResponsesCustomToolToOllama(toolMap map[string]interface{}, override
 		Type: "function",
 		Function: OllamaToolFunc{
 			Name:        name,
-			Description: responsesToolDescription(toolMap),
+			Description: responsesCustomToolDescriptionWithFormat(toolMap),
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

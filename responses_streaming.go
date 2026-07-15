@@ -738,7 +738,17 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string, toolNamespaces map[string]string) {
 	reqStart := time.Now()
 
+	// Dump the original request, translated request, original Ollama response
+	// and translated response to disk when PRISM_DEBUG_RESPONSES is set. All
+	// methods are no-ops when the capture is nil (debug disabled). wrapWriter
+	// tees every SSE frame we emit to the client into the capture.
+	dbg := newTranslationDebugCapture("responses", true, respReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+
 	ollamaReq := translateResponsesAPIToOllama(respReq)
+	dbg.writeJSON("1_original_request.json", respReq)
+	dbg.writeJSON("2_translated_request.json", ollamaReq)
 
 	body, err := json.Marshal(ollamaReq)
 	if err != nil {
@@ -825,7 +835,9 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		},
 	})
 
-	scanner := bufio.NewScanner(resp.Body)
+	// teeBody mirrors resp.Body into the debug capture (#3 original response)
+	// when enabled; returns resp.Body unchanged otherwise.
+	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
