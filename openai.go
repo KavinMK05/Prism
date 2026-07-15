@@ -35,16 +35,64 @@ func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
 		TopP:        anthroReq.TopP,
 	}
 
+	if len(anthroReq.StopSequences) > 0 {
+		req.Stop = anthroReq.StopSequences
+	}
+
 	if len(anthroReq.Tools) > 0 {
 		req.Tools = translateToolsToOpenAI(anthroReq.Tools)
+		// Only forward tool_choice when tools are present; an OpenAI tool_choice
+		// without tools is invalid.
+		if tc := translateToolChoiceToOpenAI(anthroReq.ToolChoice); tc != nil {
+			req.ToolChoice = tc
+		}
 	}
 
-	// Map Anthropic thinking to OpenAI reasoning_effort
-	if anthroReq.Thinking != nil {
-		req.ReasoningEffort = "medium" // default effort when thinking is enabled
-	}
+	// Map Anthropic thinking config to OpenAI reasoning_effort. Unlike the
+	// previous hardcoded "medium", this honors thinking.type (disabled turns
+	// reasoning off) and buckets budget_tokens into a discrete effort.
+	req.ReasoningEffort = anthropicThinkingToReasoningEffort(anthroReq.Thinking)
 
 	return req
+}
+
+// translateToolChoiceToOpenAI maps an Anthropic tool_choice value to the
+// OpenAI Chat Completions tool_choice shape. Returns nil when the value is
+// absent or unrecognized so the caller can omit the field entirely.
+func translateToolChoiceToOpenAI(tc interface{}) interface{} {
+	if tc == nil {
+		return nil
+	}
+	switch v := tc.(type) {
+	case string:
+		switch v {
+		case "auto":
+			return "auto"
+		case "any":
+			return "required"
+		case "none":
+			return "none"
+		}
+		return nil
+	case map[string]interface{}:
+		t, _ := v["type"].(string)
+		switch t {
+		case "auto":
+			return "auto"
+		case "any":
+			return "required"
+		case "none":
+			return "none"
+		case "tool":
+			name, _ := v["name"].(string)
+			return map[string]interface{}{
+				"type":     "function",
+				"function": map[string]interface{}{"name": name},
+			}
+		}
+		return nil
+	}
+	return nil
 }
 
 func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
@@ -113,6 +161,7 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		case "tool_result":
 			tr := toolResult{}
 			tr.id, _ = blockMap["tool_use_id"].(string)
+			isErr, _ := blockMap["is_error"].(bool)
 			if c, ok := blockMap["content"].(string); ok {
 				tr.content = c
 			} else if c, ok := blockMap["content"].([]interface{}); ok {
@@ -121,12 +170,26 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 						if t, ok := m["text"].(string); ok {
 							tr.content += t
 						}
+						// OpenAI tool messages only accept string content, so
+						// image parts in Anthropic tool_result blocks have no
+						// native representation in the OpenAI tool role and are
+						// intentionally dropped here (text is preserved).
 					}
 				}
 			}
-			if tr.id != "" {
-				toolResults = append(toolResults, tr)
+			if isErr {
+				if tr.content == "" {
+					tr.content = "[tool error]"
+				} else {
+					tr.content = "[tool error] " + tr.content
+				}
 			}
+			// Keep the tool_result even when tool_use_id is empty: dropping it
+			// silently breaks conversation history (the model never sees the
+			// result and re-invokes the tool). An empty id is malformed, but
+			// losing the content is worse than forwarding it. The Ollama path
+			// (translateContentBlocksWithToolLookup) already keeps these.
+			toolResults = append(toolResults, tr)
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
 				if data, ok := source["data"].(string); ok {
@@ -241,10 +304,10 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 
 	if len(resp.Choices) == 0 {
 		return AnthropicResponse{
-			ID:     fmt.Sprintf("msg_%s", resp.Model),
-			Type:   "message",
-			Role:   "assistant",
-			Model:  resp.Model,
+			ID:      fmt.Sprintf("msg_%s", resp.Model),
+			Type:    "message",
+			Role:    "assistant",
+			Model:   resp.Model,
 			Content: []interface{}{AnthropicTextBlock{Type: "text", Text: ""}},
 		}
 	}
@@ -271,9 +334,19 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 	for _, tc := range choice.Message.ToolCalls {
 		var args map[string]interface{}
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		id := tc.ID
+		if id == "" {
+			// Mint a globally-unique ID when the upstream OpenAI-compatible
+			// server omits one. Without a stable, unique ID the client
+			// cannot associate the tool_result it sends back on the next
+			// turn, so the result is dropped from history and the model
+			// re-invokes the tool in a retry loop. Mirrors translateResponse
+			// (Ollama) and openToolUseBlockWithID (streaming).
+			id = generateToolUseID(tc.Function.Name)
+		}
 		content = append(content, AnthropicToolUseBlock{
 			Type:  "tool_use",
-			ID:    tc.ID,
+			ID:    id,
 			Name:  tc.Function.Name,
 			Input: args,
 		})
@@ -296,16 +369,27 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 		outputTokens = resp.Usage.CompletionTokens
 	}
 
+	// OpenAI's prompt_tokens already includes cached tokens; Anthropic splits
+	// these into input_tokens (non-cached) and cache_read_input_tokens.
+	cacheRead := 0
+	if resp.Usage.PromptTokensDetails != nil {
+		cacheRead = resp.Usage.PromptTokensDetails.CachedTokens
+	}
+	if cacheRead > 0 && inputTokens >= cacheRead {
+		inputTokens -= cacheRead
+	}
+
 	return AnthropicResponse{
-		ID:        fmt.Sprintf("msg_%s", resp.Model),
-		Type:      "message",
-		Role:      "assistant",
-		Model:     resp.Model,
-		Content:   content,
+		ID:         fmt.Sprintf("msg_%s", resp.Model),
+		Type:       "message",
+		Role:       "assistant",
+		Model:      resp.Model,
+		Content:    content,
 		StopReason: stopReason,
 		Usage: AnthropicUsage{
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
+			InputTokens:          inputTokens,
+			OutputTokens:         outputTokens,
+			CacheReadInputTokens: cacheRead,
 		},
 	}
 }

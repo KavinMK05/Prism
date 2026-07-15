@@ -90,6 +90,9 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		},
 	})
 
+	stopPings := state.startPings()
+	defer stopPings()
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -120,6 +123,9 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 			}
 			if chunk.Usage.CompletionTokens > 0 {
 				outputTokens = chunk.Usage.CompletionTokens
+			}
+			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+				state.cacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
 		}
 
@@ -217,8 +223,16 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	streamErrored := false
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream read error: %v", err)
+		state.sendStreamError("api_error", "Stream read error: "+err.Error())
+		streamErrored = true
+	}
+	stopPings()
+
+	if streamErrored {
+		return
 	}
 
 	// Terminate the SSE stream. If finish_reason was seen we deferred the

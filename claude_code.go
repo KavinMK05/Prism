@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 )
 
 // claudeCodeManagedEnvKeys are the env keys Prism writes into
@@ -28,16 +27,15 @@ func claudeCodeConfigPath() string {
 	return agentConfigPath("claude-code")
 }
 
-// claudeCodeLocalConfigPath returns ~/.claude/settings.local.json — the
-// local-override file that Claude Code merges on top of settings.json but
-// never overwrites. Prism writes env keys here so Claude Code's file watcher
-// can't clobber them.
+// claudeCodeLocalConfigPath returns the user settings file that Claude Code
+// actually reads. Claude Code has no user-level settings.local.json — that
+// file is project-scoped (.claude/settings.local.json). The real user-level
+// config is ~/.claude/settings.json, which is where Prism must write the
+// ANTHROPIC_* env keys so Claude Code picks them up. The proxy re-syncs these
+// keys on every startup (syncClaudeCode), so any rewrite by Claude Code's file
+// watcher is recovered automatically.
 func claudeCodeLocalConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "settings.local.json")
+	return agentConfigPath("claude-code")
 }
 
 func isClaudeCodeInstalled() bool {
@@ -73,46 +71,30 @@ func firstPrismModelID() string {
 	return remap.DefaultModel
 }
 
-// installClaudeCodeConfig writes the Prism-managed env keys into
-// ~/.claude/settings.local.json (the local-override file that Claude Code
-// merges on top of settings.json but never overwrites). Env entries from
-// settings.json are copied into the local file so they survive the merge,
-// then Prism-managed keys are set on top. A one-time .prism-backup of the
-// original local file is kept on first install as a safety net.
+// installClaudeCodeConfig writes the Prism-managed env keys into the user
+// settings file ~/.claude/settings.json so Claude Code actually reads them.
+// Any non-Prism env entries are preserved, and prior Prism-managed keys are
+// removed before re-adding. A one-time .prism-backup of the original file is
+// kept on first install as a safety net. The proxy re-syncs these keys on
+// every startup (syncClaudeCode), so any rewrite by Claude Code's file watcher
+// is recovered automatically.
 func installClaudeCodeConfig(port int, tiers map[string]string) error {
-	mainPath := claudeCodeConfigPath()
-	localPath := claudeCodeLocalConfigPath()
-	if localPath == "" || mainPath == "" {
+	path := claudeCodeConfigPath()
+	if path == "" {
 		return fmt.Errorf("cannot determine Claude Code config path")
 	}
 
-	// Read existing settings from both files. Env entries from settings.json
-	// are merged into the local file so they survive (local's env replaces
-	// main's on merge, same as customModels for Factory Droid).
-	mainCfg, err := readJSONConfig(mainPath)
+	cfg, err := readJSONConfig(path)
 	if err != nil {
 		return fmt.Errorf("failed to read Claude Code config: %w", err)
 	}
-	localCfg, err := readJSONConfig(localPath)
-	if err != nil {
-		return fmt.Errorf("failed to read Claude Code local config: %w", err)
-	}
-	ensureAgentBackup(localPath)
+	ensureAgentBackup(path)
 
-	// Start with env from local (Prism's write target), then merge in any
-	// non-Prism keys from main that aren't already in local.
-	env, _ := localCfg["env"].(map[string]interface{})
+	// Preserve any existing non-Prism env entries; remove stale Prism keys.
+	env, _ := cfg["env"].(map[string]interface{})
 	if env == nil {
 		env = map[string]interface{}{}
 	}
-	if mainEnv, ok := mainCfg["env"].(map[string]interface{}); ok {
-		for k, v := range mainEnv {
-			if _, exists := env[k]; !exists {
-				env[k] = v
-			}
-		}
-	}
-	// Clean slate: remove any prior Prism-managed keys before re-adding.
 	for _, k := range claudeCodeManagedEnvKeys {
 		delete(env, k)
 	}
@@ -128,80 +110,40 @@ func installClaudeCodeConfig(port int, tiers map[string]string) error {
 	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = claudeCodeTierModel(tiers, "sonnet", first)
 	env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = claudeCodeTierModel(tiers, "haiku", first)
 	env["CLAUDE_CODE_SUBAGENT_MODEL"] = claudeCodeTierModel(tiers, "subagent", first)
-	localCfg["env"] = env
+	cfg["env"] = env
 
-	if err := writeJSONConfig(localPath, localCfg); err != nil {
-		return fmt.Errorf("failed to write Claude Code local config: %w", err)
-	}
-
-	// Also strip stale Prism env keys from settings.json (written by older
-	// Prism versions that wrote there directly). This is a one-time migration.
-	if mainEnv, ok := mainCfg["env"].(map[string]interface{}); ok {
-		changed := false
-		for _, k := range claudeCodeManagedEnvKeys {
-			if _, exists := mainEnv[k]; exists {
-				delete(mainEnv, k)
-				changed = true
-			}
-		}
-		if changed {
-			mainCfg["env"] = mainEnv
-			_ = writeJSONConfig(mainPath, mainCfg) // best-effort; Claude Code may rewrite
-		}
+	if err := writeJSONConfig(path, cfg); err != nil {
+		return fmt.Errorf("failed to write Claude Code config: %w", err)
 	}
 	return nil
 }
 
-// restoreClaudeCodeConfig removes the Prism-managed env keys from both
-// ~/.claude/settings.local.json (Prism's write target) and
-// ~/.claude/settings.json (stale entries from older Prism versions),
-// preserving all other env entries and settings.
+// restoreClaudeCodeConfig removes the Prism-managed env keys from
+// ~/.claude/settings.json, preserving all other env entries and settings.
 func restoreClaudeCodeConfig() error {
-	localPath := claudeCodeLocalConfigPath()
-	mainPath := claudeCodeConfigPath()
-	if localPath == "" || mainPath == "" {
+	path := claudeCodeConfigPath()
+	if path == "" {
 		return fmt.Errorf("cannot determine Claude Code config path")
 	}
-
-	// Strip Prism entries from settings.local.json (Prism's write target).
-	localCfg, err := readJSONConfig(localPath)
+	cfg, err := readJSONConfig(path)
 	if err != nil {
-		return fmt.Errorf("failed to read Claude Code local config: %w", err)
+		return fmt.Errorf("failed to read Claude Code config: %w", err)
 	}
-	if env, ok := localCfg["env"].(map[string]interface{}); ok {
-		changed := false
-		for _, k := range claudeCodeManagedEnvKeys {
-			if _, exists := env[k]; exists {
-				delete(env, k)
-				changed = true
-			}
-		}
-		if changed {
-			localCfg["env"] = env
-			if err := writeJSONConfig(localPath, localCfg); err != nil {
-				return fmt.Errorf("failed to write Claude Code local config: %w", err)
-			}
+	env, ok := cfg["env"].(map[string]interface{})
+	if !ok {
+		return nil // no env block; nothing to clean
+	}
+	changed := false
+	for _, k := range claudeCodeManagedEnvKeys {
+		if _, exists := env[k]; exists {
+			delete(env, k)
+			changed = true
 		}
 	}
-
-	// Also clean stale Prism entries from settings.json (written by older
-	// Prism versions that wrote there directly). Best-effort; Claude Code
-	// may rewrite this file.
-	mainCfg, err := readJSONConfig(mainPath)
-	if err != nil {
-		return nil // can't read main config; nothing to clean
-	}
-	if env, ok := mainCfg["env"].(map[string]interface{}); ok {
-		changed := false
-		for _, k := range claudeCodeManagedEnvKeys {
-			if _, exists := env[k]; exists {
-				delete(env, k)
-				changed = true
-			}
-		}
-		if changed {
-			mainCfg["env"] = env
-			_ = writeJSONConfig(mainPath, mainCfg)
+	if changed {
+		cfg["env"] = env
+		if err := writeJSONConfig(path, cfg); err != nil {
+			return fmt.Errorf("failed to write Claude Code config: %w", err)
 		}
 	}
 	return nil

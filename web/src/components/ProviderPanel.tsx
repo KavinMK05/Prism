@@ -4,6 +4,7 @@ import { useToast } from '../ToastContext';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer';
 
 function maskKey(k: string): string {
   if (!k) return '(not set)';
@@ -33,6 +34,7 @@ export default function ProviderPanel() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingDeleteName, setPendingDeleteName] = useState('');
+  const [addDrawerOpen, setAddDrawerOpen] = useState(false);
 
   const loadConfig = useCallback(async () => {
     const cfg = await api('/config');
@@ -158,8 +160,47 @@ export default function ProviderPanel() {
 
   return (
     <>
+      <div className="flex items-center justify-between mb-5">
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground font-[system-ui]">Provider</h2>
+        <Drawer open={addDrawerOpen} onOpenChange={setAddDrawerOpen} direction="right">
+          <DrawerTrigger asChild>
+            <Button size="sm">Add Provider</Button>
+          </DrawerTrigger>
+          <DrawerContent>
+            <DrawerHeader>
+              <DrawerTitle>Add Custom Provider</DrawerTitle>
+              <DrawerDescription>Add a new custom provider to the list.</DrawerDescription>
+            </DrawerHeader>
+            <div className="px-4 pb-4 flex-1 overflow-y-auto">
+              <div className="mb-5 last:mb-0">
+                <Label>Name</Label>
+                <Input type="text" placeholder="e.g. My OpenAI Endpoint" value={addName} onChange={e => setAddName(e.target.value)} className="mt-1.5" />
+              </div>
+              <div className="mb-5 last:mb-0">
+                <Label>Base URL</Label>
+                <Input type="text" placeholder="https://api.example.com" value={addBaseURL} onChange={e => setAddBaseURL(e.target.value)} className="mt-1.5" />
+              </div>
+              <div className="mb-5 last:mb-0">
+                <Label>API Key</Label>
+                <div className="flex gap-2 items-center mt-1.5">
+                  <Input type="password" placeholder="sk-..." value={addAPIKey} onChange={e => setAddAPIKey(e.target.value)} />
+                </div>
+              </div>
+            </div>
+            <DrawerFooter>
+              <Button onClick={() => { addProvider(); setAddDrawerOpen(false); }}>Add Provider</Button>
+              <DrawerClose asChild>
+                <Button variant="outline">Cancel</Button>
+              </DrawerClose>
+            </DrawerFooter>
+          </DrawerContent>
+        </Drawer>
+      </div>
+
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
-        <h3 className="text-sm font-semibold tracking-tight mb-4">Default Provider</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold tracking-tight">Default Provider</h3>
+        </div>
         <div className="flex flex-col gap-2">
           {providers.map(p => (
             <div key={p.id} className="flex items-center gap-3.5 px-4 py-3.5 bg-card border border-border rounded-md hover:border-border-strong hover:bg-accent transition-colors cursor-default">
@@ -210,27 +251,6 @@ export default function ProviderPanel() {
           </div>
         </div>
       )}
-
-      <div className="rounded-xl border border-border bg-card p-6 mb-4">
-        <h3 className="text-sm font-semibold tracking-tight mb-4">Add Custom Provider</h3>
-        <div className="mb-5 last:mb-0">
-          <Label>Name</Label>
-          <Input type="text" placeholder="e.g. My OpenAI Endpoint" value={addName} onChange={e => setAddName(e.target.value)} className="mt-1.5" />
-        </div>
-        <div className="mb-5 last:mb-0">
-          <Label>Base URL</Label>
-          <Input type="text" placeholder="https://api.example.com" value={addBaseURL} onChange={e => setAddBaseURL(e.target.value)} className="mt-1.5" />
-        </div>
-        <div className="mb-5 last:mb-0">
-          <Label>API Key</Label>
-          <div className="flex gap-2 items-center mt-1.5">
-            <Input type="password" placeholder="sk-..." value={addAPIKey} onChange={e => setAddAPIKey(e.target.value)} />
-          </div>
-        </div>
-        <div className="flex gap-2.5 mt-5 flex-wrap">
-          <Button onClick={addProvider}>Add Provider</Button>
-        </div>
-      </div>
 
       {!oauthAcct && (
         <div className="rounded-xl border border-border bg-card p-6 mb-4">

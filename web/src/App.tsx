@@ -197,9 +197,11 @@ export default function App() {
 
       {/* Main content */}
       <main className="flex-1 min-w-0 overflow-y-auto p-8">
-        <h2 className="text-2xl font-semibold tracking-tight text-foreground mb-5 font-[system-ui]">
-          {TABS.find((t) => t.id === activeTab)?.label}
-        </h2>
+        {activeTab !== 'provider' && (
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground mb-5 font-[system-ui]">
+            {TABS.find((t) => t.id === activeTab)?.label}
+          </h2>
+        )}
         {renderPanel()}
       </main>
     </div>

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer';
 
 function getProviderDisplayName(providerId: string, config: any): string {
   if (!config) return providerId;
@@ -37,6 +38,7 @@ export default function ModelsPanel() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [newModel, setNewModel] = useState({ id: '', provider: '', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [newAliasFrom, setNewAliasFrom] = useState('');
   const [newAliasTo, setNewAliasTo] = useState('');
   const [editStates, setEditStates] = useState<Record<number, any>>({});
@@ -216,7 +218,67 @@ export default function ModelsPanel() {
       </div>
 
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
-        <h3 className="text-sm font-semibold tracking-tight mb-1">Known Models</h3>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold tracking-tight">Known Models</h3>
+          <Drawer open={drawerOpen} onOpenChange={setDrawerOpen} direction="right">
+            <DrawerTrigger asChild>
+              <Button size="sm">Add Model</Button>
+            </DrawerTrigger>
+            <DrawerContent>
+              <DrawerHeader>
+                <DrawerTitle>Add Model</DrawerTitle>
+                <DrawerDescription>Add a new model to the known models list.</DrawerDescription>
+              </DrawerHeader>
+              <div className="px-4 pb-4 flex-1 overflow-y-auto">
+                <div className="flex flex-wrap items-start gap-2.5 relative">
+                  <div className="relative flex-1 min-w-[200px]">
+                  <Input type="text" placeholder="Model ID (e.g. deepseek-v4-flash:cloud)" value={searchQuery} onChange={e => onSearchInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { addKnownModel(); return false; } }} autoComplete="off" className="w-full" />
+                  {showDropdown && (
+                    <div className="absolute top-full left-0 min-w-[300px] max-w-[420px] max-h-[240px] overflow-y-auto bg-popover border border-border rounded-md shadow-[0_8px_24px_rgba(0,0,0,0.15)] z-[100] mt-0.5">
+                      {searchResults.map(r => (
+                        <div key={r.id} className="px-3 py-2 cursor-pointer text-[13px] border-b border-border last:border-b-0 flex justify-between items-center hover:bg-accent" onClick={() => selectSearchModel(r.id)}>
+                          <span className="font-medium">{r.id}</span>
+                          <span className="text-muted-foreground text-xs ml-3">{r.name || ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  </div>
+                  <Select value={newModel.provider} onValueChange={(val) => setNewModel(prev => ({ ...prev, provider: val }))}>
+                    <SelectTrigger className="min-w-[140px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ollama_cloud">Ollama Cloud</SelectItem>
+                      <SelectItem value="opencode_go">OpenCode Go</SelectItem>
+                      {(config.custom_providers || []).map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                      {(config.oauth_accounts || []).map((a: any) => <SelectItem key={a.id} value={a.id}>{a.email || a.label || a.id} (OAuth)</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button variant="outline" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</Button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div><Label className="text-xs text-muted-foreground mb-0.5">Context Length</Label><Input type="number" placeholder="e.g. 128000" value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>
+                  <div><Label className="text-xs text-muted-foreground mb-0.5">Max Output Tokens</Label><Input type="number" placeholder="e.g. 16384" value={newModel.maxOut} onChange={e => setNewModel(prev => ({ ...prev, maxOut: e.target.value }))} /></div>
+                  <div className="col-span-2"><Label className="text-xs text-muted-foreground mb-0.5">Reasoning Effort Levels</Label><Input type="text" placeholder="low,medium,high" value={newModel.effort} onChange={e => setNewModel(prev => ({ ...prev, effort: e.target.value }))} /></div>
+                </div>
+                <div className="flex flex-wrap gap-4 mt-3">
+                  <Label title="Reasoning model" className="flex items-center gap-1 cursor-pointer text-xs">
+                    <Checkbox checked={newModel.reasoning} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, reasoning: !!v }))} /> Reasoning
+                  </Label>
+                  <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports tool/function calling"><Checkbox checked={newModel.toolCall} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, toolCall: !!v }))} /> Tools</Label>
+                  <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports structured/JSON output"><Checkbox checked={newModel.struct} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, struct: !!v }))} /> Struct</Label>
+                  <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports image input"><Checkbox checked={newModel.vision} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, vision: !!v }))} /> Vision</Label>
+                </div>
+                {newModel.infoStatus && <div className="text-xs text-muted-foreground mt-1">{newModel.infoStatus}</div>}
+              </div>
+              <DrawerFooter>
+                <Button onClick={() => { addKnownModel(); setDrawerOpen(false); }}>Add Model</Button>
+                <DrawerClose asChild>
+                  <Button variant="outline">Cancel</Button>
+                </DrawerClose>
+              </DrawerFooter>
+            </DrawerContent>
+          </Drawer>
+        </div>
         <p className="text-[13px] text-muted-foreground mb-4">Models in this list pass through without remapping.</p>
         <div className="flex flex-col">
           {knownModels.length === 0 && <div className="text-muted-foreground/60 text-[13px] italic py-2">No known models yet.</div>}
@@ -287,47 +349,6 @@ export default function ModelsPanel() {
           })}
         </div>
 
-        <div className="pt-5 mt-2 border-t border-border">
-          <h4 className="text-sm font-semibold mb-3">Add Model</h4>
-          <div className="flex gap-2.5 relative">
-            <Input type="text" placeholder="Model ID (e.g. deepseek-v4-flash:cloud)" value={searchQuery} onChange={e => onSearchInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { addKnownModel(); return false; } }} autoComplete="off" className="flex-1" />
-            {showDropdown && (
-              <div className="absolute top-full left-0 min-w-[300px] max-w-[420px] max-h-[240px] overflow-y-auto bg-popover border border-border rounded-md shadow-[0_8px_24px_rgba(0,0,0,0.15)] z-[100] mt-0.5">
-                {searchResults.map(r => (
-                  <div key={r.id} className="px-3 py-2 cursor-pointer text-[13px] border-b border-border last:border-b-0 flex justify-between items-center hover:bg-accent" onClick={() => selectSearchModel(r.id)}>
-                    <span className="font-medium">{r.id}</span>
-                    <span className="text-muted-foreground text-xs ml-3">{r.name || ''}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            <Select value={newModel.provider} onValueChange={(val) => setNewModel(prev => ({ ...prev, provider: val }))}>
-              <SelectTrigger className="min-w-[140px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ollama_cloud">Ollama Cloud</SelectItem>
-                <SelectItem value="opencode_go">OpenCode Go</SelectItem>
-                {(config.custom_providers || []).map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                {(config.oauth_accounts || []).map((a: any) => <SelectItem key={a.id} value={a.id}>{a.email || a.label || a.id} (OAuth)</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Button variant="outline" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</Button>
-          </div>
-          <div className="grid grid-cols-2 gap-2 mt-2">
-            <div><Label className="text-xs text-muted-foreground mb-0.5">Context Length</Label><Input type="number" placeholder="e.g. 128000" value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>
-            <div><Label className="text-xs text-muted-foreground mb-0.5">Max Output Tokens</Label><Input type="number" placeholder="e.g. 16384" value={newModel.maxOut} onChange={e => setNewModel(prev => ({ ...prev, maxOut: e.target.value }))} /></div>
-            <div><Label className="text-xs text-muted-foreground mb-0.5">Reasoning Effort Levels</Label><Input type="text" placeholder="low,medium,high" value={newModel.effort} onChange={e => setNewModel(prev => ({ ...prev, effort: e.target.value }))} /></div>
-            <div className="flex items-end gap-3 pb-0.5">
-              <Label title="Reasoning model" className="flex items-center gap-1 cursor-pointer text-xs">
-                <Checkbox checked={newModel.reasoning} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, reasoning: !!v }))} /> Reasoning
-              </Label>
-              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports tool/function calling"><Checkbox checked={newModel.toolCall} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, toolCall: !!v }))} /> Tools</Label>
-              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports structured/JSON output"><Checkbox checked={newModel.struct} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, struct: !!v }))} /> Struct</Label>
-              <Label className="flex items-center gap-1 cursor-pointer text-xs" title="Supports image input"><Checkbox checked={newModel.vision} onCheckedChange={(v) => setNewModel(prev => ({ ...prev, vision: !!v }))} /> Vision</Label>
-            </div>
-          </div>
-          {newModel.infoStatus && <div className="text-xs text-muted-foreground mt-1">{newModel.infoStatus}</div>}
-          <div className="flex gap-2.5 mt-5 flex-wrap"><Button onClick={addKnownModel}>Add Model</Button></div>
-        </div>
       </div>
 
       <div className="rounded-xl border border-border bg-card p-6 mb-4">

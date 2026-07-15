@@ -29,6 +29,59 @@ func generateToolUseID(name string) string {
 	return "toolu_" + hex.EncodeToString(b)
 }
 
+// anthropicThinkingEnabled reports whether an Anthropic thinking config
+// requests reasoning. It honors thinking.type (disabled/enabled/adaptive);
+// a non-nil thinking with no type but a positive budget_tokens is treated as
+// enabled. Used for the Ollama path, which only has a boolean think toggle.
+func anthropicThinkingEnabled(thinking *AnthropicThinking) bool {
+	if thinking == nil {
+		return false
+	}
+	t := thinking.Type
+	if t == "" && thinking.BudgetTokens > 0 {
+		t = "enabled"
+	}
+	switch t {
+	case "disabled", "":
+		return false
+	case "enabled", "adaptive":
+		return true
+	default:
+		return false
+	}
+}
+
+// anthropicThinkingToReasoningEffort maps an Anthropic thinking config to an
+// OpenAI reasoning_effort value (low/medium/high). Returns "" when reasoning
+// should be disabled (no thinking, or thinking.type == "disabled"). OpenAI's
+// reasoning_effort is coarse, so the Anthropic budget_tokens is bucketed.
+func anthropicThinkingToReasoningEffort(thinking *AnthropicThinking) string {
+	if thinking == nil {
+		return ""
+	}
+	t := thinking.Type
+	if t == "" && thinking.BudgetTokens > 0 {
+		t = "enabled"
+	}
+	switch t {
+	case "disabled", "":
+		return ""
+	case "enabled", "adaptive":
+		switch {
+		case thinking.BudgetTokens <= 0:
+			return "medium"
+		case thinking.BudgetTokens <= 4000:
+			return "low"
+		case thinking.BudgetTokens <= 12000:
+			return "medium"
+		default:
+			return "high"
+		}
+	default:
+		return ""
+	}
+}
+
 type ProviderRouter struct {
 	cfg        *Config
 	cfgMu      sync.RWMutex
@@ -368,7 +421,7 @@ func translateRequest(anthro *AnthropicRequest) (*OllamaChatRequest, error) {
 		req.Options = options
 	}
 
-	if anthro.Thinking != nil {
+	if anthropicThinkingEnabled(anthro.Thinking) {
 		req.Think = true
 	}
 
@@ -415,7 +468,9 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 	type toolResult struct {
 		toolUseID string
 		content   string
-		name     string
+		name      string
+		images    []string
+		isError   bool
 	}
 	var toolResults []toolResult
 
@@ -450,21 +505,43 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			})
 		case "tool_result":
 			toolUseID, _ := blockMap["tool_use_id"].(string)
+			isErr, _ := blockMap["is_error"].(bool)
 			var contentStr string
+			var resultImages []string
 			if c, ok := blockMap["content"].(string); ok {
 				contentStr = c
 			} else if c, ok := blockMap["content"].([]interface{}); ok {
 				for _, item := range c {
 					if m, ok := item.(map[string]interface{}); ok {
-						if t, ok := m["text"].(string); ok {
-							contentStr += t
+						switch m["type"] {
+						case "text":
+							if t, ok := m["text"].(string); ok {
+								contentStr += t
+							}
+						case "image":
+							// Forward image parts in tool results (e.g. screenshot
+							// tool output). Ollama accepts images on tool messages.
+							if src, ok := m["source"].(map[string]interface{}); ok {
+								if data, ok := src["data"].(string); ok {
+									resultImages = append(resultImages, data)
+								}
+							}
 						}
 					}
+				}
+			}
+			if isErr {
+				if contentStr == "" {
+					contentStr = "[tool error]"
+				} else {
+					contentStr = "[tool error] " + contentStr
 				}
 			}
 			toolResults = append(toolResults, toolResult{
 				toolUseID: toolUseID,
 				content:   contentStr,
+				images:    resultImages,
+				isError:   isErr,
 			})
 		}
 	}
@@ -498,6 +575,9 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			ollamaMsg := OllamaMessage{
 				Role:    "tool",
 				Content: tr.content,
+			}
+			if len(tr.images) > 0 {
+				ollamaMsg.Images = tr.images
 			}
 			if tr.toolUseID != "" {
 				ollamaMsg.ToolCallID = tr.toolUseID
@@ -542,7 +622,7 @@ func translateTools(tools []AnthropicTool) []OllamaTool {
 		result[i] = OllamaTool{
 			Type: "function",
 			Function: OllamaToolFunc{
-				Name:       t.Name,
+				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  t.InputSchema,
 			},

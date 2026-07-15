@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -23,8 +24,10 @@ type streamState struct {
 	toolCallIndex     int
 	totalOutputTokens int
 	totalPromptTokens int
+	cacheReadTokens   int
 	msgID             string
 	stopSent          bool
+	mu                sync.Mutex
 	// Tracking for cumulative Ollama tool-call streaming. Ollama re-emits the
 	// full accumulated arguments (a complete, closed JSON object) in every
 	// chunk, so the arguments cannot be diffed into input_json_delta suffixes.
@@ -45,16 +48,52 @@ type pendingToolUse struct {
 
 func newStreamState(w http.ResponseWriter, flusher http.Flusher, canFlush bool, msgID string) *streamState {
 	return &streamState{
-		w:             w,
-		flusher:       flusher,
-		canFlush:      canFlush,
-		msgID:         msgID,
+		w:              w,
+		flusher:        flusher,
+		canFlush:       canFlush,
+		msgID:          msgID,
 		pendingToolMap: make(map[string]*pendingToolUse),
 	}
 }
 
 func (s *streamState) writeSSE(event string, data interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	writeSSE(s.w, s.flusher, s.canFlush, event, data)
+}
+
+// startPings spawns a goroutine that emits Anthropic "ping" keepalive events
+// every 15s until the returned stop function is called. Pings keep the SSE
+// connection alive during slow upstream reasoning. The stop function is
+// idempotent (safe to defer and call explicitly).
+func (s *streamState) startPings() (stop func()) {
+	stopCh := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				s.writeSSE("ping", map[string]interface{}{"type": "ping"})
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(stopCh) }) }
+}
+
+// sendStreamError emits an Anthropic SSE error event mid-stream, used when the
+// upstream connection fails after the SSE response has already begun.
+func (s *streamState) sendStreamError(errType, message string) {
+	s.writeSSE("error", map[string]interface{}{
+		"type": "error",
+		"error": map[string]interface{}{
+			"type":    errType,
+			"message": message,
+		},
+	})
 }
 
 // flushPendingToolUses emits every buffered tool call exactly once as a
@@ -136,7 +175,6 @@ func (s *streamState) openTextBlock() {
 	s.hasContentBlock = true
 }
 
-
 // openToolUseBlockWithID opens a tool_use block. If id is non-empty it is used
 // as the tool_use ID (e.g. preserving an upstream-provided ID); otherwise a
 // globally-unique ID is generated so it cannot collide with tool_use IDs from
@@ -208,14 +246,24 @@ func (s *streamState) sendStopReason(stopReason string, outputTokens int) {
 			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]interface{}{
-			"output_tokens": outputTokens,
-		},
+		"usage": s.usagePayload(outputTokens),
 	})
 
 	s.writeSSE("message_stop", map[string]interface{}{
 		"type": "message_stop",
 	})
+}
+
+// usagePayload builds the usage object for the terminal message_delta event,
+// including cache_read_input_tokens when the upstream reported cached tokens.
+func (s *streamState) usagePayload(outputTokens int) map[string]interface{} {
+	usage := map[string]interface{}{
+		"output_tokens": outputTokens,
+	}
+	if s.cacheReadTokens > 0 {
+		usage["cache_read_input_tokens"] = s.cacheReadTokens
+	}
+	return usage
 }
 
 func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request, ollamaReq *OllamaChatRequest, anthroReq *AnthropicRequest, rp *ResolvedProvider) {
@@ -283,6 +331,9 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 			},
 		},
 	})
+
+	stopPings := state.startPings()
+	defer stopPings()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -400,8 +451,16 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	streamErrored := false
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream read error: %v", err)
+		state.sendStreamError("api_error", "Stream read error: "+err.Error())
+		streamErrored = true
+	}
+	stopPings()
+
+	if streamErrored {
+		return
 	}
 
 	// If the stream ended without a Done chunk, close any remaining blocks

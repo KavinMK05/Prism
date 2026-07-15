@@ -68,8 +68,8 @@ const FilterBar = memo(function FilterBar({
 }) {
   return (
     <div className="flex flex-col gap-3 mb-5 items-center w-full">
-      <div className="flex gap-3 flex-wrap items-center w-full justify-between">
-        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Time Range</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
+        <div className="flex flex-col gap-1.5"><div className="text-xs text-muted-foreground font-medium">Time Range</div>
           <Select value={timeRange} onValueChange={(v) => onTimeRangeChange(v)}>
             <SelectTrigger className="w-full"><SelectValue placeholder="Time Range" /></SelectTrigger>
             <SelectContent>
@@ -81,7 +81,7 @@ const FilterBar = memo(function FilterBar({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Provider</div>
+        <div className="flex flex-col gap-1.5"><div className="text-xs text-muted-foreground font-medium">Provider</div>
           <Select value={filterProvider} onValueChange={(v) => setFilterProvider(v)}>
             <SelectTrigger className="w-full"><SelectValue placeholder="All Providers" /></SelectTrigger>
             <SelectContent>
@@ -90,7 +90,7 @@ const FilterBar = memo(function FilterBar({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Model</div>
+        <div className="flex flex-col gap-1.5"><div className="text-xs text-muted-foreground font-medium">Model</div>
           <Select value={filterModel} onValueChange={(v) => setFilterModel(v)}>
             <SelectTrigger className="w-full"><SelectValue placeholder="All Models" /></SelectTrigger>
             <SelectContent>
@@ -99,7 +99,7 @@ const FilterBar = memo(function FilterBar({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">Client</div>
+        <div className="flex flex-col gap-1.5"><div className="text-xs text-muted-foreground font-medium">Client</div>
           <Select value={filterClient} onValueChange={(v) => setFilterClient(v)}>
             <SelectTrigger className="w-full"><SelectValue placeholder="All Clients" /></SelectTrigger>
             <SelectContent>
@@ -394,7 +394,7 @@ export default function StatsPanel() {
         </div>
 
         {/* TPS History */}
-        <div className="rounded-xl border border-border bg-card p-6">
+        <div className="rounded-xl border border-border bg-card p-6 col-span-1 lg:col-span-2">
           <div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold m-0">TPS History (Tokens / Second)</h3></div>
           <table className="w-full border-collapse text-[13px] mb-4">
             <thead><tr><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Model</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Provider</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Avg TPS</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Max TPS</th></tr></thead>

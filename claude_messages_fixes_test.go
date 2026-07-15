@@ -1,0 +1,179 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+// TestTranslateToOpenAI_StopToolChoiceThinking verifies the Anthropic->OpenAI
+// request translation now forwards stop_sequences and tool_choice, and maps
+// the thinking config to reasoning_effort (instead of a hardcoded "medium").
+func TestTranslateToOpenAI_StopToolChoiceThinking(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:         "m",
+		MaxTokens:     100,
+		StopSequences: []string{"END", "STOP"},
+		Tools: []AnthropicTool{{
+			Name:        "get_weather",
+			Description: "weather",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		ToolChoice: map[string]interface{}{"type": "any"},
+		Thinking:    &AnthropicThinking{Type: "disabled"},
+	}
+
+	oai := translateToOpenAI(req)
+
+	// stop_sequences forwarded
+	stop, ok := oai.Stop.([]string)
+	if !ok || len(stop) != 2 || stop[0] != "END" || stop[1] != "STOP" {
+		t.Fatalf("expected stop=[END STOP], got %#v", oai.Stop)
+	}
+
+	// tool_choice any -> required
+	if oai.ToolChoice != "required" {
+		t.Fatalf("expected tool_choice=required, got %#v", oai.ToolChoice)
+	}
+
+	// thinking.type=disabled -> no reasoning_effort
+	if oai.ReasoningEffort != "" {
+		t.Fatalf("expected empty reasoning_effort for disabled thinking, got %q", oai.ReasoningEffort)
+	}
+}
+
+func TestTranslateToOpenAI_ThinkingBudgetMapping(t *testing.T) {
+	cases := []struct {
+		thinking *AnthropicThinking
+		want     string
+	}{
+		{nil, ""},
+		{&AnthropicThinking{Type: "disabled"}, ""},
+		{&AnthropicThinking{Type: "enabled", BudgetTokens: 2000}, "low"},
+		{&AnthropicThinking{Type: "enabled", BudgetTokens: 8000}, "medium"},
+		{&AnthropicThinking{Type: "enabled", BudgetTokens: 32000}, "high"},
+		{&AnthropicThinking{Type: "enabled"}, "medium"}, // no budget -> default medium
+	}
+	for _, c := range cases {
+		got := anthropicThinkingToReasoningEffort(c.thinking)
+		if got != c.want {
+			t.Errorf("thinking=%+v: got %q, want %q", c.thinking, got, c.want)
+		}
+	}
+}
+
+func TestTranslateToOpenAI_ToolChoiceVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want interface{}
+	}{
+		{"auto", "auto", "auto"},
+		{"any", "any", "required"},
+		{"none", "none", "none"},
+		{"auto obj", map[string]interface{}{"type": "auto"}, "auto"},
+		{"tool", map[string]interface{}{"type": "tool", "name": "foo"},
+			map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "foo"}}},
+		{"nil", nil, nil},
+		{"unknown", map[string]interface{}{"type": "weird"}, nil},
+	}
+	for _, c := range cases {
+		got := translateToolChoiceToOpenAI(c.in)
+		if !equalJSON(got, c.want) {
+			t.Errorf("%s: got %#v, want %#v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTranslateFromOpenAI_CacheTokens verifies cache_read_input_tokens are
+// surfaced and input_tokens exclude the cached portion.
+func TestTranslateFromOpenAI_CacheTokens(t *testing.T) {
+	resp := &OpenAIChatResponse{
+		ID:     "x",
+		Object: "chat.completion",
+		Model:  "m",
+		Choices: []OpenAIChoice{{
+			Index:        0,
+			Message:      OpenAIChatMessage{Role: "assistant", Content: "hi"},
+			FinishReason: "stop",
+		}},
+		Usage: OpenAIUsage{
+			PromptTokens:        1000,
+			CompletionTokens:    50,
+			TotalTokens:         1050,
+			PromptTokensDetails: &OpenAIPromptTokensDetails{CachedTokens: 700},
+		},
+	}
+	out := translateFromOpenAI(resp, &AnthropicRequest{Model: "m"})
+	if out.Usage.InputTokens != 300 {
+		t.Errorf("input_tokens: got %d, want 300", out.Usage.InputTokens)
+	}
+	if out.Usage.OutputTokens != 50 {
+		t.Errorf("output_tokens: got %d, want 50", out.Usage.OutputTokens)
+	}
+	if out.Usage.CacheReadInputTokens != 700 {
+		t.Errorf("cache_read_input_tokens: got %d, want 700", out.Usage.CacheReadInputTokens)
+	}
+}
+
+// TestTranslateContentBlocks_ToolResultImageAndError verifies the Anthropic->
+// Ollama path preserves image parts in tool_result and prefixes is_error.
+func TestTranslateContentBlocks_ToolResultImageAndError(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{
+			"type":        "tool_result",
+			"tool_use_id": "toolu_1",
+			"is_error":    true,
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "boom"},
+				map[string]interface{}{
+					"type": "image",
+					"source": map[string]interface{}{
+						"type":       "base64",
+						"media_type": "image/png",
+						"data":       "IMGDATA",
+					},
+				},
+			},
+		},
+	}
+	msgs := translateContentBlocksWithToolLookup("user", blocks, nil)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 ollama message, got %d", len(msgs))
+	}
+	m := msgs[0]
+	if m.Role != "tool" {
+		t.Fatalf("expected tool role, got %q", m.Role)
+	}
+	if m.Content != "[tool error] boom" {
+		t.Errorf("expected error-prefixed content, got %q", m.Content)
+	}
+	if len(m.Images) != 1 || m.Images[0] != "IMGDATA" {
+		t.Errorf("expected image forwarded, got %#v", m.Images)
+	}
+	if m.ToolCallID != "toolu_1" {
+		t.Errorf("expected tool_call_id, got %q", m.ToolCallID)
+	}
+}
+
+// TestTranslateRequest_ThinkingDisabled verifies the Ollama path does not
+// enable thinking when thinking.type == "disabled".
+func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
+	anthro := &AnthropicRequest{
+		Model:     "m",
+		MaxTokens: 10,
+		Thinking:  &AnthropicThinking{Type: "disabled"},
+	}
+	ollamaReq, err := translateRequest(anthro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ollamaReq.Think != nil && ollamaReq.Think != false {
+		t.Errorf("expected thinking disabled, got %#v", ollamaReq.Think)
+	}
+}
+
+func equalJSON(a, b interface{}) bool {
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return string(aj) == string(bj)
+}

@@ -27,8 +27,8 @@ type AnthropicTextBlock struct {
 }
 
 type AnthropicImageBlock struct {
-	Type   string                `json:"type"`
-	Source AnthropicImageSource  `json:"source"`
+	Type   string               `json:"type"`
+	Source AnthropicImageSource `json:"source"`
 }
 
 type AnthropicImageSource struct {
@@ -67,23 +67,25 @@ type AnthropicThinking struct {
 }
 
 type AnthropicResponse struct {
-	ID           string           `json:"id"`
-	Type         string           `json:"type"`
-	Role         string           `json:"role"`
-	Model        string           `json:"model"`
-	Content      []interface{}    `json:"content"`
-	StopReason   string           `json:"stop_reason"`
-	StopSequence *string          `json:"stop_sequence,omitempty"`
-	Usage        AnthropicUsage   `json:"usage"`
+	ID           string         `json:"id"`
+	Type         string         `json:"type"`
+	Role         string         `json:"role"`
+	Model        string         `json:"model"`
+	Content      []interface{}  `json:"content"`
+	StopReason   string         `json:"stop_reason"`
+	StopSequence *string        `json:"stop_sequence,omitempty"`
+	Usage        AnthropicUsage `json:"usage"`
 }
 
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type AnthropicError struct {
-	Type  string              `json:"type"`
+	Type  string               `json:"type"`
 	Error AnthropicErrorDetail `json:"error"`
 }
 
@@ -103,13 +105,13 @@ type OllamaChatRequest struct {
 }
 
 type OllamaMessage struct {
-	Role       string                 `json:"role"`
-	Content    string                 `json:"content"`
-	Thinking   string                 `json:"thinking,omitempty"`
-	Images     []string               `json:"images,omitempty"`
-	ToolCalls  []OllamaToolCall       `json:"tool_calls,omitempty"`
-	ToolName   string                 `json:"tool_name,omitempty"`
-	ToolCallID string                 `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	Thinking   string           `json:"thinking,omitempty"`
+	Images     []string         `json:"images,omitempty"`
+	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
+	ToolName   string           `json:"tool_name,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type OllamaToolCall struct {
@@ -122,7 +124,7 @@ type OllamaToolCallFunction struct {
 	// Ollama always emits it (even for parallel calls to the same tool, which
 	// get distinct indices). It must not be omitted from the dedup key or
 	// same-name calls collapse into one.
-	Index     *int                  `json:"index,omitempty"`
+	Index     *int                   `json:"index,omitempty"`
 	Name      string                 `json:"name"`
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 }
@@ -134,26 +136,26 @@ type OllamaTool struct {
 
 type OllamaToolFunc struct {
 	Name        string      `json:"name"`
-	Description string     `json:"description,omitempty"`
+	Description string      `json:"description,omitempty"`
 	Parameters  interface{} `json:"parameters"`
 }
 
 type OllamaOptions struct {
-	NumPredict  int       `json:"num_predict,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	TopP        *float64  `json:"top_p,omitempty"`
-	TopK        *int      `json:"top_k,omitempty"`
-	Stop        []string  `json:"stop,omitempty"`
+	NumPredict  int      `json:"num_predict,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	TopK        *int     `json:"top_k,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
 }
 
 type OllamaChatResponse struct {
-	Model          string        `json:"model"`
+	Model           string        `json:"model"`
 	CreatedAt       string        `json:"created_at"`
 	Message         OllamaMessage `json:"message"`
-	Done           bool          `json:"done"`
-	DoneReason     string        `json:"done_reason,omitempty"`
-	PromptEvalCount int          `json:"prompt_eval_count,omitempty"`
-	EvalCount      int          `json:"eval_count,omitempty"`
+	Done            bool          `json:"done"`
+	DoneReason      string        `json:"done_reason,omitempty"`
+	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+	EvalCount       int           `json:"eval_count,omitempty"`
 }
 
 type SSEEvent struct {
@@ -162,16 +164,18 @@ type SSEEvent struct {
 }
 
 type OpenAIChatRequest struct {
-	Model            string              `json:"model"`
-	Messages         []OpenAIChatMessage `json:"messages"`
-	Stream           bool                `json:"stream"`
-	Temperature      *float64            `json:"temperature,omitempty"`
-	TopP             *float64            `json:"top_p,omitempty"`
-	MaxTokens        int                 `json:"max_tokens,omitempty"`
-	Tools            []OpenAITool        `json:"tools,omitempty"`
-	ResponseFormat   interface{}         `json:"response_format,omitempty"`
-	ReasoningEffort  string             `json:"reasoning_effort,omitempty"`
-	StreamOptions    *OpenAIStreamOptions `json:"stream_options,omitempty"`
+	Model           string               `json:"model"`
+	Messages        []OpenAIChatMessage  `json:"messages"`
+	Stream          bool                 `json:"stream"`
+	Temperature     *float64             `json:"temperature,omitempty"`
+	TopP            *float64             `json:"top_p,omitempty"`
+	MaxTokens       int                  `json:"max_tokens,omitempty"`
+	Stop            interface{}          `json:"stop,omitempty"`
+	Tools           []OpenAITool         `json:"tools,omitempty"`
+	ToolChoice      interface{}          `json:"tool_choice,omitempty"`
+	ResponseFormat  interface{}          `json:"response_format,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
+	StreamOptions   *OpenAIStreamOptions `json:"stream_options,omitempty"`
 }
 
 type OpenAIStreamOptions struct {
@@ -179,19 +183,19 @@ type OpenAIStreamOptions struct {
 }
 
 type OpenAIChatMessage struct {
-	Role             string                 `json:"role"`
-	Content          interface{}            `json:"content"`
-	ToolCalls        []OpenAIToolCall       `json:"tool_calls,omitempty"`
-	ToolID           string                 `json:"tool_call_id,omitempty"`
-	Name             string                 `json:"name,omitempty"`
-	ReasoningContent *string                `json:"reasoning_content,omitempty"`
+	Role             string           `json:"role"`
+	Content          interface{}      `json:"content"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolID           string           `json:"tool_call_id,omitempty"`
+	Name             string           `json:"name,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"`
 }
 
 type OpenAIToolCall struct {
-	ID       string                `json:"id,omitempty"`
-	Index    *int                  `json:"index,omitempty"`
-	Type     string                `json:"type"`
-	Function OpenAIToolCallFunc    `json:"function"`
+	ID       string             `json:"id,omitempty"`
+	Index    *int               `json:"index,omitempty"`
+	Type     string             `json:"type"`
+	Function OpenAIToolCallFunc `json:"function"`
 }
 
 type OpenAIToolCallFunc struct {
@@ -200,7 +204,7 @@ type OpenAIToolCallFunc struct {
 }
 
 type OpenAITool struct {
-	Type     string      `json:"type"`
+	Type     string        `json:"type"`
 	Function OpenAIToolDef `json:"function"`
 }
 
@@ -211,44 +215,50 @@ type OpenAIToolDef struct {
 }
 
 type OpenAIChatResponse struct {
-	ID      string             `json:"id"`
-	Object string             `json:"object"`
-	Model   string             `json:"model"`
-	Choices []OpenAIChoice    `json:"choices"`
-	Usage   OpenAIUsage        `json:"usage"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Model   string         `json:"model"`
+	Choices []OpenAIChoice `json:"choices"`
+	Usage   OpenAIUsage    `json:"usage"`
 }
 
 type OpenAIChoice struct {
-	Index        int              `json:"index"`
+	Index        int               `json:"index"`
 	Message      OpenAIChatMessage `json:"message"`
-	FinishReason string           `json:"finish_reason"`
+	FinishReason string            `json:"finish_reason"`
 }
 
 type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                        `json:"prompt_tokens"`
+	CompletionTokens    int                        `json:"completion_tokens"`
+	TotalTokens         int                        `json:"total_tokens"`
+	PromptTokensDetails *OpenAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+type OpenAIPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type OpenAIStreamChunk struct {
-	ID       string               `json:"id"`
-	Object   string               `json:"object"`
-	Created  int64                `json:"created"`
-	Model    string               `json:"model"`
-	Choices  []OpenAIStreamChoice `json:"choices"`
-	Usage    *OpenAIStreamUsage   `json:"usage,omitempty"`
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created"`
+	Model   string               `json:"model"`
+	Choices []OpenAIStreamChoice `json:"choices"`
+	Usage   *OpenAIStreamUsage   `json:"usage,omitempty"`
 }
 
 type OpenAIStreamUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                        `json:"prompt_tokens"`
+	CompletionTokens    int                        `json:"completion_tokens"`
+	TotalTokens         int                        `json:"total_tokens"`
+	PromptTokensDetails *OpenAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type OpenAIStreamChoice struct {
-	Index        int                    `json:"index"`
-	Delta        OpenAIStreamDelta      `json:"delta"`
-	FinishReason *string                `json:"finish_reason"`
+	Index        int               `json:"index"`
+	Delta        OpenAIStreamDelta `json:"delta"`
+	FinishReason *string           `json:"finish_reason"`
 }
 
 type OpenAIStreamDelta struct {
