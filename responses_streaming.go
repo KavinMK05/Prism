@@ -176,8 +176,72 @@ func emitToolCallDeltaEvent(e *responsesEmitter, outputType, itemID string, delt
 	})
 }
 
+// responsesOutputTextPart returns a Responses API output_text content part
+// including the spec-required annotations and logprobs arrays. The
+// CLIProxyAPI reference populates these on every output_text part; strict
+// clients key off them, so emit them here rather than as bare {type,text}.
+func responsesOutputTextPart(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "output_text",
+		"annotations": []interface{}{},
+		"logprobs":    []interface{}{},
+		"text":        text,
+	}
+}
+
+// emitReasoningClose finalizes an active reasoning stream by emitting the
+// three closing events in spec order:
+//
+//  1. response.reasoning_summary_text.done  (pairs with *_text.delta)
+//  2. response.reasoning_summary_part.done  (only when partAdded)
+//  3. response.output_item.done             (only when itemID != "")
+//
+// Previously Prism skipped #1, leaving the .delta stream unterminated. The
+// completed reasoning item is appended to completedOutput.
+func emitReasoningClose(e *responsesEmitter, itemID string, outputIndex, summaryIndex int, text string, partAdded bool, completedOutput *[]interface{}) {
+	e.emit("response.reasoning_summary_text.done", map[string]interface{}{
+		"type":          "response.reasoning_summary_text.done",
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"summary_index": summaryIndex,
+		"text":          text,
+	})
+	if partAdded {
+		e.emit("response.reasoning_summary_part.done", map[string]interface{}{
+			"type":          "response.reasoning_summary_part.done",
+			"output_index":  outputIndex,
+			"summary_index": summaryIndex,
+			"part": map[string]interface{}{
+				"type": "summary_text",
+				"text": text,
+			},
+		})
+	}
+	if itemID != "" {
+		reasoningItem := map[string]interface{}{
+			"id":      itemID,
+			"type":    "reasoning",
+			"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": text}},
+		}
+		e.emit("response.output_item.done", map[string]interface{}{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item":         reasoningItem,
+		})
+		*completedOutput = append(*completedOutput, reasoningItem)
+	}
+}
+
 func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *ResolvedProvider, toolTypes map[string]string, toolNamespaces map[string]string) {
 	reqStart := time.Now()
+
+	// Dump the original request, translated request, raw upstream response and
+	// translated response to disk for debugging (same capture the Ollama path
+	// uses). No-ops when the directory cannot be created. wrapWriter tees every
+	// SSE frame we emit to the client into the capture.
+	dbg := newTranslationDebugCapture("responses", true, respReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
 
 	chatReq := translateResponsesAPIToChatCompletions(respReq)
 
@@ -255,6 +319,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 	var completedEmitted bool
+	var completionStatus = "completed"
 	var reasoningItemID string
 	var reasoningActive bool
 	var reasoningSummaryIndex int
@@ -279,7 +344,20 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		},
 	})
 
-	scanner := bufio.NewScanner(resp.Body)
+	// Emit response.in_progress (standard event the CLIProxyAPI reference emits
+	// immediately after response.created; strict clients expect it before any
+	// output items).
+	e.emit("response.in_progress", map[string]interface{}{
+		"type": "response.in_progress",
+		"response": map[string]interface{}{
+			"id":         respID,
+			"object":     "response",
+			"created_at": createdAt,
+			"status":     "in_progress",
+		},
+	})
+
+	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
@@ -364,33 +442,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 		if !currentChunkHasThinking && reasoningActive {
 			reasoningActive = false
-
-			// Close summary part if it was opened
-			if reasoningSummaryPartAdded {
-				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-					"type":          "response.reasoning_summary_part.done",
-					"output_index":  outputIndex,
-					"summary_index": reasoningSummaryIndex,
-					"part": map[string]interface{}{
-						"type": "summary_text",
-						"text": accumulatedReasoning,
-					},
-				})
-				reasoningSummaryPartAdded = false
-			}
-
-			// Close reasoning item
-			reasoningItem := map[string]interface{}{
-				"id":      reasoningItemID,
-				"type":    "reasoning",
-				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-			}
-			e.emit("response.output_item.done", map[string]interface{}{
-				"type":         "response.output_item.done",
-				"output_index": outputIndex,
-				"item":         reasoningItem,
-			})
-			completedOutput = append(completedOutput, reasoningItem)
+			emitReasoningClose(e, reasoningItemID, outputIndex, reasoningSummaryIndex, accumulatedReasoning, reasoningSummaryPartAdded, &completedOutput)
+			reasoningSummaryPartAdded = false
 			reasoningItemID = ""
 		}
 
@@ -408,10 +461,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
-					"part": map[string]interface{}{
-						"type": "output_text",
-						"text": accumulatedText,
-					},
+					"part": responsesOutputTextPart(accumulatedText),
 				})
 				textContentPartID = ""
 			}
@@ -423,7 +473,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":    "message",
 					"status":  "completed",
 					"role":    "assistant",
-					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+					"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 				}
 				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
@@ -507,10 +557,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":          "response.content_part.added",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
-					"part": map[string]interface{}{
-						"type": "output_text",
-						"text": "",
-					},
+					"part": responsesOutputTextPart(""),
 				})
 			}
 
@@ -545,10 +592,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
-					"part": map[string]interface{}{
-						"type": "output_text",
-						"text": accumulatedText,
-					},
+					"part": responsesOutputTextPart(accumulatedText),
 				})
 				textContentPartID = ""
 			}
@@ -556,34 +600,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			// Close reasoning if active
 			if reasoningActive {
 				reasoningActive = false
-
-				// Close summary part if open
-				if reasoningSummaryPartAdded {
-					e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-						"type":          "response.reasoning_summary_part.done",
-						"output_index":  outputIndex,
-						"summary_index": reasoningSummaryIndex,
-						"part": map[string]interface{}{
-							"type": "summary_text",
-							"text": accumulatedReasoning,
-						},
-					})
-					reasoningSummaryPartAdded = false
-				}
-
-				if reasoningItemID != "" {
-					reasoningItem := map[string]interface{}{
-						"id":      reasoningItemID,
-						"type":    "reasoning",
-						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-					}
-					e.emit("response.output_item.done", map[string]interface{}{
-						"type":         "response.output_item.done",
-						"output_index": outputIndex,
-						"item":         reasoningItem,
-					})
-					completedOutput = append(completedOutput, reasoningItem)
-				}
+				emitReasoningClose(e, reasoningItemID, outputIndex, reasoningSummaryIndex, accumulatedReasoning, reasoningSummaryPartAdded, &completedOutput)
+				reasoningSummaryPartAdded = false
 				reasoningItemID = ""
 			}
 
@@ -594,7 +612,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 					"type":    "message",
 					"status":  status,
 					"role":    "assistant",
-					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+					"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 				}
 				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
@@ -608,29 +626,12 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			// Close any active function calls (in stream-index order).
 			completedOutput = append(completedOutput, finalizeFuncCalls(e, funcCalls, funcCallOrder)...)
 
-			// Emit completed with accumulated output
-			completedResp := map[string]interface{}{
-				"id":          respID,
-				"object":      "response",
-				"created_at":  createdAt,
-				"model":       respReq.Model,
-				"background":  false,
-				"error":       nil,
-				"status":      status,
-				"output":      completedOutput,
-				"output_text": completedOutputText,
-				"usage": map[string]interface{}{
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"total_tokens":  inputTokens + outputTokens,
-				},
-			}
-			mergeResponsesEchoFields(completedResp, respReq)
-			e.emit("response.completed", map[string]interface{}{
-				"type":     "response.completed",
-				"response": completedResp,
-			})
-			completedEmitted = true
+			// Defer response.completed to the terminal [DONE] marker so late
+			// usage-only chunks (sent by OpenAI-compatible providers after
+			// finish_reason when stream_options.include_usage is set) can
+			// still populate response.usage. Emitting here would ship
+			// usage={0,0,0}. Mirrors the CLIProxyAPI reference.
+			completionStatus = status
 		}
 	}
 
@@ -638,7 +639,10 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		log.Printf("[ERR] Stream read error: %v", err)
 	}
 
-	// Final cleanup if stream ended without finish_reason and not yet completed
+	// Final cleanup: emit response.completed. The finish_reason handler only set
+	// the completionPending flag (so late usage-only chunks could land); the
+	// terminal event is emitted here, after the upstream stream is fully
+	// consumed. This also covers streams that ended without a finish_reason.
 	if !completedEmitted {
 		// Close text content part if active
 		if textContentPartID != "" {
@@ -652,10 +656,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				"type":          "response.content_part.done",
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
-				"part": map[string]interface{}{
-					"type": "output_text",
-					"text": accumulatedText,
-				},
+				"part": responsesOutputTextPart(accumulatedText),
 			})
 		}
 
@@ -665,7 +666,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				"type":    "message",
 				"status":  "completed",
 				"role":    "assistant",
-				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 			}
 			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",
@@ -680,34 +681,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		// Close reasoning if still active
 		if reasoningActive {
 			reasoningActive = false
-
-			// Close summary part if open
-			if reasoningSummaryPartAdded {
-				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-					"type":          "response.reasoning_summary_part.done",
-					"output_index":  outputIndex,
-					"summary_index": reasoningSummaryIndex,
-					"part": map[string]interface{}{
-						"type": "summary_text",
-						"text": accumulatedReasoning,
-					},
-				})
-				reasoningSummaryPartAdded = false
-			}
-
-			if reasoningItemID != "" {
-				reasoningItem := map[string]interface{}{
-					"id":      reasoningItemID,
-					"type":    "reasoning",
-					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-				}
-				e.emit("response.output_item.done", map[string]interface{}{
-					"type":         "response.output_item.done",
-					"output_index": outputIndex,
-					"item":         reasoningItem,
-				})
-				completedOutput = append(completedOutput, reasoningItem)
-			}
+			emitReasoningClose(e, reasoningItemID, outputIndex, reasoningSummaryIndex, accumulatedReasoning, reasoningSummaryPartAdded, &completedOutput)
+			reasoningSummaryPartAdded = false
 			reasoningItemID = ""
 		}
 
@@ -718,7 +693,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"model":       respReq.Model,
 			"background":  false,
 			"error":       nil,
-			"status":      "completed",
+			"status":      completionStatus,
 			"output":      completedOutput,
 			"output_text": completedOutputText,
 			"usage": map[string]interface{}{
@@ -835,6 +810,19 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		},
 	})
 
+	// Emit response.in_progress (standard event the CLIProxyAPI reference emits
+	// immediately after response.created; strict clients expect it before any
+	// output items).
+	e.emit("response.in_progress", map[string]interface{}{
+		"type": "response.in_progress",
+		"response": map[string]interface{}{
+			"id":         respID,
+			"object":     "response",
+			"created_at": createdAt,
+			"status":     "in_progress",
+		},
+	})
+
 	// teeBody mirrors resp.Body into the debug capture (#3 original response)
 	// when enabled; returns resp.Body unchanged otherwise.
 	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
@@ -908,35 +896,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 		if hasNonThinkingContent && thinkingActive {
 			thinkingActive = false
-
-			// Close summary part if open
-			if thinkingSummaryPartAdded {
-				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-					"type":          "response.reasoning_summary_part.done",
-					"output_index":  outputIndex,
-					"summary_index": thinkingSummaryIndex,
-					"part": map[string]interface{}{
-						"type": "summary_text",
-						"text": accumulatedReasoning,
-					},
-				})
-				thinkingSummaryPartAdded = false
-			}
-
-			// Close reasoning item
-			if reasoningItemID != "" {
-				reasoningItem := map[string]interface{}{
-					"id":      reasoningItemID,
-					"type":    "reasoning",
-					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-				}
-				e.emit("response.output_item.done", map[string]interface{}{
-					"type":         "response.output_item.done",
-					"output_index": outputIndex,
-					"item":         reasoningItem,
-				})
-				completedOutput = append(completedOutput, reasoningItem)
-			}
+			emitReasoningClose(e, reasoningItemID, outputIndex, thinkingSummaryIndex, accumulatedReasoning, thinkingSummaryPartAdded, &completedOutput)
+			thinkingSummaryPartAdded = false
 			reasoningItemID = ""
 		}
 
@@ -955,10 +916,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 						"type":          "response.content_part.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
-						"part": map[string]interface{}{
-							"type": "output_text",
-							"text": accumulatedText,
-						},
+						"part": responsesOutputTextPart(accumulatedText),
 					})
 					contentPartID = ""
 				}
@@ -967,7 +925,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":    "message",
 					"status":  "completed",
 					"role":    "assistant",
-					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+					"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 				}
 				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
@@ -1045,10 +1003,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":          "response.content_part.added",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
-					"part": map[string]interface{}{
-						"type": "output_text",
-						"text": "",
-					},
+					"part": responsesOutputTextPart(""),
 				})
 			}
 
@@ -1068,34 +1023,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			// Close thinking if active
 			if thinkingActive {
 				thinkingActive = false
-
-				// Close summary part if open
-				if thinkingSummaryPartAdded {
-					e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-						"type":          "response.reasoning_summary_part.done",
-						"output_index":  outputIndex,
-						"summary_index": thinkingSummaryIndex,
-						"part": map[string]interface{}{
-							"type": "summary_text",
-							"text": accumulatedReasoning,
-						},
-					})
-					thinkingSummaryPartAdded = false
-				}
-
-				if reasoningItemID != "" {
-					reasoningItem := map[string]interface{}{
-						"id":      reasoningItemID,
-						"type":    "reasoning",
-						"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-					}
-					e.emit("response.output_item.done", map[string]interface{}{
-						"type":         "response.output_item.done",
-						"output_index": outputIndex,
-						"item":         reasoningItem,
-					})
-					completedOutput = append(completedOutput, reasoningItem)
-				}
+				emitReasoningClose(e, reasoningItemID, outputIndex, thinkingSummaryIndex, accumulatedReasoning, thinkingSummaryPartAdded, &completedOutput)
+				thinkingSummaryPartAdded = false
 				reasoningItemID = ""
 			}
 
@@ -1112,10 +1041,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 						"type":          "response.content_part.done",
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
-						"part": map[string]interface{}{
-							"type": "output_text",
-							"text": accumulatedText,
-						},
+						"part": responsesOutputTextPart(accumulatedText),
 					})
 					contentPartID = ""
 				}
@@ -1130,7 +1056,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":    "message",
 					"status":  status,
 					"role":    "assistant",
-					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+					"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 				}
 				e.emit("response.output_item.done", map[string]interface{}{
 					"type":         "response.output_item.done",
@@ -1192,34 +1118,8 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	if !completedEmitted {
 		if thinkingActive {
 			thinkingActive = false
-
-			// Close summary part if open
-			if thinkingSummaryPartAdded {
-				e.emit("response.reasoning_summary_part.done", map[string]interface{}{
-					"type":          "response.reasoning_summary_part.done",
-					"output_index":  outputIndex,
-					"summary_index": thinkingSummaryIndex,
-					"part": map[string]interface{}{
-						"type": "summary_text",
-						"text": accumulatedReasoning,
-					},
-				})
-				thinkingSummaryPartAdded = false
-			}
-
-			if reasoningItemID != "" {
-				reasoningItem := map[string]interface{}{
-					"id":      reasoningItemID,
-					"type":    "reasoning",
-					"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": accumulatedReasoning}},
-				}
-				e.emit("response.output_item.done", map[string]interface{}{
-					"type":         "response.output_item.done",
-					"output_index": outputIndex,
-					"item":         reasoningItem,
-				})
-				completedOutput = append(completedOutput, reasoningItem)
-			}
+			emitReasoningClose(e, reasoningItemID, outputIndex, thinkingSummaryIndex, accumulatedReasoning, thinkingSummaryPartAdded, &completedOutput)
+			thinkingSummaryPartAdded = false
 			reasoningItemID = ""
 		}
 
@@ -1235,10 +1135,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 					"type":          "response.content_part.done",
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
-					"part": map[string]interface{}{
-						"type": "output_text",
-						"text": accumulatedText,
-					},
+					"part": responsesOutputTextPart(accumulatedText),
 				})
 			}
 
@@ -1247,7 +1144,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"type":    "message",
 				"status":  "completed",
 				"role":    "assistant",
-				"content": []interface{}{map[string]interface{}{"type": "output_text", "text": accumulatedText}},
+				"content": []interface{}{responsesOutputTextPart(accumulatedText)},
 			}
 			e.emit("response.output_item.done", map[string]interface{}{
 				"type":         "response.output_item.done",

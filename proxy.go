@@ -474,7 +474,7 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 func translateContentBlocksWithToolLookup(role string, blocks []interface{}, toolIDToName map[string]string) []OllamaMessage {
 	textParts := []string{}
 	images := []string{}
-	var thinkingContent string
+	var thinkingContent, droppedThinking string
 	toolUseBlocks := []AnthropicToolUseBlock{}
 	type toolResult struct {
 		toolUseID string
@@ -511,9 +511,11 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			// shouldMapClaudeThinkingToGPTReasoning, which skips empty-signature
 			// thinking when routing Claude history to a non-Claude provider.)
 			sig, _ := blockMap["signature"].(string)
-			if strings.TrimSpace(sig) != "" {
-				if thinking, ok := blockMap["thinking"].(string); ok {
+			if thinking, ok := blockMap["thinking"].(string); ok {
+				if strings.TrimSpace(sig) != "" {
 					thinkingContent += thinking
+				} else {
+					droppedThinking += thinking
 				}
 			}
 		case "image":
@@ -630,6 +632,15 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			})
 		}
 		return messages
+	}
+
+	// Fallback: if dropping stale thinking would leave an empty assistant
+	// message (no text, tool_use, tool_result, or images), restore it so we
+	// never emit a content-less assistant message, which some upstreams reject
+	// as an invalid request.
+	if role == "assistant" && thinkingContent == "" && droppedThinking != "" &&
+		len(textParts) == 0 && len(toolUseBlocks) == 0 && len(toolResults) == 0 && len(images) == 0 {
+		thinkingContent = droppedThinking
 	}
 
 	msg := OllamaMessage{Role: role}

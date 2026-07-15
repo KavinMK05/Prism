@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 <img src="./icon.png" alt="Prism" width="120" />
 
@@ -8,25 +8,12 @@
 
 Prism is a one-stop agentic coding setup — point any AI coding agent (Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode, and more) at a single local endpoint and reach any provider through any protocol. It routes to Ollama Cloud, OpenCode Go, custom OpenAI-compatible providers, and your Codex (OpenAI) OAuth account, translating between Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Ollama APIs in real time. Built in: a managed local SearXNG metasearch engine giving your agents free unlimited web search with no API keys, no rate limits, and no Cloudflare blocks. Native system tray, web admin UI, model auto-discovery from models.dev, and full SSE streaming. Zero config.
 
-[![Windows](https://img.shields.io/badge/platform-Windows-blue?logo=windows)](https://github.com/user/prism)
-[![macOS](https://img.shields.io/badge/platform-macOS-silver?logo=apple)](https://github.com/user/prism)
-[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/KavinMK05/Prism/blob/main/LICENSE)
 [![Release](https://img.shields.io/github/v/release/KavinMK05/Prism?logo=github)](https://github.com/KavinMK05/Prism/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/KavinMK05/Prism/release.yml?branch=main&label=build&logo=github-actions)](https://github.com/KavinMK05/Prism/actions/workflows/release.yml)
 [![GitHub stars](https://img.shields.io/github/stars/KavinMK05/Prism?style=flat&logo=github)](https://github.com/KavinMK05/Prism/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/KavinMK05/Prism?style=flat&logo=github)](https://github.com/KavinMK05/Prism/forks)
-[![GitHub issues](https://img.shields.io/github/issues/KavinMK05/Prism?logo=github)](https://github.com/KavinMK05/Prism/issues)
-[![GitHub PRs](https://img.shields.io/github/issues-pr/KavinMK05/Prism?logo=github)](https://github.com/KavinMK05/Prism/pulls)
-[![Last commit](https://img.shields.io/github/last-commit/KavinMK05/Prism?logo=git)](https://github.com/KavinMK05/Prism/commits/main)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/KavinMK05/Prism?logo=git)](https://github.com/KavinMK05/Prism/commits/main)
-[![Repo size](https://img.shields.io/github/repo-size/KavinMK05/Prism?logo=git)](https://github.com/KavinMK05/Prism)
-[![Code size](https://img.shields.io/github/languages/code-size/KavinMK05/Prism?logo=go)](https://github.com/KavinMK05/Prism)
 [![Go Report Card](https://goreportcard.com/badge/github.com/KavinMK05/Prism)](https://goreportcard.com/report/github.com/KavinMK05/Prism)
-[![Free search](https://img.shields.io/badge/search-free_%26_unlimited-brightgreen?logo=searxng)](https://github.com/searxng/searxng)
-[![SSE streaming](https://img.shields.io/badge/streaming-SSE-success?logo=eventstore)](#streaming)
-[![Zero dependencies](https://img.shields.io/badge/runtime_deps-0-blueviolet?logo=go)](#why-prism)
-[![Models from models.dev](https://img.shields.io/badge/model_config-models.dev-blue?logo=bookdepository)](https://models.dev)
+[![Open Source](https://img.shields.io/badge/open-source-blue)](https://opensource.org/)
 
 ![Prism screenshot](./preview.jpg)
 

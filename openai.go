@@ -123,7 +123,7 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 	textParts := []string{}
 	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
-	var thinkingContent string
+	var thinkingContent, droppedThinking string
 	type toolResult struct {
 		id      string
 		content string
@@ -154,9 +154,11 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 			// empty-signature thinking when routing Claude history to a
 			// non-Claude provider.
 			sig, _ := blockMap["signature"].(string)
-			if strings.TrimSpace(sig) != "" {
-				if thinking, ok := blockMap["thinking"].(string); ok {
+			if thinking, ok := blockMap["thinking"].(string); ok {
+				if strings.TrimSpace(sig) != "" {
 					thinkingContent += thinking
+				} else {
+					droppedThinking += thinking
 				}
 			}
 		case "tool_use":
@@ -220,6 +222,15 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 				}
 			}
 		}
+	}
+
+	// Fallback: if dropping stale thinking would leave an empty assistant
+	// message (no text, tool_calls, tool_results, or images), restore it so we
+	// never emit a content-less assistant message, which some upstreams reject
+	// as an invalid request.
+	if role == "assistant" && thinkingContent == "" && droppedThinking != "" &&
+		len(textParts) == 0 && len(toolCalls) == 0 && len(toolResults) == 0 && len(imageParts) == 0 {
+		thinkingContent = droppedThinking
 	}
 
 	if len(toolCalls) > 0 {
