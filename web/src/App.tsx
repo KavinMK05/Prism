@@ -3,13 +3,14 @@ import { useTheme } from './ThemeContext';
 import ProxyPanel from './components/ProxyPanel';
 import AgentsPanel from './components/AgentsPanel';
 import SearXNGPanel from './components/SearXNGPanel';
+import SearchProvidersPanel from './components/SearchProvidersPanel';
 import OAuthPanel from './components/OAuthPanel';
 import ProviderPanel from './components/ProviderPanel';
 import ModelsPanel from './components/ModelsPanel';
 import StatsPanel from './components/StatsPanel';
 import { api } from './api';
 
-type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng';
+type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search';
 
 interface Tab {
   id: TabId;
@@ -84,6 +85,17 @@ const TABS: Tab[] = [
     ),
   },
   {
+    id: 'search',
+    label: 'Search',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="7" />
+        <line x1="20" y1="20" x2="16.65" y2="16.65" />
+        <path d="M11 8v6M8 11h6" />
+      </svg>
+    ),
+  },
+  {
     id: 'stats',
     label: 'Stats',
     icon: (
@@ -98,7 +110,7 @@ const TABS: Tab[] = [
 
 const SECTIONS: { label: string; tabs: TabId[] }[] = [
   { label: 'Configuration', tabs: ['provider', 'models', 'agents'] },
-  { label: 'Integrations', tabs: ['oauth', 'proxy', 'searxng'] },
+  { label: 'Integrations', tabs: ['oauth', 'proxy', 'searxng', 'search'] },
   { label: 'Analytics', tabs: ['stats'] },
 ];
 
@@ -131,6 +143,7 @@ export default function App() {
       case 'agents': return <AgentsPanel />;
       case 'proxy': return <ProxyPanel />;
       case 'searxng': return <SearXNGPanel />;
+      case 'search': return <SearchProvidersPanel />;
       default: return null;
     }
   };

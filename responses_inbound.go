@@ -49,6 +49,15 @@ func (pr *ProviderRouter) HandleResponsesAPI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Pattern A (Ollama/cloud AND OpenAI-compatible paths): intercept built-in
+	// web_search tool calls (Codex Desktop / Grok Build with Prism models), run
+	// them locally via the SearchRunner, and re-request upstream with the
+	// results. Handles both streaming and non-streaming internally, and both
+	// Ollama and OpenAI Chat Completions upstreams.
+	if pr.handleResponsesWebSearchLoop(w, r, &respReq, rp, toolTypes, toolNamespaces, allTools) {
+		return
+	}
+
 	if respReq.Stream {
 		if rp.ProviderType == "openai" {
 			pr.handleResponsesAPIOpenAIStreaming(w, r, &respReq, rp, toolTypes, toolNamespaces)

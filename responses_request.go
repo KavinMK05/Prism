@@ -1486,7 +1486,7 @@ func sanitizeToolName(name string) string {
 // upstream chat-completions model knows which argument keys to emit.
 func nativeToolParameters(toolType string) map[string]interface{} {
 	switch {
-	case strings.HasPrefix(toolType, "web_search"):
+	case strings.HasPrefix(toolType, "web_search") || strings.HasPrefix(toolType, "x_search"):
 		return map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -1558,6 +1558,8 @@ func nativeToolDescription(toolType string) string {
 	switch {
 	case strings.HasPrefix(toolType, "web_search"):
 		return "Search the web using Codex's web-search tool fallback."
+	case strings.HasPrefix(toolType, "x_search"):
+		return "Search the web for up-to-date information."
 	case strings.HasPrefix(toolType, "computer_use"):
 		return "Request a Codex computer-use action."
 	case toolType == "apply_patch":

@@ -75,6 +75,7 @@ func runProxyServer() {
 	SyncAgents(parseIntOr(port, 11434))
 
 	router := NewProviderRouter(cfg, modelRemap)
+	globalSearchRunner.Reload(cfg.Search)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)

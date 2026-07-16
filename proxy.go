@@ -266,9 +266,32 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	}
 	anthroReq.Model = resolvedModel
 
+	// Intercept Claude Code's WebSearch secondary conversation and answer it
+	// directly from the configured search providers. Prism's upstreams
+	// (Ollama / OpenAI-compatible) cannot run Anthropic's hosted web_search
+	// server tool, so without this the model emits a web_search tool_use that
+	// goes nowhere. Gated on search being enabled so disabling search in the
+	// admin UI restores pass-through behaviour.
+	if searchInterceptionEnabled() {
+		if query, ok := detectClaudeCodeWebSearch(&anthroReq); ok {
+			pr.handleClaudeCodeWebSearch(w, r, &anthroReq, query, rp)
+			return
+		}
+	}
+
 	if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
 		pr.HandleOpenAIMessages(w, r, &anthroReq, rp)
 		return
+	}
+
+	// Pattern A (Ollama/Anthropic path only): a normal conversation carrying a
+	// typed web_search server tool (e.g. ZCode after the kind:"anthropic" config
+	// switch). Intercept the model's web_search calls, run them locally via the
+	// SearchRunner, and re-request upstream with the results.
+	if searchInterceptionEnabled() && hasServerWebSearchTool(&anthroReq) {
+		if pr.handleServerWebSearchLoop(w, r, &anthroReq, rp) {
+			return
+		}
 	}
 
 	client := detectClient(r)

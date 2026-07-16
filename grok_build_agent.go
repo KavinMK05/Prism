@@ -93,16 +93,17 @@ func stripPrismModelSections(content string) string {
 }
 
 // buildGrokBuildModelSections writes one [model.prism-<key>] section per known
-// Prism model. Codex OAuth models use api_backend = "responses" (routed
-// through /v1/responses); all others use "chat_completions" (/v1/chat/completions).
+// Prism model. All Prism models use api_backend = "responses" so Grok Build
+// routes through /v1/responses, where Prism intercepts the hosted web_search
+// tool and runs it locally via the SearchRunner. supports_backend_search = true
+// tells Grok Build the backend can execute web search, so it emits the typed
+// web_search tool Prism emulates (instead of falling back to a client-side tool
+// the model then claims it doesn't have).
 func buildGrokBuildModelSections(remap *ModelRemapping, cfg *Config, baseURL string) string {
 	var b strings.Builder
 	for _, m := range remap.KnownModels {
 		key := "prism-" + sanitizeGrokModelKey(m.ID)
-		apiBackend := "chat_completions"
-		if cfg.isCodexProviderID(m.Provider) {
-			apiBackend = "responses"
-		}
+		apiBackend := "responses"
 		ctx := m.ContextLength
 		if ctx == 0 {
 			ctx = 128000
@@ -114,7 +115,7 @@ func buildGrokBuildModelSections(remap *ModelRemapping, cfg *Config, baseURL str
 		b.WriteString("api_key = \"prism\"\n")
 		b.WriteString("api_backend = " + tomlQuote(apiBackend) + "\n")
 		b.WriteString(fmt.Sprintf("context_window = %d\n", ctx))
-		b.WriteString("supports_backend_search = false\n")
+		b.WriteString("supports_backend_search = true\n")
 		if m.Reasoning {
 			b.WriteString("supports_reasoning_effort = true\n")
 		}

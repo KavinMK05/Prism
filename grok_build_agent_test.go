@@ -88,7 +88,8 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 
 	out := buildGrokBuildModelSections(remap, cfg, "http://127.0.0.1:11434/v1")
 
-	// First model: chat_completions, reasoning flag, ctx preserved.
+	// First model: responses backend (so web_search interception applies),
+	// supports_backend_search = true, reasoning flag, ctx preserved.
 	if !strings.Contains(out, "[model.prism-glm-5-2-cloud]") {
 		t.Error("missing first model section header")
 	}
@@ -98,8 +99,11 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 	if !strings.Contains(out, `base_url = "http://127.0.0.1:11434/v1"`) {
 		t.Error("base_url wrong")
 	}
-	if !strings.Contains(out, "api_backend = \"chat_completions\"") {
-		t.Error("non-codex model should use chat_completions")
+	if !strings.Contains(out, "api_backend = \"responses\"") {
+		t.Error("prism model should use responses backend")
+	}
+	if !strings.Contains(out, "supports_backend_search = true") {
+		t.Error("prism model should advertise backend search")
 	}
 	if !strings.Contains(out, "context_window = 200000") {
 		t.Error("context_window not preserved")
@@ -110,7 +114,7 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 	if !strings.Contains(out, `name = "[Prism] Glm 5.2:cloud"`) {
 	}
 
-	// Second model: codex -> responses, ctx defaulted to 128000, no reasoning flag line.
+	// Second model: also responses, ctx defaulted to 128000, no reasoning flag line.
 	if !strings.Contains(out, "[model.prism-gpt-5-codex]") {
 		t.Error("missing second model section header")
 	}

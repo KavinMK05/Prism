@@ -76,15 +76,15 @@ func installZcodeConfig(port int, remap *ModelRemapping) error {
 		providers = map[string]interface{}{}
 	}
 
-	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) // root; ZCode appends /v1/messages for anthropic kind
 	models := buildZcodeModels(remap, loadConfig())
 
 	providers[zcodeProviderID] = map[string]interface{}{
 		"name": "Prism",
-		"kind": "openai-compatible",
+		"kind": "anthropic", // was "openai-compatible" — lets ZCode use Anthropic server tools (web_search/web_fetch) that Prism emulates
 		"options": map[string]interface{}{
-			"baseURL":       baseURL,
-			"apiKey":        "prism",
+			"baseURL":        baseURL,
+			"apiKey":         "prism",
 			"apiKeyRequired": true,
 		},
 		"source": "custom",

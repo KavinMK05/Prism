@@ -209,6 +209,7 @@ func emitReasoningClose(e *responsesEmitter, itemID string, outputIndex, summary
 	if partAdded {
 		e.emit("response.reasoning_summary_part.done", map[string]interface{}{
 			"type":          "response.reasoning_summary_part.done",
+			"item_id":       itemID,
 			"output_index":  outputIndex,
 			"summary_index": summaryIndex,
 			"part": map[string]interface{}{
@@ -340,7 +341,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      map[string]interface{}{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+			"usage":      responsesUsageMap(0, 0),
 		},
 	})
 
@@ -353,7 +354,12 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"id":         respID,
 			"object":     "response",
 			"created_at": createdAt,
+			"model":      respReq.Model,
+			"background": false,
+			"error":      nil,
 			"status":     "in_progress",
+			"output":     []interface{}{},
+			"usage":      responsesUsageMap(0, 0),
 		},
 	})
 
@@ -419,6 +425,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				reasoningSummaryPartAdded = true
 				e.emit("response.reasoning_summary_part.added", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.added",
+					"item_id":       reasoningItemID,
 					"output_index":  outputIndex,
 					"summary_index": reasoningSummaryIndex,
 					"part": map[string]interface{}{
@@ -434,6 +441,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			accumulatedReasoning += *choice.Delta.ReasoningContent
 			e.emit("response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       reasoningItemID,
 				"output_index":  outputIndex,
 				"summary_index": reasoningSummaryIndex,
 				"delta":         *choice.Delta.ReasoningContent,
@@ -453,12 +461,14 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			if textContentPartID != "" {
 				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
 				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"part": responsesOutputTextPart(accumulatedText),
@@ -555,6 +565,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				textContentPartID = generateID("cont_")
 				e.emit("response.content_part.added", map[string]interface{}{
 					"type":          "response.content_part.added",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"part": responsesOutputTextPart(""),
@@ -567,6 +578,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			globalStats.AddTokens(1)
 			e.emit("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
+				"item_id":          messageItemID,
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
 				"delta":         *delta.Content,
@@ -584,12 +596,14 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			if textContentPartID != "" {
 				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
 				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"part": responsesOutputTextPart(accumulatedText),
@@ -648,12 +662,14 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		if textContentPartID != "" {
 			e.emit("response.output_text.done", map[string]interface{}{
 				"type":          "response.output_text.done",
+				"item_id":          messageItemID,
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
 				"text":          accumulatedText,
 			})
 			e.emit("response.content_part.done", map[string]interface{}{
 				"type":          "response.content_part.done",
+				"item_id":          messageItemID,
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
 				"part": responsesOutputTextPart(accumulatedText),
@@ -696,11 +712,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"status":      completionStatus,
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage": map[string]interface{}{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  inputTokens + outputTokens,
-			},
+			"usage":         responsesUsageMap(inputTokens, outputTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{
@@ -806,7 +818,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      map[string]interface{}{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+			"usage":      responsesUsageMap(0, 0),
 		},
 	})
 
@@ -819,7 +831,12 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"id":         respID,
 			"object":     "response",
 			"created_at": createdAt,
+			"model":      respReq.Model,
+			"background": false,
+			"error":      nil,
 			"status":     "in_progress",
+			"output":     []interface{}{},
+			"usage":      responsesUsageMap(0, 0),
 		},
 	})
 
@@ -873,6 +890,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				thinkingSummaryPartAdded = true
 				e.emit("response.reasoning_summary_part.added", map[string]interface{}{
 					"type":          "response.reasoning_summary_part.added",
+					"item_id":       reasoningItemID,
 					"output_index":  outputIndex,
 					"summary_index": thinkingSummaryIndex,
 					"part": map[string]interface{}{
@@ -886,6 +904,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			accumulatedReasoning += chunk.Message.Thinking
 			e.emit("response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       reasoningItemID,
 				"output_index":  outputIndex,
 				"summary_index": thinkingSummaryIndex,
 				"delta":         chunk.Message.Thinking,
@@ -908,12 +927,14 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				if contentPartID != "" {
 					e.emit("response.output_text.done", map[string]interface{}{
 						"type":          "response.output_text.done",
+						"item_id":          messageItemID,
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"text":          accumulatedText,
 					})
 					e.emit("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
+						"item_id":          messageItemID,
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"part": responsesOutputTextPart(accumulatedText),
@@ -1013,6 +1034,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				contentPartID = generateID("cont_")
 				e.emit("response.content_part.added", map[string]interface{}{
 					"type":          "response.content_part.added",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"part": responsesOutputTextPart(""),
@@ -1024,6 +1046,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			globalStats.AddTokens(1)
 			e.emit("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
+				"item_id":          messageItemID,
 				"output_index":  outputIndex,
 				"content_index": contentIndex,
 				"delta":         chunk.Message.Content,
@@ -1045,12 +1068,14 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				if contentPartID != "" {
 					e.emit("response.output_text.done", map[string]interface{}{
 						"type":          "response.output_text.done",
+						"item_id":          messageItemID,
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"text":          accumulatedText,
 					})
 					e.emit("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
+						"item_id":          messageItemID,
 						"output_index":  outputIndex,
 						"content_index": contentIndex,
 						"part": responsesOutputTextPart(accumulatedText),
@@ -1107,11 +1132,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"status":      status,
 				"output":      completedOutput,
 				"output_text": completedOutputText,
-				"usage": map[string]interface{}{
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"total_tokens":  inputTokens + outputTokens,
-				},
+				"usage":         responsesUsageMap(inputTokens, outputTokens),
 			}
 			mergeResponsesEchoFields(completedResp, respReq)
 			e.emit("response.completed", map[string]interface{}{
@@ -1139,12 +1160,14 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			if contentPartID != "" {
 				e.emit("response.output_text.done", map[string]interface{}{
 					"type":          "response.output_text.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"text":          accumulatedText,
 				})
 				e.emit("response.content_part.done", map[string]interface{}{
 					"type":          "response.content_part.done",
+					"item_id":          messageItemID,
 					"output_index":  outputIndex,
 					"content_index": contentIndex,
 					"part": responsesOutputTextPart(accumulatedText),
@@ -1186,11 +1209,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"status":      "completed",
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage": map[string]interface{}{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  inputTokens + outputTokens,
-			},
+			"usage":         responsesUsageMap(inputTokens, outputTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{

@@ -63,24 +63,38 @@ func newTranslationDebugCapture(endpoint string, stream bool, model string) *tra
 }
 
 // pruneTranslationDebugDirs keeps only the most recent translationDebugCap
-// directories in parent (oldest by zero-padded sequence number first).
+// directories in parent (oldest by modification time first). Sorting by
+// modtime (rather than the zero-padded sequence number in the name) is robust
+// to process restarts, which reset the sequence counter and would otherwise
+// make fresh low-numbered dirs sort below stale high-numbered ones and get
+// pruned immediately.
 func pruneTranslationDebugDirs(parent string) {
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
+	type dirInfo struct {
+		name    string
+		modTime int64
 	}
-	sort.Strings(names)
-	if len(names) <= translationDebugCap {
+	var dirs []dirInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		dirs = append(dirs, dirInfo{name: e.Name(), modTime: info.ModTime().UnixNano()})
+	}
+	if len(dirs) <= translationDebugCap {
 		return
 	}
-	for _, n := range names[:len(names)-translationDebugCap] {
-		os.RemoveAll(filepath.Join(parent, n))
+	// Newest first (highest modTime).
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].modTime > dirs[j].modTime })
+	for _, d := range dirs[translationDebugCap:] {
+		os.RemoveAll(filepath.Join(parent, d.name))
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -747,6 +748,122 @@ func startAdminServer(cfg *Config, port string) {
 		default:
 			http.Error(w, "method not allowed", 405)
 		}
+	})
+
+	// API: Search providers (pluggable web-search backends for agent interception)
+	mux.HandleFunc("/admin/search/providers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		encodeJSON(w, searchCatalog)
+	})
+
+	mux.HandleFunc("/admin/search/config", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			cfg := loadConfig()
+			encodeJSON(w, adminSearchConfigView(cfg.Search))
+		case http.MethodPut:
+			var in adminSearchConfigInput
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			c := loadConfig()
+			sc := mergeSearchConfig(c.Search)
+			if in.Active != "" {
+				sc.Active = in.Active
+			}
+			if in.Fallback != nil {
+				sc.Fallback = in.Fallback
+			}
+			if in.MaxPerTurn > 0 {
+				sc.MaxPerTurn = in.MaxPerTurn
+			}
+			if in.TimeoutMs > 0 {
+				sc.TimeoutMs = in.TimeoutMs
+			}
+			if in.DefaultNumResults > 0 {
+				sc.DefaultNumResults = in.DefaultNumResults
+			}
+			for id, incoming := range in.Providers {
+				pc := sc.Providers[id]
+				if pc == nil {
+					pc = &SearchProviderConfig{}
+					sc.Providers[id] = pc
+				}
+				pc.Enabled = incoming.Enabled
+				if incoming.BaseURL != "" {
+					pc.BaseURL = incoming.BaseURL
+				}
+				// APIKey is write-only: empty string = keep existing key.
+				if incoming.APIKey != "" {
+					pc.APIKey = incoming.APIKey
+				}
+			}
+			c.Search = sc
+			if err := saveConfig(c); err != nil {
+				writeJSONError(w, "save failed: "+err.Error(), 500)
+				return
+			}
+			adminMu.Lock()
+			if adminConfig != nil {
+				adminConfig.Search = sc
+			}
+			adminMu.Unlock()
+			globalSearchRunner.Reload(sc)
+			encodeJSON(w, map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+	})
+
+	mux.HandleFunc("/admin/search/test", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		var req struct {
+			Provider string `json:"provider"`
+			Query    string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+			return
+		}
+		if searchCatalogMeta(req.Provider) == nil {
+			writeJSONError(w, "unknown provider", 400)
+			return
+		}
+		c := loadConfig()
+		globalSearchRunner.Reload(c.Search) // ensure latest keys
+		p, err := globalSearchRunner.build(req.Provider)
+		if err != nil {
+			writeJSONError(w, err.Error(), 500)
+			return
+		}
+		q := strings.TrimSpace(req.Query)
+		if q == "" {
+			q = "hello world"
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		res, err := p.Search(ctx, SearchQuery{Query: q, NumResults: 3})
+		if err != nil {
+			encodeJSON(w, map[string]interface{}{"ok": false, "error": err.Error(), "provider": req.Provider})
+			return
+		}
+		sample := make([]map[string]string, 0, len(res))
+		for _, r := range res {
+			sample = append(sample, map[string]string{"title": r.Title, "url": r.URL})
+		}
+		encodeJSON(w, map[string]interface{}{
+			"ok":          true,
+			"provider":    req.Provider,
+			"resultCount": len(res),
+			"sample":      sample,
+		})
 	})
 
 	// API: Codex Desktop integration

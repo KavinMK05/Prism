@@ -56,9 +56,17 @@ type AnthropicThinkingBlock struct {
 }
 
 type AnthropicTool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	InputSchema interface{} `json:"input_schema"`
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description,omitempty"`
+	InputSchema    interface{}            `json:"input_schema"`
+	// Type is set for Anthropic server-side tools (e.g. "web_search_20250305",
+	// "web_fetch_20250924"). Empty for ordinary function tools. Prism intercepts
+	// these so they work against non-Anthropic upstreams.
+	Type           string                 `json:"type,omitempty"`
+	MaxUses        int                    `json:"max_uses,omitempty"`
+	AllowedDomains []string               `json:"allowed_domains,omitempty"`
+	BlockedDomains []string               `json:"blocked_domains,omitempty"`
+	UserLocation   map[string]interface{} `json:"user_location,omitempty"`
 }
 
 type AnthropicThinking struct {

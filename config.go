@@ -27,6 +27,26 @@ type AgentIntegrationsConfig struct {
 	ClaudeCodeTiers map[string]string `json:"claude_code_tiers,omitempty"`
 }
 
+// SearchProviderConfig is the per-provider settings block under config.search.providers.
+// APIKey is write-only from the admin API's perspective: GET /admin/search/config
+// never echoes it back (it reports hasKey/keyFromEnv instead).
+type SearchProviderConfig struct {
+	Enabled bool   `json:"enabled"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"` // searxng/ollama only
+}
+
+// SearchConfig is the top-level search block. It drives the SearchRunner that
+// the per-agent web-search interception calls through.
+type SearchConfig struct {
+	Active            string                       `json:"active"`
+	Fallback          []string                     `json:"fallback,omitempty"`
+	MaxPerTurn        int                          `json:"max_per_turn,omitempty"`
+	TimeoutMs         int                          `json:"timeout_ms,omitempty"`
+	DefaultNumResults int                          `json:"default_num_results,omitempty"`
+	Providers         map[string]*SearchProviderConfig `json:"providers,omitempty"`
+}
+
 type Config struct {
 	DefaultProvider   string                   `json:"default_provider"`
 	OllamaCloud       *ProviderConfig          `json:"ollama_cloud"`
@@ -35,6 +55,7 @@ type Config struct {
 	OAuthAccounts     []*OAuthAccount          `json:"oauth_accounts"`
 	AgentIntegrations *AgentIntegrationsConfig `json:"agent_integrations,omitempty"`
 	SearXNGAutoStart  bool                     `json:"searxng_autostart,omitempty"`
+	Search           *SearchConfig            `json:"search,omitempty"`
 }
 
 // clone returns a deep copy of the Config, safe for mutation without affecting the original
@@ -223,6 +244,11 @@ func loadConfig() *Config {
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "ollama_cloud"
 	}
+	if cfg.Search == nil {
+		cfg.Search = defaultSearchConfig()
+	} else {
+		cfg.Search = mergeSearchConfig(cfg.Search)
+	}
 	return cfg
 }
 
@@ -256,6 +282,7 @@ func defaultConfig() *Config {
 		AgentIntegrations: &AgentIntegrationsConfig{
 			ClaudeCodeTiers: map[string]string{},
 		},
+		Search: defaultSearchConfig(),
 	}
 }
 
