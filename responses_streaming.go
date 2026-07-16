@@ -948,7 +948,19 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				globalStats.AddTokens(1)
 
 				outputIndex++
-				funcCallCallID = fmt.Sprintf("call_%s_%d", toolName, outputIndex)
+				// Prefer the upstream tool-call id so call_ids stay unique across
+				// turns. The previous code synthesized "call_<name>_<outputIndex>"
+				// and discarded tc.ID; since outputIndex resets every stream, every
+				// turn's first call to the same tool reused the same call_id. That
+				// collided ids across the replayed history (30 calls, 3 unique ids),
+				// so the upstream could no longer correlate tool outputs to their
+				// calls. Fall back to the synthetic id only when the upstream omits
+				// one. Mirrors the OpenAI streaming path, the non-streaming path,
+				// and the CLIProxyAPI reference.
+				funcCallCallID = tc.ID
+				if funcCallCallID == "" {
+					funcCallCallID = fmt.Sprintf("call_%s_%d", toolName, outputIndex)
+				}
 				// Responses API distinguishes the item `id` (fc_*) from `call_id` (call_*).
 				funcCallItemID = "fc_" + funcCallCallID
 				funcCallName = toolName
