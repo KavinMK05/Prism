@@ -75,6 +75,38 @@ func TestTranslateOpenAIToOllama_ToolConversation(t *testing.T) {
 	}
 }
 
+func TestTranslateFromOpenAI_ReasoningAlias(t *testing.T) {
+	reasoning := "reasoning from OpenRouter"
+	resp := &OpenAIChatResponse{
+		Model: "m",
+		Choices: []OpenAIChoice{{
+			Message: OpenAIChatMessage{
+				Role:      "assistant",
+				Content:   "answer",
+				Reasoning: &reasoning,
+			},
+		}},
+	}
+	out := translateFromOpenAI(resp, &AnthropicRequest{Model: "m"})
+	if len(out.Content) != 2 {
+		t.Fatalf("expected thinking and text blocks, got %#v", out.Content)
+	}
+	thinking, ok := out.Content[0].(AnthropicThinkingBlock)
+	if !ok || thinking.Thinking != "reasoning from OpenRouter" {
+		t.Errorf("reasoning alias was not translated to thinking: %#v", out.Content[0])
+	}
+}
+
+func TestOpenAIStreamDelta_ReasoningAlias(t *testing.T) {
+	var chunk OpenAIStreamChunk
+	if err := json.Unmarshal([]byte(`{"choices":[{"delta":{"reasoning":"partial thought"}}]}`), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Choices[0].Delta.Reasoning == nil || *chunk.Choices[0].Delta.Reasoning != "partial thought" {
+		t.Fatalf("reasoning alias was not decoded: %#v", chunk.Choices[0].Delta)
+	}
+}
+
 // TestTranslateOllamaToOpenAI_ToolCalls checks the non-streaming response
 // translation produces a valid OpenAI tool_calls response.
 func TestTranslateOllamaToOpenAI_ToolCalls(t *testing.T) {

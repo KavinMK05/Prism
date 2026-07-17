@@ -89,7 +89,7 @@ func installOpencodeConfig(port int, remap *ModelRemapping) error {
 		providers = map[string]interface{}{}
 	}
 
-	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) + "/v1"
 	nonCodexModels := buildOpencodeModelEntries(remap, cfg, false)
 	codexModels := buildOpencodeModelEntries(remap, cfg, true)
 

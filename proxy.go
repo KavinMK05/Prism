@@ -462,11 +462,45 @@ func translateRequest(anthro *AnthropicRequest) (*OllamaChatRequest, error) {
 	return req, nil
 }
 
+func claudeSystemReminderText(content interface{}) (string, bool) {
+	var parts []string
+	switch v := content.(type) {
+	case string:
+		parts = append(parts, v)
+	case []interface{}:
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				if text, ok := m["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+	default:
+		return "", false
+	}
+
+	text := strings.TrimSpace(strings.Join(parts, "\n"))
+	if text == "" {
+		return "", false
+	}
+	return "<system-reminder>\n" + text + "\n</system-reminder>", true
+}
+
 func translateMessage(msg AnthropicMessage) []OllamaMessage {
 	return translateMessageWithToolLookup(msg, nil)
 }
 
 func translateMessageWithToolLookup(msg AnthropicMessage, toolIDToName map[string]string) []OllamaMessage {
+	// Anthropic permits system messages inside the messages array. Ollama only
+	// expects the actual system prompt at the beginning, so preserve these as
+	// user-visible reminders instead of emitting a system turn mid-conversation.
+	if msg.Role == "system" {
+		if reminder, ok := claudeSystemReminderText(msg.Content); ok {
+			return []OllamaMessage{{Role: "user", Content: reminder}}
+		}
+		return nil
+	}
+
 	switch content := msg.Content.(type) {
 	case string:
 		if msg.Role == "tool" {
@@ -497,7 +531,7 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 func translateContentBlocksWithToolLookup(role string, blocks []interface{}, toolIDToName map[string]string) []OllamaMessage {
 	textParts := []string{}
 	images := []string{}
-	var thinkingContent, droppedThinking string
+	var thinkingParts []string
 	toolUseBlocks := []AnthropicToolUseBlock{}
 	type toolResult struct {
 		toolUseID string
@@ -521,25 +555,11 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 				textParts = append(textParts, text)
 			}
 		case "thinking":
-			// Do not replay prior-turn thinking to a non-Claude upstream.
-			// Anthropic thinking blocks carry a `signature` that clients use to
-			// round-trip them; prism is the terminating server (not the Anthropic
-			// API) and never signs thinking, so any thinking the client replays has
-			// an empty or foreign signature. Forwarding a concatenation of every
-			// prior turn's reasoning biases the model — e.g. it re-reads its own
-			// stale "I need to run go build" intent and re-proposes the same tool
-			// call every turn (an infinite loop). Drop thinking blocks whose
-			// signature is empty/missing so the upstream reasons fresh from the
-			// tool calls + results. (Matches CLIProxyAPI's
-			// shouldMapClaudeThinkingToGPTReasoning, which skips empty-signature
-			// thinking when routing Claude history to a non-Claude provider.)
-			sig, _ := blockMap["signature"].(string)
-			if thinking, ok := blockMap["thinking"].(string); ok {
-				if strings.TrimSpace(sig) != "" {
-					thinkingContent += thinking
-				} else {
-					droppedThinking += thinking
-				}
+			// Ollama's chat history supports a thinking field on assistant
+			// messages. Preserve every prior thinking block; signatures are an
+			// Anthropic round-trip concern and have no meaning to Ollama.
+			if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
+				thinkingParts = append(thinkingParts, thinking)
 			}
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
@@ -597,13 +617,16 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 		}
 	}
 
+	thinkingContent := strings.Join(thinkingParts, "\n\n")
+
 	if len(toolUseBlocks) > 0 {
-		content := strings.Join(textParts, "")
+		content := strings.Join(textParts, "\n\n")
 		toolCalls := make([]OllamaToolCall, len(toolUseBlocks))
 		for i, tu := range toolUseBlocks {
 			toolCalls[i] = OllamaToolCall{
-				ID: tu.ID,
+				Type: "function",
 				Function: OllamaToolCallFunction{
+					Index:     &i,
 					Name:      tu.Name,
 					Arguments: tu.Input,
 				},
@@ -630,9 +653,7 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			if len(tr.images) > 0 {
 				ollamaMsg.Images = tr.images
 			}
-			if tr.toolUseID != "" {
-				ollamaMsg.ToolCallID = tr.toolUseID
-			}
+
 			// Look up tool name from the tool_use blocks in the same message first,
 			// then fall back to the conversation-level tool ID -> name mapping
 			for _, tu := range toolUseBlocks {
@@ -651,23 +672,14 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 		if len(textParts) > 0 {
 			messages = append(messages, OllamaMessage{
 				Role:    "user",
-				Content: strings.Join(textParts, ""),
+				Content: strings.Join(textParts, "\n\n"),
 			})
 		}
 		return messages
 	}
 
-	// Fallback: if dropping stale thinking would leave an empty assistant
-	// message (no text, tool_use, tool_result, or images), restore it so we
-	// never emit a content-less assistant message, which some upstreams reject
-	// as an invalid request.
-	if role == "assistant" && thinkingContent == "" && droppedThinking != "" &&
-		len(textParts) == 0 && len(toolUseBlocks) == 0 && len(toolResults) == 0 && len(images) == 0 {
-		thinkingContent = droppedThinking
-	}
-
 	msg := OllamaMessage{Role: role}
-	msg.Content = strings.Join(textParts, "")
+	msg.Content = strings.Join(textParts, "\n\n")
 	msg.Images = images
 	if thinkingContent != "" {
 		msg.Thinking = thinkingContent

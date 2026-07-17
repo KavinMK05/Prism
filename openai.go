@@ -339,10 +339,17 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 
 	choice := resp.Choices[0]
 
-	if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
+	reasoning := ""
+	if choice.Message.ReasoningContent != nil {
+		reasoning = *choice.Message.ReasoningContent
+	}
+	if reasoning == "" && choice.Message.Reasoning != nil {
+		reasoning = *choice.Message.Reasoning
+	}
+	if reasoning != "" {
 		content = append(content, AnthropicThinkingBlock{
 			Type:     "thinking",
-			Thinking: *choice.Message.ReasoningContent,
+			Thinking: reasoning,
 		})
 	}
 
@@ -453,6 +460,13 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Capture the complete Anthropic -> OpenAI-compatible translation hop.
+	dbg := newTranslationDebugCapture("messages-openai", false, anthroReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+	dbg.writeJSON("1_original_request.json", anthroReq)
+	dbg.writeJSON("2_translated_request.json", openAIReq)
+
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
@@ -481,7 +495,7 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	}
 
 	var openAIResp OpenAIChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
+	if err := json.NewDecoder(dbg.teeBody(resp.Body)).Decode(&openAIResp); err != nil {
 		writeAnthropicError(w, 502, "api_error", fmt.Sprintf("Failed to parse OpenAI response: %v", err))
 		return
 	}

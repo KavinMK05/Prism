@@ -233,7 +233,7 @@ func installCodexConfig(port int) error {
 	provBlock.WriteString(codexManagedBegin + "\n")
 	provBlock.WriteString("[model_providers." + codexProviderKey + "]\n")
 	provBlock.WriteString("name = \"Prism\"\n")
-	provBlock.WriteString("base_url = \"http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1\"\n")
+	provBlock.WriteString("base_url = \"http://localhost:" + fmt.Sprintf("%d", port) + "/v1\"\n")
 	provBlock.WriteString("wire_api = \"responses\"\n")
 	provBlock.WriteString("experimental_bearer_token = \"prism\"\n")
 	provBlock.WriteString("request_max_retries = 3\n")

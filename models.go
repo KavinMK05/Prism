@@ -56,9 +56,9 @@ type AnthropicThinkingBlock struct {
 }
 
 type AnthropicTool struct {
-	Name           string                 `json:"name"`
-	Description    string                 `json:"description,omitempty"`
-	InputSchema    interface{}            `json:"input_schema"`
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	InputSchema interface{} `json:"input_schema"`
 	// Type is set for Anthropic server-side tools (e.g. "web_search_20250305",
 	// "web_fetch_20250924"). Empty for ordinary function tools. Prism intercepts
 	// these so they work against non-Anthropic upstreams.
@@ -123,6 +123,10 @@ type OllamaMessage struct {
 }
 
 type OllamaToolCall struct {
+	// Type is required by Ollama for function tool calls. ID is retained for
+	// decoding/compatibility with upstream responses, but new Ollama requests
+	// correlate calls by function.index rather than id.
+	Type     string                 `json:"type,omitempty"`
 	ID       string                 `json:"id,omitempty"`
 	Function OllamaToolCallFunction `json:"function"`
 }
@@ -198,6 +202,9 @@ type OpenAIChatMessage struct {
 	ToolID           string           `json:"tool_call_id,omitempty"`
 	Name             string           `json:"name,omitempty"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	// Reasoning is emitted by some OpenAI-compatible providers, including
+	// OpenRouter, instead of reasoning_content.
+	Reasoning *string `json:"reasoning,omitempty"`
 }
 
 type OpenAIToolCall struct {
@@ -271,10 +278,12 @@ type OpenAIStreamChoice struct {
 }
 
 type OpenAIStreamDelta struct {
-	Role             string           `json:"role,omitempty"`
-	Content          *string          `json:"content,omitempty"`
-	ReasoningContent *string          `json:"reasoning_content,omitempty"`
-	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string  `json:"role,omitempty"`
+	Content          *string `json:"content,omitempty"`
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
+	// Reasoning is used by some OpenAI-compatible streaming providers.
+	Reasoning *string          `json:"reasoning,omitempty"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type OpenAIErrorResponse struct {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -148,22 +149,47 @@ func runProxyServer() {
 	// Start background TPS snapshot writer
 	go startTPSSnapshotLoop()
 
-	addr := host + ":" + port
-
-	log.Printf("Prism starting on %s (default provider: %s)", addr, cfg.DefaultProvider)
-
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+	// Bind both loopback addresses for the default local-only setup. On some
+	// systems localhost resolves to ::1 first, while 127.0.0.1 is IPv4-only;
+	// listening on just one of them makes the other URL unexpectedly fail.
+	addresses := []string{net.JoinHostPort(host, port)}
+	localOnly := host == "127.0.0.1" || host == "localhost" || host == "::1"
+	if localOnly && host != "::1" {
+		addresses = []string{net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("::1", port)}
 	}
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
-		}
-	}()
+	log.Printf("Prism starting on %s (default provider: %s)", strings.Join(addresses, ", "), cfg.DefaultProvider)
 
-	log.Printf("Prism proxy listening on http://%s", addr)
+	server := &http.Server{Handler: mux}
+	listeners := make([]net.Listener, 0, len(addresses))
+	for _, address := range addresses {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			// Keep the IPv4 endpoint usable if IPv6 loopback is unavailable.
+			// For custom/non-local hosts, a bind failure is still fatal below.
+			if localOnly && len(listeners) > 0 {
+				log.Printf("Prism: could not listen on %s: %v", address, err)
+				continue
+			}
+			for _, openListener := range listeners {
+				openListener.Close()
+			}
+			log.Fatalf("Server failed to listen on %s: %v", address, err)
+		}
+		listeners = append(listeners, listener)
+		go func(l net.Listener) {
+			if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
+				log.Printf("Server failed: %v", err)
+			}
+		}(listener)
+	}
+
+	if len(listeners) == 0 {
+		log.Fatal("Server failed: no listening sockets available")
+	}
+	for _, address := range addresses {
+		log.Printf("Prism proxy listening on http://%s", address)
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

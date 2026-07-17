@@ -147,7 +147,7 @@ func installGrokBuildConfig(port int, remap *ModelRemapping) error {
 	ensureAgentBackup(p)
 
 	cfg := loadConfig()
-	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) + "/v1"
 
 	var block strings.Builder
 	block.WriteString("\n" + codexManagedBegin + "\n")

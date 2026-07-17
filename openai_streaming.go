@@ -38,6 +38,13 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Capture the complete Anthropic -> OpenAI-compatible streaming hop.
+	dbg := newTranslationDebugCapture("messages-openai", true, anthroReq.Model)
+	defer dbg.finish()
+	w = dbg.wrapWriter(w)
+	dbg.writeJSON("1_original_request.json", anthroReq)
+	dbg.writeJSON("2_translated_request.json", openAIReq)
+
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.chatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		writeAnthropicError(w, 500, "api_error", "Failed to create upstream request")
@@ -93,7 +100,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	stopPings := state.startPings()
 	defer stopPings()
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	prevChunkHasThinking := false
@@ -135,7 +142,14 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 		choice := chunk.Choices[0]
 
-		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
+		reasoningText := ""
+		if choice.Delta.ReasoningContent != nil {
+			reasoningText = *choice.Delta.ReasoningContent
+		}
+		if reasoningText == "" && choice.Delta.Reasoning != nil {
+			reasoningText = *choice.Delta.Reasoning
+		}
+		currentChunkHasThinking := reasoningText != ""
 
 		if currentChunkHasThinking {
 			liveOutputTokens++
@@ -148,7 +162,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 				"index": state.contentBlockIndex,
 				"delta": map[string]interface{}{
 					"type":     "thinking_delta",
-					"thinking": *choice.Delta.ReasoningContent,
+					"thinking": reasoningText,
 				},
 			})
 		}

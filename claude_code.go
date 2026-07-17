@@ -104,7 +104,7 @@ func installClaudeCodeConfig(port int, tiers map[string]string) error {
 		return fmt.Errorf("no Prism models configured")
 	}
 
-	env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:" + fmt.Sprintf("%d", port)
+	env["ANTHROPIC_BASE_URL"] = "http://localhost:" + fmt.Sprintf("%d", port)
 	env["ANTHROPIC_AUTH_TOKEN"] = "prism"
 	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = claudeCodeTierModel(tiers, "opus", first)
 	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = claudeCodeTierModel(tiers, "sonnet", first)

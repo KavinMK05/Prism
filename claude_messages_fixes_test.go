@@ -19,7 +19,7 @@ func TestTranslateToOpenAI_StopToolChoiceThinking(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		}},
 		ToolChoice: map[string]interface{}{"type": "any"},
-		Thinking:    &AnthropicThinking{Type: "disabled"},
+		Thinking:   &AnthropicThinking{Type: "disabled"},
 	}
 
 	oai := translateToOpenAI(req)
@@ -136,7 +136,9 @@ func TestTranslateContentBlocks_ToolResultImageAndError(t *testing.T) {
 			},
 		},
 	}
-	msgs := translateContentBlocksWithToolLookup("user", blocks, nil)
+	msgs := translateContentBlocksWithToolLookup("user", blocks, map[string]string{
+		"toolu_1": "run_command",
+	})
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 ollama message, got %d", len(msgs))
 	}
@@ -150,8 +152,11 @@ func TestTranslateContentBlocks_ToolResultImageAndError(t *testing.T) {
 	if len(m.Images) != 1 || m.Images[0] != "IMGDATA" {
 		t.Errorf("expected image forwarded, got %#v", m.Images)
 	}
-	if m.ToolCallID != "toolu_1" {
-		t.Errorf("expected tool_call_id, got %q", m.ToolCallID)
+	if m.ToolName != "run_command" {
+		t.Errorf("expected tool_name, got %q", m.ToolName)
+	}
+	if m.ToolCallID != "" {
+		t.Errorf("expected tool_call_id to be omitted for Ollama, got %q", m.ToolCallID)
 	}
 }
 
@@ -169,6 +174,60 @@ func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
 	}
 	if ollamaReq.Think != nil && ollamaReq.Think != false {
 		t.Errorf("expected thinking disabled, got %#v", ollamaReq.Think)
+	}
+}
+
+func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"type": "thinking", "thinking": "plan", "signature": ""},
+		map[string]interface{}{"type": "text", "text": "first turn"},
+		map[string]interface{}{"type": "thinking", "thinking": "continue", "signature": ""},
+		map[string]interface{}{"type": "text", "text": "second turn"},
+		map[string]interface{}{
+			"type": "tool_use", "id": "call_1", "name": "read_file",
+			"input": map[string]interface{}{"path": "README.md"},
+		},
+	}
+
+	msgs := translateContentBlocksWithToolLookup("assistant", blocks, nil)
+	if len(msgs) != 1 {
+		t.Fatalf("expected one assistant message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Content != "first turn\n\nsecond turn" {
+		t.Errorf("text blocks were not separated: %q", msg.Content)
+	}
+	if msg.Thinking != "plan\n\ncontinue" {
+		t.Errorf("thinking blocks were not preserved: %q", msg.Thinking)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %d", len(msg.ToolCalls))
+	}
+	call := msg.ToolCalls[0]
+	if call.Type != "function" {
+		t.Errorf("expected function tool-call type, got %q", call.Type)
+	}
+	if call.ID != "" {
+		t.Errorf("expected Anthropic id to be omitted for Ollama, got %q", call.ID)
+	}
+	if call.Function.Index == nil || *call.Function.Index != 0 {
+		t.Errorf("expected function.index=0, got %#v", call.Function.Index)
+	}
+}
+
+func TestTranslateAnthropicToOllama_SystemMessageBecomesReminderUser(t *testing.T) {
+	msgs := translateMessage(AnthropicMessage{
+		Role:    "system",
+		Content: []interface{}{map[string]interface{}{"type": "text", "text": "refresh tools"}},
+	})
+	if len(msgs) != 1 {
+		t.Fatalf("expected one reminder message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" {
+		t.Fatalf("expected system reminder to become user, got %q", msgs[0].Role)
+	}
+	if msgs[0].Content != "<system-reminder>\nrefresh tools\n</system-reminder>" {
+		t.Errorf("unexpected reminder content: %q", msgs[0].Content)
 	}
 }
 
