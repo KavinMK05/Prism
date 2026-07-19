@@ -395,9 +395,19 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 				if toolName == "" {
 					continue
 				}
-				key := tc.ID
+				// Ollama's index is the stable identity of a call while it is
+				// streaming.  The same function may be called more than once in
+				// one response, and some Ollama-compatible servers omit IDs, so
+				// using the function name here collapses parallel calls.
+				key := ""
+				if tc.Function.Index != nil {
+					key = fmt.Sprintf("index:%d", *tc.Function.Index)
+				}
+				if key == "" && tc.ID != "" {
+					key = "id:" + tc.ID
+				}
 				if key == "" {
-					key = toolName
+					key = "name:" + toolName
 				}
 				// Buffer the tool call. Ollama re-emits the full cumulative
 				// arguments (a complete JSON object) in every chunk, so we
@@ -408,6 +418,9 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 					pu = &pendingToolUse{name: toolName, id: tc.ID}
 					state.pendingToolMap[key] = pu
 					state.pendingToolUses = append(state.pendingToolUses, pu)
+				}
+				if pu.id == "" && tc.ID != "" {
+					pu.id = tc.ID
 				}
 				if tc.Function.Arguments != nil {
 					b, _ := json.Marshal(tc.Function.Arguments)

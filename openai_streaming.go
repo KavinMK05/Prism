@@ -104,6 +104,11 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	prevChunkHasThinking := false
+	// Track the active tool call by its stable provider identity. Some
+	// OpenAI-compatible servers repeat the id on every delta, while others
+	// only send it on the first delta and rely on index thereafter.
+	activeToolKey := ""
+	activeToolIndex := ""
 	finishStopReason := ""
 
 	for scanner.Scan() {
@@ -167,18 +172,62 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 			})
 		}
 
-		if prevChunkHasThinking && !currentChunkHasThinking && state.thinkingBlockOpen {
+		if (prevChunkHasThinking && !currentChunkHasThinking ||
+			currentChunkHasThinking && choice.Delta.Content != nil && *choice.Delta.Content != "") && state.thinkingBlockOpen {
+			// Some compatible servers put the final reasoning and first text
+			// delta in the same chunk. Close reasoning before opening text.
 			state.closeBlock("thinking")
 		}
 		prevChunkHasThinking = currentChunkHasThinking
 
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				if tc.ID != "" {
+				// Some compatible providers repeat the index on continuation
+				// deltas but omit the function name. Keep continuations for the
+				// active index, while rejecting a different unnamed call.
+				if tc.Function.Name == "" {
+					if tc.Index != nil {
+						indexKey := fmt.Sprintf("index:%d", *tc.Index)
+						if indexKey != activeToolIndex {
+							continue
+						}
+					} else if !state.toolUseBlockOpen {
+						continue
+					}
+				}
+				toolKey := tc.ID
+				if toolKey == "" && tc.Index != nil {
+					toolKey = fmt.Sprintf("index:%d", *tc.Index)
+				}
+				if tc.Function.Name == "" && tc.Index != nil &&
+					fmt.Sprintf("index:%d", *tc.Index) == activeToolIndex {
+					// The upstream uses index for continuation identity, while
+					// the first delta used an ID. Normalize both to the active
+					// call so the continuation stays in the same block.
+					toolKey = activeToolKey
+				}
+				if toolKey == "" && tc.Function.Name == "" {
+					toolKey = activeToolKey
+				}
+				// Open a new Anthropic block only for a new call. Re-opening on
+				// every delta splits one OpenAI call into multiple tool_use
+				// blocks and breaks tool_result correlation.
+				if toolKey == "" {
+					if activeToolKey != "" {
+						toolKey = activeToolKey
+					} else {
+						toolKey = "anonymous"
+					}
+				}
+				if !state.toolUseBlockOpen || toolKey != activeToolKey {
 					if state.toolUseBlockOpen {
 						state.closeBlock("tool_use")
 					}
 					state.openToolUseBlockWithID(tc.Function.Name, tc.ID)
+					activeToolKey = toolKey
+					if tc.Index != nil {
+						activeToolIndex = fmt.Sprintf("index:%d", *tc.Index)
+					}
 				}
 
 				if tc.Function.Arguments != "" {
@@ -197,6 +246,8 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+			activeToolKey = ""
+			activeToolIndex = ""
 			liveOutputTokens++
 			globalStats.AddTokens(1)
 			// If a tool_use block is open, close it before opening a text

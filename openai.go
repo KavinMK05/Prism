@@ -324,6 +324,48 @@ func translateToolsToOpenAI(tools []AnthropicTool) []OpenAITool {
 	return result
 }
 
+// openAIResponseTextBlocks normalizes the two content shapes accepted by
+// Chat Completions. A number of OpenAI-compatible providers return an array
+// of {type:"text", text:"..."} parts even though the usual response is a
+// plain string; serializing that array into the Anthropic text field produces
+// visibly broken replies.
+func openAIResponseTextBlocks(content interface{}) []interface{} {
+	var blocks []interface{}
+	switch v := content.(type) {
+	case string:
+		if v != "" {
+			blocks = append(blocks, AnthropicTextBlock{Type: "text", Text: v})
+		}
+	case []interface{}:
+		for _, part := range v {
+			if m, ok := part.(map[string]interface{}); ok {
+				if typ, _ := m["type"].(string); typ == "text" || typ == "" {
+					if text, _ := m["text"].(string); text != "" {
+						blocks = append(blocks, AnthropicTextBlock{Type: "text", Text: text})
+					}
+				}
+			}
+		}
+	}
+	return blocks
+}
+
+func openAIArgumentsObject(raw string) map[string]interface{} {
+	args := map[string]interface{}{}
+	if raw == "" {
+		return args
+	}
+	var decoded interface{}
+	if json.Unmarshal([]byte(raw), &decoded) == nil {
+		if object, ok := decoded.(map[string]interface{}); ok {
+			return object
+		}
+	}
+	// Anthropic tool_use.input is an object. Never emit null or a JSON string
+	// here: both cause clients to reject the following tool_result turn.
+	return args
+}
+
 func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) AnthropicResponse {
 	content := []interface{}{}
 
@@ -353,19 +395,16 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 		})
 	}
 
-	if choice.Message.Content != nil && choice.Message.Content != "" {
-		text, ok := choice.Message.Content.(string)
-		if ok && text != "" {
-			content = append(content, AnthropicTextBlock{Type: "text", Text: text})
-		} else if !ok {
-			b, _ := json.Marshal(choice.Message.Content)
-			content = append(content, AnthropicTextBlock{Type: "text", Text: string(b)})
-		}
-	}
+	content = append(content, openAIResponseTextBlocks(choice.Message.Content)...)
 
 	for _, tc := range choice.Message.ToolCalls {
-		var args map[string]interface{}
-		json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		// A few OpenAI-compatible backends occasionally return a phantom
+		// parallel call with no function name. Do not expose an unusable empty
+		// tool_use block to Claude Code or replay it on the next request.
+		if tc.Function.Name == "" {
+			continue
+		}
+		args := openAIArgumentsObject(tc.Function.Arguments)
 		id := tc.ID
 		if id == "" {
 			// Mint a globally-unique ID when the upstream OpenAI-compatible

@@ -28,13 +28,22 @@ func buildZcodeModels(remap *ModelRemapping, cfg *Config) map[string]interface{}
 		if out == 0 {
 			out = 16384
 		}
+		inputModalities := []string{"text"}
+		// Advertise vision input when the model reports image support, so ZCode
+		// exposes image attachments for multimodal models.
+		if m.Capabilities != nil && m.Capabilities.Vision {
+			inputModalities = append(inputModalities, "image")
+		}
 		entry := map[string]interface{}{
+			// `name` is the model's API slug (used in requests), matching ZCode's
+			// own convention of storing the lowercased model id here.
+			"name": m.ID,
 			"limit": map[string]interface{}{
 				"context": ctx,
 				"output":  out,
 			},
 			"modalities": map[string]interface{}{
-				"input":  []string{"text"},
+				"input":  inputModalities,
 				"output": []string{"text"},
 			},
 		}

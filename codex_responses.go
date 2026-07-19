@@ -134,11 +134,20 @@ func (pr *ProviderRouter) handleCodexResponsesAPI(w http.ResponseWriter, r *http
 	}
 }
 
+// codexKeepAliveInterval is how long the proxy waits without receiving any
+// upstream SSE data before emitting a comment frame to the client. This keeps
+// the client (and any intermediate proxy) from timing out an otherwise-idle
+// stream during slow upstream reasoning / generation. ChatGPT's Codex backend
+// can go silent for long stretches while the model plans, which otherwise
+// trips a ~30s client idle timeout and produces "context canceled" errors.
+const codexKeepAliveInterval = 15 * time.Second
+
 // passthroughCodexResponsesSSE streams SSE events from the Codex backend directly to the client.
 func (pr *ProviderRouter) passthroughCodexResponsesSSE(w http.ResponseWriter, r *http.Request, resp *http.Response, respReq *ResponsesAPIRequest, rp *ResolvedProvider, client string, reqStart time.Time) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable any buffering proxy 
 
 	flusher, canFlush := w.(http.Flusher)
 
@@ -147,39 +156,84 @@ func (pr *ProviderRouter) passthroughCodexResponsesSSE(w http.ResponseWriter, r 
 		globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	}()
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	ctx := r.Context()
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	// Read upstream SSE lines in a goroutine so the main loop can also react to
+	// client disconnects and idle keepalive timers.
+	lineCh := make(chan string, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(lineCh)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			select {
+			case lineCh <- scanner.Text():
+			case <-ctx.Done():
+				errCh <- scanner.Err()
+				return
+			}
+		}
+		errCh <- scanner.Err()
+	}()
 
-		// Pass through all lines (event:, data:, empty lines)
-		// Parse data lines to extract usage info
+	// processLine extracts usage and counts tokens for a single SSE line, then
+	// writes it through to the client.
+	processLine := func(line string) {
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data != "[DONE]" {
 				// Try to extract usage from response.completed events
 				pr.extractCodexUsage(data, &inputTokens, &outputTokens)
+				// Count output tokens from text deltas for live stats
+				if strings.Contains(data, "output_text.delta") {
+					globalStats.AddTokens(1)
+				}
 			}
 		}
-
 		// Write the line directly to the client
 		fmt.Fprintf(w, "%s\n", line)
 		if canFlush {
 			flusher.Flush()
 		}
-
-		// Count output tokens from text deltas for live stats
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			if data != "[DONE]" && strings.Contains(data, "output_text.delta") {
-				globalStats.AddTokens(1)
-			}
-		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("[ERR] Codex SSE read error: %v", err)
+	idle := time.NewTimer(codexKeepAliveInterval)
+	defer idle.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected (or request canceled). The upstream request
+			// shares this context, so its body read is also torn down; nothing
+			// more to do here.
+			return
+		case line, ok := <-lineCh:
+			if !ok {
+				// Upstream finished. Report a real read error only if the client
+				// is still connected — a context-canceled error here just means
+				// the client hung up first, which is expected and not a bug.
+				if err := <-errCh; err != nil && ctx.Err() == nil {
+					log.Printf("[ERR] Codex SSE read error: %v", err)
+				}
+				return
+			}
+			processLine(line)
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
+			idle.Reset(codexKeepAliveInterval)
+		case <-idle.C:
+			// Upstream is idle; emit a comment frame so the client connection
+			// stays alive. SSE comment frames are ignored by client parsers.
+			fmt.Fprintf(w, ": keep-alive %d\n\n", time.Now().UnixMilli())
+			if canFlush {
+				flusher.Flush()
+			}
+			idle.Reset(codexKeepAliveInterval)
+		}
 	}
 }
 
