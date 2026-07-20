@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +36,21 @@ type streamState struct {
 	// call once at finalization, matching Ollama's own single-emission behaviour.
 	pendingToolUses []*pendingToolUse
 	pendingToolMap  map[string]*pendingToolUse
+	// pendingOpenTool buffers a single OpenAI-compatible tool call whose
+	// content_block_start has not yet been emitted, because the upstream has
+	// not supplied both a function name and an id. Some providers split name
+	// and id across separate deltas; emitting content_block_start before the
+	// id is known would force a synthetic id that diverges from upstream.
+	pendingOpenTool *pendingOpenTool
+}
+
+// pendingOpenTool buffers one OpenAI-compatible tool call until both its name
+// and id are known, so content_block_start can carry the real (sanitized) id.
+type pendingOpenTool struct {
+	name string
+	id   string
+	key  string
+	args strings.Builder
 }
 
 // pendingToolUse buffers one tool call being streamed from Ollama until
@@ -185,6 +201,8 @@ func (s *streamState) openToolUseBlockWithID(toolName, id string) {
 	}
 	if id == "" {
 		id = generateToolUseID(toolName)
+	} else {
+		id = sanitizeToolUseID(id)
 	}
 	log.Printf("[STREAM] Opening tool_use block at index %d", s.contentBlockIndex)
 	s.writeSSE("content_block_start", map[string]interface{}{
@@ -200,6 +218,36 @@ func (s *streamState) openToolUseBlockWithID(toolName, id string) {
 	s.toolUseBlockOpen = true
 	s.hasContentBlock = true
 	s.toolCallIndex++
+}
+
+// emitToolArgsDelta writes one input_json_delta content_block_delta carrying
+// a fragment of tool-call arguments for the currently-open tool_use block.
+func (s *streamState) emitToolArgsDelta(args string) {
+	if args == "" || !s.toolUseBlockOpen {
+		return
+	}
+	s.writeSSE("content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": s.contentBlockIndex,
+		"delta": map[string]interface{}{
+			"type":         "input_json_delta",
+			"partial_json": args,
+		},
+	})
+}
+
+// flushPendingOpenTool emits the buffered tool call (content_block_start with
+// the sanitized real id, or a minted synthetic id if the upstream never sent
+// one) followed by a single input_json_delta carrying all buffered arguments.
+// Safe to call when no call is buffered (no-op).
+func (s *streamState) flushPendingOpenTool() {
+	pu := s.pendingOpenTool
+	if pu == nil {
+		return
+	}
+	s.pendingOpenTool = nil
+	s.openToolUseBlockWithID(pu.name, pu.id)
+	s.emitToolArgsDelta(pu.args.String())
 }
 
 func (s *streamState) closeAllBlocks() {
@@ -254,10 +302,17 @@ func (s *streamState) sendStopReason(stopReason string, outputTokens int) {
 	})
 }
 
-// usagePayload builds the usage object for the terminal message_delta event,
-// including cache_read_input_tokens when the upstream reported cached tokens.
+// usagePayload builds the usage object for the terminal message_delta event.
+// Anthropic's real API reports input_tokens in message_start and only
+// output_tokens in message_delta, but OpenAI streaming delivers usage in the
+// final chunk (after message_start was already sent with zeros). We therefore
+// carry the real input_tokens here so Claude Code learns the prompt size for
+// context-window tracking and auto-compaction. cache_read_input_tokens is
+// reported separately (OpenAI's prompt_tokens already includes cached tokens,
+// which the caller subtracted before setting totalPromptTokens).
 func (s *streamState) usagePayload(outputTokens int) map[string]interface{} {
 	usage := map[string]interface{}{
+		"input_tokens":  s.totalPromptTokens,
 		"output_tokens": outputTokens,
 	}
 	if s.cacheReadTokens > 0 {
@@ -316,7 +371,7 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, canFlush := w.(http.Flusher)
-	msgID := fmt.Sprintf("msg_%s", anthroReq.Model)
+	msgID := "msg_" + sanitizeMessageIDFragment(anthroReq.Model)
 
 	state := newStreamState(w, flusher, canFlush, msgID)
 

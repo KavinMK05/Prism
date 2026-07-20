@@ -327,6 +327,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 	var segments []respSearchSegment
 	var finalReasoning, finalText string
 	var inputTokens, outputTokens int
+	var pendingNonSearchCalls []normalizedToolCall
 	searches := 0
 
 	for searches < maxSearches {
@@ -342,16 +343,21 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		outputTokens += turn.outputTokens
 
 		var wsCall *normalizedToolCall
+		var nonSearchCalls []normalizedToolCall
 		for i := range turn.toolCalls {
 			if isSearchToolName(turn.toolCalls[i].name) {
-				wsCall = &turn.toolCalls[i]
-				break
+				if wsCall == nil {
+					wsCall = &turn.toolCalls[i]
+				}
+				continue
 			}
+			nonSearchCalls = append(nonSearchCalls, turn.toolCalls[i])
 		}
 
 		if wsCall == nil {
 			finalReasoning = turn.thinking
 			finalText = turn.content
+			pendingNonSearchCalls = nonSearchCalls
 			break
 		}
 
@@ -381,6 +387,17 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		})
 		searches++
 
+		// Preserve the model's thinking across the re-request so reasoning-mode
+		// providers (e.g. DeepSeek v4, which requires reasoning_content to be
+		// passed back in thinking mode) don't reject the request or lose context
+		// between search turns.
+		if turn.thinking != "" {
+			appendResponsesInputItem(respReq, map[string]interface{}{
+				"type":    "reasoning",
+				"id":      generateID("rs_"),
+				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+			})
+		}
 		argsJSON, _ := json.Marshal(wsCall.arguments)
 		appendResponsesInputItem(respReq, map[string]interface{}{
 			"type":      "function_call",
@@ -396,15 +413,20 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		})
 	}
 
-	if searches >= maxSearches && finalText == "" {
-		finalText = fmt.Sprintf("Reached the maximum number of web searches (%d) for this request.", maxSearches)
-	}
-	if finalText == "" && len(segments) > 0 {
-		last := segments[len(segments)-1]
-		finalText = buildWebSearchSummary(last.query, last.results, last.searchErr)
+	// The terminal turn called non-search tools. Forward them to the client so
+	// the agent loop continues; skip the synthesized final message since the
+	// model hasn't produced a final answer yet.
+	if len(pendingNonSearchCalls) == 0 {
+		if searches >= maxSearches && finalText == "" {
+			finalText = fmt.Sprintf("Reached the maximum number of web searches (%d) for this request.", maxSearches)
+		}
+		if finalText == "" && len(segments) > 0 {
+			last := segments[len(segments)-1]
+			finalText = buildWebSearchSummary(last.query, last.results, last.searchErr)
+		}
 	}
 
-	pr.emitResponsesWebSearchJSON(w, respReq, segments, finalReasoning, finalText, inputTokens, outputTokens)
+	pr.emitResponsesWebSearchJSON(w, respReq, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens)
 	globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	return true
 }
@@ -549,7 +571,62 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		completedOutput = append(completedOutput, msgItem)
 	}
 
+	// emitFunctionCall forwards a non-search tool call (e.g. read_file,
+	// run_terminal_command) to the client as a function_call output item so the
+	// agent loop (Grok Build) can execute it and continue. The search intercept
+	// must not drop these — dropping them leaves the client with an empty
+	// response and the turn ends prematurely, causing the agent to spiral.
+	emitFunctionCall := func(tc normalizedToolCall) {
+		callID := tc.id
+		if callID == "" {
+			callID = fmt.Sprintf("call_%s_%d", tc.name, outputIndex+1)
+		}
+		itemID := "fc_" + callID
+		outputIndex++
+		e.emit("response.output_item.added", map[string]interface{}{
+			"type": "response.output_item.added", "output_index": outputIndex,
+			"item": map[string]interface{}{
+				"id": itemID, "type": "function_call", "status": "in_progress",
+				"call_id": callID, "name": tc.name, "arguments": "",
+			},
+		})
+		e.emit("response.function_call_arguments.done", map[string]interface{}{
+			"type": "response.function_call_arguments.done", "output_index": outputIndex,
+			"item_id": itemID, "arguments": tc.argsRaw,
+		})
+		fcItem := map[string]interface{}{
+			"id": itemID, "type": "function_call", "status": "completed",
+			"call_id": callID, "name": tc.name, "arguments": tc.argsRaw,
+		}
+		e.emit("response.output_item.done", map[string]interface{}{
+			"type": "response.output_item.done", "output_index": outputIndex, "item": fcItem,
+		})
+		completedOutput = append(completedOutput, fcItem)
+		if e.canFlush {
+			e.flusher.Flush()
+		}
+	}
+	emitCompleted := func(outputText string) {
+		completedResp := map[string]interface{}{
+			"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
+			"background": false, "error": nil, "status": "completed",
+			"output": completedOutput, "output_text": outputText,
+			"usage": responsesUsageMap(inputTokens, outputTokens),
+		}
+		mergeResponsesEchoFields(completedResp, respReq)
+		e.emit("response.completed", map[string]interface{}{"type": "response.completed", "response": completedResp})
+		if e.canFlush {
+			e.flusher.Flush()
+		}
+		globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	}
+
 	var finalReasoning, finalText string
+	// pendingNonSearchCalls captures non-search tool calls (read_file, etc.)
+	// from the terminal turn so they can be forwarded to the client instead of
+	// being silently dropped (which caused the agent to spiral on an empty
+	// response).
+	var pendingNonSearchCalls []normalizedToolCall
 	for searches < maxSearches {
 		turn, err := pr.upstreamResponsesChat(respReq, rp)
 		if err != nil {
@@ -562,15 +639,20 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		outputTokens += turn.outputTokens
 
 		var wsCall *normalizedToolCall
+		var nonSearchCalls []normalizedToolCall
 		for i := range turn.toolCalls {
 			if isSearchToolName(turn.toolCalls[i].name) {
-				wsCall = &turn.toolCalls[i]
-				break
+				if wsCall == nil {
+					wsCall = &turn.toolCalls[i]
+				}
+				continue
 			}
+			nonSearchCalls = append(nonSearchCalls, turn.toolCalls[i])
 		}
 		if wsCall == nil {
 			finalReasoning = turn.thinking
 			finalText = turn.content
+			pendingNonSearchCalls = nonSearchCalls
 			break
 		}
 
@@ -601,6 +683,17 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		segments = append(segments, respSearchSegment{reasoning: turn.thinking, callID: callID, query: query, results: results, searchErr: searchErr})
 		searches++
 
+		// Preserve the model's thinking across the re-request so reasoning-mode
+		// providers (e.g. DeepSeek v4, which requires reasoning_content to be
+		// passed back in thinking mode) don't reject the request or lose context
+		// between search turns.
+		if turn.thinking != "" {
+			appendResponsesInputItem(respReq, map[string]interface{}{
+				"type":    "reasoning",
+				"id":      generateID("rs_"),
+				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+			})
+		}
 		argsJSON, _ := json.Marshal(wsCall.arguments)
 		appendResponsesInputItem(respReq, map[string]interface{}{
 			"type":      "function_call",
@@ -616,6 +709,18 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		})
 	}
 
+	// The terminal turn called non-search tools (read_file, etc.). Forward them
+	// to the client and complete — the agent executes the tools and sends the
+	// next request. Do not synthesize a final text message.
+	if len(pendingNonSearchCalls) > 0 {
+		emitReasoning(finalReasoning)
+		for _, tc := range pendingNonSearchCalls {
+			emitFunctionCall(tc)
+		}
+		emitCompleted("")
+		return
+	}
+
 	if searches >= maxSearches && finalText == "" {
 		finalText = fmt.Sprintf("Reached the maximum number of web searches (%d) for this request.", maxSearches)
 	}
@@ -627,22 +732,10 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	emitReasoning(finalReasoning)
 	text, annotations := buildResponsesFinalTextWithCitations(finalText, segments)
 	emitFinalMessage(text, annotations)
-
-	completedResp := map[string]interface{}{
-		"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
-		"background": false, "error": nil, "status": "completed",
-		"output": completedOutput, "output_text": text,
-		"usage": responsesUsageMap(inputTokens, outputTokens),
-	}
-	mergeResponsesEchoFields(completedResp, respReq)
-	e.emit("response.completed", map[string]interface{}{"type": "response.completed", "response": completedResp})
-	if e.canFlush {
-		e.flusher.Flush()
-	}
-	globalStats.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	emitCompleted(text)
 }
 // emitResponsesWebSearchJSON writes a non-streaming Responses API response.
-func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, segments []respSearchSegment, finalReasoning, finalText string, inputTokens, outputTokens int) {
+func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens int) {
 	output := []interface{}{}
 	addReasoning := func(text string) {
 		if text == "" {
@@ -666,18 +759,39 @@ func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, resp
 	addReasoning(finalReasoning)
 
 	text, annotations := buildResponsesFinalTextWithCitations(finalText, segments)
-	output = append(output, map[string]interface{}{
-		"id":     generateID("msg_"),
-		"type":   "message",
-		"status": "completed",
-		"role":   "assistant",
-		"content": []interface{}{map[string]interface{}{
-			"type":        "output_text",
-			"text":        text,
-			"annotations": annotations,
-			"logprobs":    []interface{}{},
-		}},
-	})
+
+	// Forward non-search tool calls (read_file, etc.) so the agent loop
+	// continues. When tool calls are present, omit the synthesized final message
+	// — the model hasn't produced a final answer yet.
+	if len(pendingNonSearchCalls) > 0 {
+		for _, tc := range pendingNonSearchCalls {
+			callID := tc.id
+			if callID == "" {
+				callID = fmt.Sprintf("call_%s_%d", tc.name, len(output)+1)
+			}
+			output = append(output, map[string]interface{}{
+				"id":        "fc_" + callID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   callID,
+				"name":      tc.name,
+				"arguments": tc.argsRaw,
+			})
+		}
+	} else {
+		output = append(output, map[string]interface{}{
+			"id":     generateID("msg_"),
+			"type":   "message",
+			"status": "completed",
+			"role":   "assistant",
+			"content": []interface{}{map[string]interface{}{
+				"type":        "output_text",
+				"text":        text,
+				"annotations": annotations,
+				"logprobs":    []interface{}{},
+			}},
+		})
+	}
 
 	resp := map[string]interface{}{
 		"id": fmt.Sprintf("resp_%d", time.Now().UnixNano()), "object": "response",

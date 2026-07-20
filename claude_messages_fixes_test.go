@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,147 @@ func TestTranslateToOpenAI_StopToolChoiceThinking(t *testing.T) {
 	// thinking.type=disabled -> no reasoning_effort
 	if oai.ReasoningEffort != "" {
 		t.Fatalf("expected empty reasoning_effort for disabled thinking, got %q", oai.ReasoningEffort)
+	}
+}
+
+func TestTranslateToOpenAI_InMessageSystemBecomesUserInPlace(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:  "deepseek-v4-flash-free",
+		System: []interface{}{map[string]interface{}{"type": "text", "text": "top system"}},
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: "hi"},
+			{Role: "system", Content: "mid reminder"},
+			{Role: "assistant", Content: "ok"},
+			{Role: "system", Content: "another reminder"},
+		},
+	}
+	oai := translateToOpenAI(req)
+
+	// The top-level system field is the ONLY system message, at the front.
+	// It must NOT absorb the mid-conversation reminders (that would destroy
+	// recency — e.g. Claude Code's "user sent a new message while you were
+	// working" notice has to stay the last thing the model sees).
+	if oai.Messages[0].Role != "system" {
+		t.Fatalf("expected first message to be system, got %q", oai.Messages[0].Role)
+	}
+	sysText, _ := oai.Messages[0].Content.(string)
+	if !strings.Contains(sysText, "top system") {
+		t.Errorf("front system message lost top-level prompt: %q", sysText)
+	}
+	if strings.Contains(sysText, "mid reminder") || strings.Contains(sysText, "another reminder") {
+		t.Errorf("front system message wrongly absorbed a mid-conversation reminder: %q", sysText)
+	}
+
+	// In-message system roles become user messages IN PLACE so their
+	// position in the conversation is preserved.
+	expectedRoles := []string{"system", "user", "user", "assistant", "user"}
+	if len(oai.Messages) != len(expectedRoles) {
+		t.Fatalf("expected %d messages, got %d: %v", len(expectedRoles), len(oai.Messages), oai.Messages)
+	}
+	for i, exp := range expectedRoles {
+		if oai.Messages[i].Role != exp {
+			t.Errorf("message[%d]: expected role %q, got %q", i, exp, oai.Messages[i].Role)
+		}
+	}
+	// None of the messages after the front system should be a system role.
+	for _, m := range oai.Messages[1:] {
+		if m.Role == "system" {
+			t.Errorf("unexpected mid-conversation system role: %#v", m)
+		}
+	}
+	// The reminders must survive as user content at their original positions.
+	mid, _ := oai.Messages[2].Content.(string)
+	if !strings.Contains(mid, "mid reminder") {
+		t.Errorf("mid reminder not preserved in place: %q", mid)
+	}
+	another, _ := oai.Messages[4].Content.(string)
+	if !strings.Contains(another, "another reminder") {
+		t.Errorf("trailing reminder not preserved as the final user message: %q", another)
+	}
+}
+
+func TestTranslateToOpenAI_StripsAnthropicBillingHeader(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:  "deepseek-v4-flash-free",
+		System: []interface{}{map[string]interface{}{"type": "text", "text": "x-anthropic-billing-header:\nreal system prompt"}},
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: "hi"},
+		},
+	}
+	oai := translateToOpenAI(req)
+	got, _ := oai.Messages[0].Content.(string)
+	if strings.Contains(got, "x-anthropic-billing-header") {
+		t.Errorf("billing header not stripped: %q", got)
+	}
+	if !strings.Contains(got, "real system prompt") {
+		t.Errorf("real prompt missing: %q", got)
+	}
+}
+
+func TestTranslateToOpenAI_DropsUnsignedThinkingHistory(t *testing.T) {
+	msgs := translateMessageToOpenAI(AnthropicMessage{
+		Role: "assistant",
+		Content: []interface{}{
+			map[string]interface{}{"type": "thinking", "thinking": "stale plan", "signature": ""},
+		},
+	})
+	if len(msgs) != 0 {
+		t.Fatalf("expected unsigned thinking-only history to be dropped, got %#v", msgs)
+	}
+}
+
+func TestTranslateToOpenAI_PreservesReasoningForDeepSeekToolHistory(t *testing.T) {
+	// DeepSeek/Kimi/MiMo require non-empty reasoning_content on assistant turns
+	// that carry tool_use. cc-switch applies the same normalization.
+	msgs := translateToOpenAI(&AnthropicRequest{
+		Model: "deepseek-v4-flash-free",
+		Messages: []AnthropicMessage{{
+			Role: "assistant",
+			Content: []interface{}{
+				map[string]interface{}{"type": "thinking", "thinking": "my plan", "signature": ""},
+				map[string]interface{}{"type": "tool_use", "id": "t1", "name": "Write", "input": map[string]interface{}{"path": "a"}},
+			},
+		}},
+	}).Messages
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 assistant message, got %d", len(msgs))
+	}
+	if msgs[0].ReasoningContent == nil || *msgs[0].ReasoningContent != "my plan" {
+		t.Fatalf("expected reasoning_content=my plan, got %#v", msgs[0].ReasoningContent)
+	}
+}
+
+func TestTranslateToOpenAI_PlaceholderReasoningWhenThinkingMissing(t *testing.T) {
+	msgs := translateToOpenAI(&AnthropicRequest{
+		Model: "deepseek-v4-flash-free",
+		Messages: []AnthropicMessage{{
+			Role: "assistant",
+			Content: []interface{}{
+				map[string]interface{}{"type": "tool_use", "id": "t1", "name": "Write", "input": map[string]interface{}{}},
+			},
+		}},
+	}).Messages
+
+	if len(msgs) != 1 || msgs[0].ReasoningContent == nil || *msgs[0].ReasoningContent != "tool call" {
+		t.Fatalf("expected placeholder reasoning_content=tool call, got %#v", msgs[0].ReasoningContent)
+	}
+}
+
+func TestTranslateToOpenAI_NoReasoningForNonReasoningModel(t *testing.T) {
+	msgs := translateToOpenAI(&AnthropicRequest{
+		Model: "claude-sonnet-4",
+		Messages: []AnthropicMessage{{
+			Role: "assistant",
+			Content: []interface{}{
+				map[string]interface{}{"type": "thinking", "thinking": "my plan", "signature": ""},
+				map[string]interface{}{"type": "tool_use", "id": "t1", "name": "Write", "input": map[string]interface{}{}},
+			},
+		}},
+	}).Messages
+
+	if len(msgs) != 1 || msgs[0].ReasoningContent != nil {
+		t.Fatalf("expected no reasoning_content for non-reasoning model, got %#v", msgs[0].ReasoningContent)
 	}
 }
 

@@ -77,7 +77,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, canFlush := w.(http.Flusher)
-	msgID := fmt.Sprintf("msg_%s", anthroReq.Model)
+	msgID := "msg_" + sanitizeMessageIDFragment(anthroReq.Model)
 
 	state := newStreamState(w, flusher, canFlush, msgID)
 
@@ -107,9 +107,20 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	// Track the active tool call by its stable provider identity. Some
 	// OpenAI-compatible servers repeat the id on every delta, while others
 	// only send it on the first delta and rely on index thereafter.
-	activeToolKey := ""
 	activeToolIndex := ""
 	finishStopReason := ""
+	// flushPendingToolWithCount emits a buffered (not-yet-opened) tool call
+	// and bumps the live-output-token fallback counter for its args delta.
+	flushPendingToolWithCount := func() {
+		if state.pendingOpenTool == nil {
+			return
+		}
+		if state.pendingOpenTool.args.Len() > 0 {
+			liveOutputTokens++
+			globalStats.AddTokens(1)
+		}
+		state.flushPendingOpenTool()
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -139,6 +150,14 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
 				state.cacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
+			// OpenAI's prompt_tokens already includes cached tokens; Anthropic
+			// splits them into input_tokens (non-cached) and
+			// cache_read_input_tokens. Subtract so the message_delta.usage we
+			// emit does not double-count the cached portion.
+			if state.cacheReadTokens > 0 && inputTokens >= state.cacheReadTokens {
+				inputTokens -= state.cacheReadTokens
+			}
+			state.totalPromptTokens = inputTokens
 		}
 
 		if len(chunk.Choices) == 0 {
@@ -182,76 +201,88 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				// Some compatible providers repeat the index on continuation
-				// deltas but omit the function name. Keep continuations for the
-				// active index, while rejecting a different unnamed call.
-				if tc.Function.Name == "" {
-					if tc.Index != nil {
-						indexKey := fmt.Sprintf("index:%d", *tc.Index)
-						if indexKey != activeToolIndex {
-							continue
-						}
-					} else if !state.toolUseBlockOpen {
-						continue
-					}
-				}
+				// Stable identity for this call: prefer upstream id, then index.
 				toolKey := tc.ID
 				if toolKey == "" && tc.Index != nil {
 					toolKey = fmt.Sprintf("index:%d", *tc.Index)
 				}
-				if tc.Function.Name == "" && tc.Index != nil &&
-					fmt.Sprintf("index:%d", *tc.Index) == activeToolIndex {
-					// The upstream uses index for continuation identity, while
-					// the first delta used an ID. Normalize both to the active
-					// call so the continuation stays in the same block.
-					toolKey = activeToolKey
-				}
-				if toolKey == "" && tc.Function.Name == "" {
-					toolKey = activeToolKey
-				}
-				// Open a new Anthropic block only for a new call. Re-opening on
-				// every delta splits one OpenAI call into multiple tool_use
-				// blocks and breaks tool_result correlation.
-				if toolKey == "" {
-					if activeToolKey != "" {
-						toolKey = activeToolKey
-					} else {
-						toolKey = "anonymous"
-					}
-				}
-				if !state.toolUseBlockOpen || toolKey != activeToolKey {
+
+				// A delta carrying a function name starts a new tool call.
+				if tc.Function.Name != "" {
+					// Finalize any prior buffered (not-yet-opened) call before
+					// starting a new one: the upstream moved on without ever
+					// sending an id for it, so mint a synthetic id now.
+					flushPendingToolWithCount()
 					if state.toolUseBlockOpen {
 						state.closeBlock("tool_use")
 					}
-					state.openToolUseBlockWithID(tc.Function.Name, tc.ID)
-					activeToolKey = toolKey
+
+					pu := &pendingOpenTool{name: tc.Function.Name, id: tc.ID, key: toolKey}
+					if tc.Function.Arguments != "" {
+						pu.args.WriteString(tc.Function.Arguments)
+					}
+					if tc.ID != "" {
+						// Both name and id known: open the block now with the real
+						// (sanitized) id and stream any args immediately.
+						state.openToolUseBlockWithID(tc.Function.Name, tc.ID)
+						if pu.args.Len() > 0 {
+							liveOutputTokens++
+							globalStats.AddTokens(1)
+							state.emitToolArgsDelta(pu.args.String())
+						}
+					} else {
+						// Buffer until the id arrives on a later delta. Some
+						// OpenAI-compatible providers split name and id across
+						// separate deltas; emitting content_block_start now would
+						// force a synthetic id that diverges from upstream.
+						state.pendingOpenTool = pu
+					}
 					if tc.Index != nil {
 						activeToolIndex = fmt.Sprintf("index:%d", *tc.Index)
 					}
+					continue
 				}
 
-				if tc.Function.Arguments != "" {
-					liveOutputTokens++
-					globalStats.AddTokens(1)
-					state.writeSSE("content_block_delta", map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": state.contentBlockIndex,
-						"delta": map[string]interface{}{
-							"type":         "input_json_delta",
-							"partial_json": tc.Function.Arguments,
-						},
-					})
+				// Continuation delta (no name): belongs to the active call.
+				// Reject deltas whose index doesn't match the active call when
+				// the upstream uses index for continuation identity.
+				if tc.Index != nil && activeToolIndex != "" &&
+					fmt.Sprintf("index:%d", *tc.Index) != activeToolIndex {
+					continue
+				}
+
+				args := tc.Function.Arguments
+				if state.toolUseBlockOpen {
+					// Already-opened active call: stream args incrementally.
+					if args != "" {
+						liveOutputTokens++
+						globalStats.AddTokens(1)
+						state.emitToolArgsDelta(args)
+					}
+				} else if state.pendingOpenTool != nil {
+					// Buffered call: append args, and open now if the id has
+					// finally arrived on this delta.
+					if args != "" {
+						state.pendingOpenTool.args.WriteString(args)
+					}
+					if tc.ID != "" && state.pendingOpenTool.id == "" {
+						state.pendingOpenTool.id = tc.ID
+					}
+					if state.pendingOpenTool.id != "" {
+						flushPendingToolWithCount()
+					}
 				}
 			}
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			activeToolKey = ""
 			activeToolIndex = ""
 			liveOutputTokens++
 			globalStats.AddTokens(1)
-			// If a tool_use block is open, close it before opening a text
-			// block so the content isn't silently dropped.
+			// Emit any buffered tool call (and close an open tool_use block)
+			// before opening a text block so the content isn't silently
+			// dropped and tool/text ordering is preserved.
+			flushPendingToolWithCount()
 			if state.toolUseBlockOpen {
 				state.closeBlock("tool_use")
 			}
@@ -271,6 +302,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		}
 
 		if choice.FinishReason != nil {
+			flushPendingToolWithCount()
 			state.closeAllBlocks()
 			state.sendEmptyTextBlock()
 
@@ -305,7 +337,8 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	// If the stream ended without finish_reason (connection drop or [DONE]
 	// with no finish_reason), close remaining blocks and emit a fallback
 	// stop so clients don't hang waiting for a terminal event.
-	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen {
+	if state.thinkingBlockOpen || state.textBlockOpen || state.toolUseBlockOpen || state.pendingOpenTool != nil {
+		flushPendingToolWithCount()
 		state.closeAllBlocks()
 	}
 	if !state.hasContentBlock {

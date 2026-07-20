@@ -13,19 +13,27 @@ import (
 
 func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
 	messages := []OpenAIChatMessage{}
+	preserveReasoningContent := isReasoningVendorModel(anthroReq.Model)
 
 	if anthroReq.System != nil {
-		sysContent := systemToString(anthroReq.System)
-		messages = append(messages, OpenAIChatMessage{
-			Role:    "system",
-			Content: sysContent,
-		})
+		sysContent := stripLeadingAnthropicBillingHeader(systemToString(anthroReq.System))
+		if strings.TrimSpace(sysContent) != "" {
+			messages = append(messages, OpenAIChatMessage{
+				Role:    "system",
+				Content: sysContent,
+			})
+		}
 	}
 
 	for _, msg := range anthroReq.Messages {
-		ollamaMsgs := translateMessageToOpenAI(msg)
-		messages = append(messages, ollamaMsgs...)
+		translated := translateMessageToOpenAIWithReasoning(msg, preserveReasoningContent)
+		messages = append(messages, translated...)
 	}
+	// OpenAI Chat implementations commonly support only one system message at
+	// the beginning. Claude Code can also emit system reminders inside messages;
+	// hoist and merge every system message after translating the full history.
+	// This mirrors CC Switch's Anthropic -> OpenAI normalization.
+	messages = normalizeOpenAISystemMessages(messages)
 
 	req := &OpenAIChatRequest{
 		Model:       anthroReq.Model,
@@ -97,6 +105,29 @@ func translateToolChoiceToOpenAI(tc interface{}) interface{} {
 }
 
 func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
+	return translateMessageToOpenAIWithReasoning(msg, false)
+}
+
+func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoningContent bool) []OpenAIChatMessage {
+	// Anthropic allows system messages inside the messages array (e.g. Claude
+	// Code's "The user sent a new message while you were working" reminders,
+	// or the "Available agent types" notice). Hoisting these to the front
+	// system prompt destroys recency: the latest user input ends up buried at
+	// the start of the conversation instead of as the final user turn. Mirror
+	// CLIProxyAPI and emit them as user messages in place so their position is
+	// preserved. The top-level `system` field (handled in translateToOpenAI)
+	// remains the only front-of-conversation system message.
+	if msg.Role == "system" {
+		text := strings.TrimSpace(systemToString(msg.Content))
+		if text == "" {
+			return nil
+		}
+		return []OpenAIChatMessage{{
+			Role:    "user",
+			Content: text,
+		}}
+	}
+
 	switch content := msg.Content.(type) {
 	case string:
 		if msg.Role == "tool" {
@@ -110,7 +141,7 @@ func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
 			Content: content,
 		}}
 	case []interface{}:
-		return translateContentBlocksToOpenAI(msg.Role, content)
+		return translateContentBlocksToOpenAIWithReasoning(msg.Role, content, preserveReasoningContent)
 	default:
 		return []OpenAIChatMessage{{
 			Role:    msg.Role,
@@ -120,10 +151,14 @@ func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
 }
 
 func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIChatMessage {
+	return translateContentBlocksToOpenAIWithReasoning(role, blocks, false)
+}
+
+func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface{}, preserveReasoningContent bool) []OpenAIChatMessage {
 	textParts := []string{}
 	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
-	var thinkingContent, droppedThinking string
+	var reasoningParts []string
 	type toolResult struct {
 		id      string
 		content string
@@ -143,28 +178,31 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 				textParts = append(textParts, text)
 			}
 		case "thinking":
-			// Do not replay prior-turn thinking to a non-Claude upstream. prism
-			// never signs thinking blocks (it is not the Anthropic API), so any
-			// thinking the client replays carries an empty/foreign signature.
-			// Forwarding stale reasoning biases the model into re-proposing the
-			// same tool call (e.g. re-running a build that already succeeded).
-			// Drop thinking blocks whose signature is empty/missing so the
-			// upstream reasons fresh from tool calls + results. Mirrors
-			// CLIProxyAPI's shouldMapClaudeThinkingToGPTReasoning, which skips
-			// empty-signature thinking when routing Claude history to a
-			// non-Claude provider.
-			sig, _ := blockMap["signature"].(string)
-			if thinking, ok := blockMap["thinking"].(string); ok {
-				if strings.TrimSpace(sig) != "" {
-					thinkingContent += thinking
-				} else {
-					droppedThinking += thinking
+			// Most OpenAI-compatible APIs do not understand Anthropic thinking
+			// history. DeepSeek/Kimi/MiMo-style endpoints are the exception: they
+			// require non-empty reasoning_content on assistant tool-call history.
+			// Never forward the Anthropic signature; it is not valid for them.
+			if preserveReasoningContent && role == "assistant" {
+				if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
+					reasoningParts = append(reasoningParts, thinking)
 				}
+			}
+		case "redacted_thinking":
+			// Claude Code encrypts historical thinking into redacted_thinking.
+			// DeepSeek/Kimi/MiMo require non-empty reasoning_content on assistant
+			// tool-call turns, so mirror cc-switch and inject a minimal placeholder
+			// when the real content is unavailable. This is skipped for generic
+			// OpenAI-compatible providers (preserveReasoningContent == false).
+			if preserveReasoningContent && role == "assistant" {
+				reasoningParts = append(reasoningParts, "[redacted thinking]")
 			}
 		case "tool_use":
 			id, _ := blockMap["id"].(string)
 			name, _ := blockMap["name"].(string)
-			input, _ := blockMap["input"].(map[string]interface{})
+			input := map[string]interface{}{}
+			if parsed, ok := blockMap["input"].(map[string]interface{}); ok && parsed != nil {
+				input = parsed
+			}
 			argsJSON, _ := json.Marshal(input)
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   id,
@@ -224,15 +262,6 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		}
 	}
 
-	// Fallback: if dropping stale thinking would leave an empty assistant
-	// message (no text, tool_calls, tool_results, or images), restore it so we
-	// never emit a content-less assistant message, which some upstreams reject
-	// as an invalid request.
-	if role == "assistant" && thinkingContent == "" && droppedThinking != "" &&
-		len(textParts) == 0 && len(toolCalls) == 0 && len(toolResults) == 0 && len(imageParts) == 0 {
-		thinkingContent = droppedThinking
-	}
-
 	if len(toolCalls) > 0 {
 		content := ""
 		if len(textParts) > 0 {
@@ -243,8 +272,12 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 			Content:   content,
 			ToolCalls: toolCalls,
 		}
-		if thinkingContent != "" {
-			msg.ReasoningContent = &thinkingContent
+		if preserveReasoningContent && role == "assistant" && len(toolCalls) > 0 {
+			reasoning := "tool call"
+			if len(reasoningParts) > 0 {
+				reasoning = joinStrings(reasoningParts)
+			}
+			msg.ReasoningContent = &reasoning
 		}
 		return []OpenAIChatMessage{msg}
 	}
@@ -261,7 +294,7 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		if len(textParts) > 0 {
 			messages = append(messages, OpenAIChatMessage{
 				Role:    "user",
-				Content: joinStrings(textParts),
+				Content: openAITextContent(textParts),
 			})
 		}
 		return messages
@@ -283,19 +316,59 @@ func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIC
 		}}
 	}
 
-	if thinkingContent != "" {
-		msg := OpenAIChatMessage{
-			Role:    role,
-			Content: joinStrings(textParts),
-		}
-		msg.ReasoningContent = &thinkingContent
-		return []OpenAIChatMessage{msg}
+	// Do not send an empty assistant turn after removing stale thinking. This
+	// matches CLIProxyAPI and avoids giving the upstream a fake continuation.
+	if role == "assistant" && len(textParts) == 0 && len(imageParts) == 0 {
+		return nil
 	}
 
 	return []OpenAIChatMessage{{
 		Role:    role,
-		Content: joinStrings(textParts),
+		Content: openAITextContent(textParts),
 	}}
+}
+
+func isReasoningVendorModel(model string) bool {
+	model = strings.ToLower(model)
+	for _, hint := range []string{"moonshot", "kimi", "deepseek", "mimo", "xiaomimimo"} {
+		if strings.Contains(model, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripLeadingAnthropicBillingHeader(text string) string {
+	const prefix = "x-anthropic-billing-header:"
+	if !strings.HasPrefix(text, prefix) {
+		return text
+	}
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		return strings.TrimLeft(text[i+1:], "\r\n")
+	}
+	return ""
+}
+
+func normalizeOpenAISystemMessages(messages []OpenAIChatMessage) []OpenAIChatMessage {
+	var systemParts []string
+	nonSystem := make([]OpenAIChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != "system" {
+			nonSystem = append(nonSystem, msg)
+			continue
+		}
+		text := strings.TrimSpace(systemToString(msg.Content))
+		if text != "" {
+			systemParts = append(systemParts, text)
+		}
+	}
+	if len(systemParts) == 0 {
+		return nonSystem
+	}
+	return append([]OpenAIChatMessage{{
+		Role:    "system",
+		Content: strings.Join(systemParts, "\n"),
+	}}, nonSystem...)
 }
 
 func joinStrings(parts []string) string {
@@ -307,6 +380,26 @@ func joinStrings(parts []string) string {
 		result += p
 	}
 	return result
+}
+
+// openAITextContent returns the OpenAI content payload for a set of Anthropic
+// text blocks. A single text block becomes a plain string (the shape most
+// providers expect); multiple blocks become an array of {type:text,text:...}
+// parts so distinct user turns stay separable rather than being flattened into
+// one newline-joined string (which makes the model treat several historical
+// messages as a single current turn).
+func openAITextContent(textParts []string) interface{} {
+	if len(textParts) == 0 {
+		return ""
+	}
+	if len(textParts) == 1 {
+		return textParts[0]
+	}
+	parts := make([]interface{}, 0, len(textParts))
+	for _, t := range textParts {
+		parts = append(parts, map[string]interface{}{"type": "text", "text": t})
+	}
+	return parts
 }
 
 func translateToolsToOpenAI(tools []AnthropicTool) []OpenAITool {
@@ -371,7 +464,7 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 
 	if len(resp.Choices) == 0 {
 		return AnthropicResponse{
-			ID:      fmt.Sprintf("msg_%s", resp.Model),
+			ID:      "msg_" + sanitizeMessageIDFragment(resp.Model),
 			Type:    "message",
 			Role:    "assistant",
 			Model:   resp.Model,
@@ -405,7 +498,7 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 			continue
 		}
 		args := openAIArgumentsObject(tc.Function.Arguments)
-		id := tc.ID
+		id := sanitizeToolUseID(tc.ID)
 		if id == "" {
 			// Mint a globally-unique ID when the upstream OpenAI-compatible
 			// server omits one. Without a stable, unique ID the client
@@ -451,7 +544,7 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 	}
 
 	return AnthropicResponse{
-		ID:         fmt.Sprintf("msg_%s", resp.Model),
+		ID:         "msg_" + sanitizeMessageIDFragment(resp.Model),
 		Type:       "message",
 		Role:       "assistant",
 		Model:      resp.Model,

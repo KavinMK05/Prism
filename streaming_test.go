@@ -1621,3 +1621,96 @@ func TestOllamaStreaming_ToolCallsCumulative(t *testing.T) {
 		t.Errorf("reconstructed tool input mismatch, expected file=a.go old=A new=B, got %v", got)
 	}
 }
+
+// TestOpenAIStreaming_UsageAndCacheTokens verifies the terminal message_delta
+// carries input_tokens (non-cached: prompt_tokens minus cached_tokens) and
+// cache_read_input_tokens, so Claude Code learns the real prompt size for
+// context-window tracking / auto-compaction. Regression for the bug where
+// streaming message_delta.usage only ever contained output_tokens.
+func TestOpenAIStreaming_UsageAndCacheTokens(t *testing.T) {
+	// Final chunk carries usage with cached tokens; prompt_tokens includes
+	// the cached portion (OpenAI convention), so input_tokens must be
+	// 1000-700=300 and cache_read_input_tokens=700.
+	textChunk := `data: {"id":"chatcmpl-u","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}` + "\n"
+	finishChunk := `data: {"id":"chatcmpl-u","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,"prompt_tokens_details":{"cached_tokens":700}}}` + "\n"
+	upstreamBody := textChunk + finishChunk + "data: [DONE]\n"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "openai")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "tencent/hy3:free", Stream: true, MaxTokens: 100}
+	openAIReq := &OpenAIChatRequest{Model: "tencent/hy3:free", Stream: true}
+
+	router.handleOpenAIStreaming(w, req, openAIReq, anthroReq, rp)
+
+	events := parseSSEEvents(w.Body.String())
+	var deltaUsage map[string]interface{}
+	var startUsage map[string]interface{}
+	for _, e := range events {
+		if e.Event == "message_delta" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			deltaUsage, _ = data["usage"].(map[string]interface{})
+		}
+		if e.Event == "message_start" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if msg, ok := data["message"].(map[string]interface{}); ok {
+				startUsage, _ = msg["usage"].(map[string]interface{})
+			}
+		}
+	}
+	if deltaUsage == nil {
+		t.Fatal("missing message_delta.usage")
+	}
+	// input_tokens must be present and equal prompt-cached (300), not 1000.
+	inputTokens, ok := deltaUsage["input_tokens"]
+	if !ok {
+		t.Fatalf("message_delta.usage missing input_tokens: %#v", deltaUsage)
+	}
+	if toIntVal(inputTokens) != 300 {
+		t.Errorf("input_tokens: expected 300 (1000-700 cached), got %v", inputTokens)
+	}
+	if toIntVal(deltaUsage["output_tokens"]) != 5 {
+		t.Errorf("output_tokens: expected 5, got %v", deltaUsage["output_tokens"])
+	}
+	if toIntVal(deltaUsage["cache_read_input_tokens"]) != 700 {
+		t.Errorf("cache_read_input_tokens: expected 700, got %v", deltaUsage["cache_read_input_tokens"])
+	}
+	// message_start should still report zeros (usage arrives at the end).
+	if startUsage == nil || toIntVal(startUsage["input_tokens"]) != 0 {
+		t.Errorf("message_start.usage.input_tokens should be 0, got %#v", startUsage)
+	}
+	// The message id must not contain '/' or ':' (model was tencent/hy3:free).
+	for _, e := range events {
+		if e.Event == "message_start" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if msg, ok := data["message"].(map[string]interface{}); ok {
+				id, _ := msg["id"].(string)
+				if strings.ContainsAny(id, "/:") {
+					t.Errorf("message id should not contain / or :, got %q", id)
+				}
+			}
+		}
+	}
+}
+
+// toIntVal coerces a json.Unmarshal numeric (float64) to int for assertions.
+func toIntVal(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
+}

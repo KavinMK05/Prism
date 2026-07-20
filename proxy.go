@@ -29,6 +29,56 @@ func generateToolUseID(name string) string {
 	return "toolu_" + hex.EncodeToString(b)
 }
 
+// sanitizeToolUseID coerces an upstream tool-call id into the Anthropic
+// toolu_-shaped id space. Claude Code correlates tool_use/tool_result blocks
+// by id across turns, so the value only needs to be stable within a single
+// translated request (the OpenAI upstream never reuses ids across requests).
+// Already-toolu_ ids pass through unchanged; other ids are re-wrapped so the
+// client sees spec-compliant toolu_ ids instead of e.g. "chatcmpl-tool-…".
+func sanitizeToolUseID(id string) string {
+	if id == "" {
+		return ""
+	}
+	if strings.HasPrefix(id, "toolu_") {
+		return id
+	}
+	clean := strings.TrimPrefix(id, "chatcmpl-tool-")
+	if clean == id {
+		// No recognized prefix; keep alphanumerics only so the id stays a
+		// valid Anthropic toolu_ token regardless of upstream formatting.
+		clean = strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				return r
+			}
+			return -1
+		}, id)
+	}
+	if clean == "" {
+		return generateToolUseID("")
+	}
+	return "toolu_" + clean
+}
+
+// sanitizeMessageIDFragment turns an arbitrary model id (e.g.
+// "tencent/hy3:free") into a fragment safe to embed in an Anthropic message
+// id ("msg_<fragment>"). Anthropic ids are opaque tokens without "/" or ":",
+// so non-alphanumeric runes are replaced with '-'.
+func sanitizeMessageIDFragment(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "msg"
+	}
+	return out
+}
+
 // anthropicThinkingEnabled reports whether an Anthropic thinking config
 // requests reasoning. It honors thinking.type (disabled/enabled/adaptive);
 // a non-nil thinking with no type but a positive budget_tokens is treated as
