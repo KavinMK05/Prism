@@ -540,6 +540,18 @@ func translateMessage(msg AnthropicMessage) []OllamaMessage {
 	return translateMessageWithToolLookup(msg, nil)
 }
 
+// preserveHistoryThinkingOnOllamaPath controls whether historical thinking
+// blocks are replayed on the Ollama /api/chat path. Defaults to false (drop),
+// matching CLIProxyAPI's signature-gated drop (internal/translator/openai/claude/
+// openai_claude_request.go: shouldMapClaudeThinkingToGPTReasoning) and our own
+// OpenAI path. Our streaming code never emits a thinking signature, so every
+// thinking block Claude Code echoes back is unsigned and must not be replayed
+// — otherwise GLM-5.1 re-sees its own stale "Let me confirm" reasoning every
+// turn and loops (router-for-me/CLIProxyAPI#2172). Set to true to restore the
+// prior keep-last behaviour (Ollama's anthropic.convertMessage) for models that
+// genuinely require a thinking field on assistant history turns.
+var preserveHistoryThinkingOnOllamaPath = false
+
 func translateMessageWithToolLookup(msg AnthropicMessage, toolIDToName map[string]string) []OllamaMessage {
 	// Anthropic permits system messages inside the messages array. Ollama only
 	// expects the actual system prompt at the beginning, so preserve these as
@@ -581,7 +593,7 @@ func translateContentBlocks(role string, blocks []interface{}) []OllamaMessage {
 func translateContentBlocksWithToolLookup(role string, blocks []interface{}, toolIDToName map[string]string) []OllamaMessage {
 	textParts := []string{}
 	images := []string{}
-	var thinkingParts []string
+	var lastThinking string
 	toolUseBlocks := []AnthropicToolUseBlock{}
 	type toolResult struct {
 		toolUseID string
@@ -605,11 +617,28 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 				textParts = append(textParts, text)
 			}
 		case "thinking":
-			// Ollama's chat history supports a thinking field on assistant
-			// messages. Preserve every prior thinking block; signatures are an
-			// Anthropic round-trip concern and have no meaning to Ollama.
-			if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
-				thinkingParts = append(thinkingParts, thinking)
+			// Drop historical thinking blocks from the outbound request. This
+			// mirrors how CLIProxyAPI routes Claude Code to a non-Anthropic
+			// upstream (internal/translator/openai/claude/openai_claude_request.go:
+			// it only maps a thinking block to reasoning_content when its
+			// signature is compatible with the target provider, which an
+			// Anthropic-signed block never is for OpenAI/Ollama — so they are
+			// dropped), and matches our own OpenAI path
+			// (translateContentBlocksToOpenAIWithReasoning drops unsigned thinking
+			// for non-reasoning-vendor models). Our streaming code never emits a
+			// thinking `signature`/`signature_delta`, so every thinking block
+			// Claude Code echoes back is unsigned and must not be replayed —
+			// otherwise GLM-5.1 sees its own prior "Let me confirm that's done"
+			// reasoning every turn and replicates it into a re-Read / TaskUpdate
+			// loop (router-for-me/CLIProxyAPI#2172). Keeping the last thinking
+			// block (the previous behaviour, matching Ollama's own
+			// anthropic.convertMessage) feeds the model its stale confirmation
+			// habit; dropping forces it to commit to its current text/tools.
+			// Flip preserveHistoryThinkingOnOllamaPath to restore keep-last.
+			if preserveHistoryThinkingOnOllamaPath {
+				if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
+					lastThinking = thinking
+				}
 			}
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
@@ -667,14 +696,19 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 		}
 	}
 
-	thinkingContent := strings.Join(thinkingParts, "\n\n")
+	thinkingContent := lastThinking
 
 	if len(toolUseBlocks) > 0 {
 		content := strings.Join(textParts, "\n\n")
 		toolCalls := make([]OllamaToolCall, len(toolUseBlocks))
 		for i, tu := range toolUseBlocks {
+			// Preserve the Anthropic tool_use id. OpenAI-compatible backends
+			// (e.g. GLM via Ollama Cloud) require the assistant tool_call id to
+			// match the subsequent tool message's tool_call_id, and Ollama's own
+			// /v1/messages converter (anthropic/anthropic.go) keeps it too.
 			toolCalls[i] = OllamaToolCall{
 				Type: "function",
+				ID:   tu.ID,
 				Function: OllamaToolCallFunction{
 					Index:     &i,
 					Name:      tu.Name,
@@ -703,9 +737,16 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 			if len(tr.images) > 0 {
 				ollamaMsg.Images = tr.images
 			}
+			// tool_call_id links this result to the preceding assistant tool_use.
+			// Ollama Cloud (GLM/etc.) requires it; without it the provider cannot
+			// correlate the tool message with its tool call and rejects the turn.
+			// Mirrors Ollama's own /v1/messages converter (ToolCallID: toolUseID).
+			ollamaMsg.ToolCallID = tr.toolUseID
 
 			// Look up tool name from the tool_use blocks in the same message first,
-			// then fall back to the conversation-level tool ID -> name mapping
+			// then fall back to the conversation-level tool ID -> name mapping.
+			// tool_name is kept as a secondary hint for local-model templates that
+			// reference it (Ollama's OpenAI converter sets both fields too).
 			for _, tu := range toolUseBlocks {
 				if tu.ID == tr.toolUseID {
 					ollamaMsg.ToolName = tu.Name
@@ -735,6 +776,13 @@ func translateContentBlocksWithToolLookup(role string, blocks []interface{}, too
 		msg.Thinking = thinkingContent
 	}
 
+	// Drop an assistant turn left empty after stripping stale/unsigned
+	// thinking, so we never inject a content-less assistant message into the
+	// conversation history. Mirrors the OpenAI path and CLIProxyAPI. User and
+	// system-derived messages are always emitted.
+	if role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 && thinkingContent == "" && len(msg.Images) == 0 {
+		return nil
+	}
 	return []OllamaMessage{msg}
 }
 

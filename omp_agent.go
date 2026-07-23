@@ -132,7 +132,7 @@ func installOmpConfig(port int, remap *ModelRemapping) error {
 		providers = map[string]interface{}{}
 	}
 
-	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
 	nonCodexModels := buildOmpModelEntries(remap, cfg, false)
 	codexModels := buildOmpModelEntries(remap, cfg, true)
 

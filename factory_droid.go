@@ -101,7 +101,7 @@ func installFactoryDroidConfig(port int, remap *ModelRemapping) error {
 	ensureAgentBackup(localPath)
 
 	cfg := loadConfig()
-	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
 
 	// Collect non-Prism customModels from both files so they survive the
 	// merge (settings.local.json's array replaces settings.json's on merge).

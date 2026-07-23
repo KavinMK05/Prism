@@ -85,7 +85,7 @@ func installZcodeConfig(port int, remap *ModelRemapping) error {
 		providers = map[string]interface{}{}
 	}
 
-	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) // root; ZCode appends /v1/messages for anthropic kind
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) // root; ZCode appends /v1/messages for anthropic kind
 	models := buildZcodeModels(remap, loadConfig())
 
 	providers[zcodeProviderID] = map[string]interface{}{

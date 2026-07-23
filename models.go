@@ -123,9 +123,11 @@ type OllamaMessage struct {
 }
 
 type OllamaToolCall struct {
-	// Type is required by Ollama for function tool calls. ID is retained for
-	// decoding/compatibility with upstream responses, but new Ollama requests
-	// correlate calls by function.index rather than id.
+	// Type is required by Ollama for function tool calls. ID is preserved from
+	// the Anthropic tool_use block on outbound (history) messages so that
+	// OpenAI-compatible cloud backends (GLM/etc. via Ollama Cloud) can correlate
+	// each assistant tool_call with the following tool message's tool_call_id.
+	// Ollama's own /v1/messages converter keeps this id too.
 	Type     string                 `json:"type,omitempty"`
 	ID       string                 `json:"id,omitempty"`
 	Function OllamaToolCallFunction `json:"function"`

@@ -20,6 +20,7 @@ type streamState struct {
 	contentBlockIndex int
 	hasContentBlock   bool
 	thinkingBlockOpen bool
+	thinkingDone      bool // once text/tool has followed thinking, never re-open a thinking block (ollama/ollama#17101, PR #17102)
 	textBlockOpen     bool
 	toolUseBlockOpen  bool
 	toolCallIndex     int
@@ -62,13 +63,14 @@ type pendingToolUse struct {
 	flushed  bool
 }
 
-func newStreamState(w http.ResponseWriter, flusher http.Flusher, canFlush bool, msgID string) *streamState {
+func newStreamState(w http.ResponseWriter, flusher http.Flusher, canFlush bool, msgID string, estimatedInputTokens int) *streamState {
 	return &streamState{
-		w:              w,
-		flusher:        flusher,
-		canFlush:       canFlush,
-		msgID:          msgID,
-		pendingToolMap: make(map[string]*pendingToolUse),
+		w:                 w,
+		flusher:           flusher,
+		canFlush:          canFlush,
+		msgID:             msgID,
+		pendingToolMap:    make(map[string]*pendingToolUse),
+		totalPromptTokens: estimatedInputTokens,
 	}
 }
 
@@ -142,6 +144,7 @@ func (s *streamState) closeBlock(blockType string) {
 	if !s.hasOpenBlock() {
 		return
 	}
+	wasThinking := s.thinkingBlockOpen
 	log.Printf("[STREAM] Closing %s block at index %d", blockType, s.contentBlockIndex)
 	s.writeSSE("content_block_stop", map[string]interface{}{
 		"type":  "content_block_stop",
@@ -151,6 +154,14 @@ func (s *streamState) closeBlock(blockType string) {
 	s.thinkingBlockOpen = false
 	s.textBlockOpen = false
 	s.toolUseBlockOpen = false
+	// Once a thinking block has been closed because real (text/tool) content
+	// followed it, the model has moved past reasoning. Re-opening thinking
+	// later would emit an invalid thinking -> text -> thinking sequence and
+	// confuse clients' block accumulators. Mirrors ollama/ollama PR #17102's
+	// thinkingDone guard.
+	if wasThinking {
+		s.thinkingDone = true
+	}
 }
 
 func (s *streamState) hasOpenBlock() bool {
@@ -373,7 +384,17 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	flusher, canFlush := w.(http.Flusher)
 	msgID := "msg_" + sanitizeMessageIDFragment(anthroReq.Model)
 
-	state := newStreamState(w, flusher, canFlush, msgID)
+	// Estimate input tokens for message_start. Ollama does not report
+	// prompt_eval_count until the final (done) chunk, but Claude Code uses
+	// message_start.usage.input_tokens for context-window tracking and
+	// auto-compaction. Reporting 0 hides a growing context from Claude Code
+	// so it never compacts, the turn balloons (observed >100k tokens in one
+	// assistant turn), and the model drowns into a tool-call loop. Mirror
+	// Ollama's anthropic.StreamConverter: seed message_start with a len/4
+	// estimate of the request body, then carry the real prompt_eval_count in
+	// message_delta once the done chunk arrives.
+	estimatedInputTokens := len(body) / 4
+	state := newStreamState(w, flusher, canFlush, msgID, estimatedInputTokens)
 
 	client := detectClient(r)
 	defer func() {
@@ -390,7 +411,7 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 			"content":     []interface{}{},
 			"stop_reason": nil,
 			"usage": map[string]interface{}{
-				"input_tokens":  0,
+				"input_tokens":  state.totalPromptTokens,
 				"output_tokens": 0,
 			},
 		},
@@ -423,7 +444,17 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 			state.totalOutputTokens = chunk.EvalCount
 		}
 
-		if chunk.Message.Thinking != "" {
+		if chunk.Message.Thinking != "" && !state.thinkingDone {
+			// Handle text -> thinking: some models prefix their response with
+			// text tokens before emitting a thinking block. Close the open text
+			// block (and bump the index) before starting the thinking block so
+			// we don't reuse the text block's index, which would produce an
+			// invalid Anthropic stream that clients abort on. Mirrors
+			// ollama/ollama PR #17102. The thinkingDone guard above prevents
+			// thinking from re-opening after text/tool has followed thinking.
+			if state.textBlockOpen {
+				state.closeBlock("text")
+			}
 			if !state.thinkingBlockOpen {
 				state.openThinkingBlock()
 			}

@@ -297,8 +297,11 @@ func TestTranslateContentBlocks_ToolResultImageAndError(t *testing.T) {
 	if m.ToolName != "run_command" {
 		t.Errorf("expected tool_name, got %q", m.ToolName)
 	}
-	if m.ToolCallID != "" {
-		t.Errorf("expected tool_call_id to be omitted for Ollama, got %q", m.ToolCallID)
+	// tool_call_id must be preserved so cloud backends can correlate the
+	// tool result with the preceding assistant tool_use (matches Ollama's
+	// own /v1/messages converter).
+	if m.ToolCallID != "toolu_1" {
+		t.Errorf("expected tool_call_id=toolu_1, got %q", m.ToolCallID)
 	}
 }
 
@@ -339,8 +342,11 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	if msg.Content != "first turn\n\nsecond turn" {
 		t.Errorf("text blocks were not separated: %q", msg.Content)
 	}
-	if msg.Thinking != "plan\n\ncontinue" {
-		t.Errorf("thinking blocks were not preserved: %q", msg.Thinking)
+	// Historical thinking blocks are dropped on the Ollama path (unsigned →
+	// drop, matching CLIProxyAPI#2172 and our OpenAI path). The model must not
+	// re-see its stale "confirm" reasoning every turn.
+	if msg.Thinking != "" {
+		t.Errorf("expected historical thinking to be dropped, got %q", msg.Thinking)
 	}
 	if len(msg.ToolCalls) != 1 {
 		t.Fatalf("expected one tool call, got %d", len(msg.ToolCalls))
@@ -349,11 +355,83 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	if call.Type != "function" {
 		t.Errorf("expected function tool-call type, got %q", call.Type)
 	}
-	if call.ID != "" {
-		t.Errorf("expected Anthropic id to be omitted for Ollama, got %q", call.ID)
+	if call.ID != "call_1" {
+		t.Errorf("expected Anthropic tool_use id to be preserved for Ollama, got %q", call.ID)
 	}
 	if call.Function.Index == nil || *call.Function.Index != 0 {
 		t.Errorf("expected function.index=0, got %#v", call.Function.Index)
+	}
+}
+
+// TestTranslateAnthropicToOllama_DropsUnsignedThinkingHistory verifies the
+// default (drop) behaviour for the Ollama path: an assistant history turn that
+// contains ONLY unsigned thinking blocks is dropped entirely, mirroring
+// CLIProxyAPI#2172 and our OpenAI path (TestTranslateToOpenAI_
+// DropsUnsignedThinkingHistory).
+func TestTranslateAnthropicToOllama_DropsUnsignedThinkingHistory(t *testing.T) {
+	msgs := translateContentBlocksWithToolLookup("assistant", []interface{}{
+		map[string]interface{}{"type": "thinking", "thinking": "stale plan", "signature": ""},
+	}, nil)
+	if len(msgs) != 0 {
+		t.Fatalf("expected unsigned thinking-only history to be dropped, got %#v", msgs)
+	}
+}
+
+// TestTranslateAnthropicToOllama_PreserveFlagKeepsLastThinking verifies the
+// opt-in preserveHistoryThinkingOnOllamaPath toggle restores the prior
+// keep-last behaviour (useful for models that require a thinking field on
+// assistant history turns).
+func TestTranslateAnthropicToOllama_PreserveFlagKeepsLastThinking(t *testing.T) {
+	preserveHistoryThinkingOnOllamaPath = true
+	defer func() { preserveHistoryThinkingOnOllamaPath = false }()
+	blocks := []interface{}{
+		map[string]interface{}{"type": "thinking", "thinking": "plan", "signature": ""},
+		map[string]interface{}{"type": "text", "text": "go"},
+		map[string]interface{}{"type": "thinking", "thinking": "continue", "signature": ""},
+	}
+	msgs := translateContentBlocksWithToolLookup("assistant", blocks, nil)
+	if len(msgs) != 1 || msgs[0].Thinking != "continue" {
+		t.Fatalf("expected keep-last thinking when preserve flag set, got %#v", msgs)
+	}
+}
+
+// TestTranslateAnthropicToOllama_ToolUseIDCorrelatesWithToolResult verifies that
+// the assistant tool_use id is preserved on the outbound tool_call and the
+// following tool_result message carries the matching tool_call_id. Without
+// this correlation, OpenAI-compatible cloud backends (GLM/etc. via Ollama
+// Cloud) reject multi-turn tool conversations. Mirrors Ollama's own
+// /v1/messages converter (anthropic.FromMessagesRequest).
+func TestTranslateAnthropicToOllama_ToolUseIDCorrelatesWithToolResult(t *testing.T) {
+	assistantBlocks := []interface{}{
+		map[string]interface{}{"type": "text", "text": "let me read it"},
+		map[string]interface{}{
+			"type": "tool_use", "id": "toolu_abc", "name": "read_file",
+			"input": map[string]interface{}{"path": "a.go"},
+		},
+	}
+	asst := translateContentBlocksWithToolLookup("assistant", assistantBlocks, nil)
+	if len(asst) != 1 || len(asst[0].ToolCalls) != 1 {
+		t.Fatalf("expected 1 assistant msg with 1 tool call, got %#v", asst)
+	}
+	if asst[0].ToolCalls[0].ID != "toolu_abc" {
+		t.Fatalf("assistant tool_call id not preserved: %q", asst[0].ToolCalls[0].ID)
+	}
+
+	userBlocks := []interface{}{
+		map[string]interface{}{
+			"type": "tool_result", "tool_use_id": "toolu_abc",
+			"content": "file contents",
+		},
+	}
+	tool := translateContentBlocksWithToolLookup("user", userBlocks, map[string]string{"toolu_abc": "read_file"})
+	if len(tool) != 1 || tool[0].Role != "tool" {
+		t.Fatalf("expected 1 tool msg, got %#v", tool)
+	}
+	if tool[0].ToolCallID != "toolu_abc" {
+		t.Errorf("tool_call_id must match the assistant tool_use id: got %q, want toolu_abc", tool[0].ToolCallID)
+	}
+	if tool[0].ToolName != "read_file" {
+		t.Errorf("tool_name lookup failed: got %q", tool[0].ToolName)
 	}
 }
 

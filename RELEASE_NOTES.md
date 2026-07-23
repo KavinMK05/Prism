@@ -1,3 +1,21 @@
+# Prism v0.3.15
+
+## Bug Fixes
+
+- **Fixed: Agent configs now use `127.0.0.1` instead of `localhost`.** All agent base URLs (Claude Code, Codex Desktop, Factory Droid, Grok Build, OMP, OpenCode, Pi, ZCode) default to `127.0.0.1` to avoid IPv6 resolution issues on systems where `localhost` resolves to `::1` first, causing connection failures.
+
+- **Fixed: Stale thinking blocks replayed to Ollama models.** Historical/unsigned thinking blocks from previous assistant turns are now dropped on the Ollama `/api/chat` path, matching CLIProxyAPI's signature-gated behaviour and our own OpenAI path. Previously, every thinking block Claude Code echoed back was replayed, causing models like GLM-5.1 to re-see their own "Let me confirm" reasoning every turn and loop endlessly. A `preserveHistoryThinkingOnOllamaPath` flag is available to restore the old keep-last behaviour for models that require it.
+
+- **Fixed: Tool-call IDs lost on Ollama path.** Anthropic `tool_use` block IDs are now preserved as `id` on the outbound `tool_call` and as `tool_call_id` on the corresponding `tool_result` message. Without this correlation, OpenAI-compatible cloud backends (GLM via Ollama Cloud, etc.) reject multi-turn tool conversations. Mirrors Ollama's own `/v1/messages` converter.
+
+- **Fixed: Tool-call arguments delivered as JSON strings.** Some Ollama-compatible upstreams (e.g. GLM via certain routers) deliver the `arguments` field as a JSON string instead of an object. A custom `UnmarshalJSON` on `OllamaToolCallFunction` now detects and unwraps string-encoded arguments so downstream clients (Claude Code) receive proper objects instead of stringified blobs that fail validation and trigger infinite retry loops.
+
+- **Fixed: Empty assistant turns injected into conversation history.** An assistant turn that becomes empty after stripping stale/unsigned thinking is now dropped entirely, preventing content-less messages from polluting the conversation context.
+
+- **Fixed: Streaming text→thinking block transition (ollama/ollama#17101).** When a model emits text tokens before a thinking block, the open text block is now properly closed and the content-block index bumped before the thinking block starts. Previously this produced an invalid `text → thinking` sequence that confused clients' block accumulators. A `thinkingDone` guard also prevents thinking from re-opening after text/tool content has followed thinking.
+
+- **Fixed: `input_tokens` reported as 0 in streaming `message_start`.** The `message_start` usage now includes an `input_tokens` estimate (request body size / 4) so Claude Code can track context-window usage and trigger auto-compaction. Previously, reporting 0 hid a growing context, causing turns to balloon past 100k tokens and the model to drown into a tool-call loop.
+
 # Prism v0.3.13
 
 ## Features

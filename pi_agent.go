@@ -161,7 +161,7 @@ func installPiConfig(port int, remap *ModelRemapping) error {
 	}
 
 	cfg := loadConfig()
-	baseURL := "http://localhost:" + fmt.Sprintf("%d", port) + "/v1"
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
 
 	// ── models.json ──
 	models, err := readJSONConfig(modelsPath)

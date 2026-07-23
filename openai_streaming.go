@@ -79,7 +79,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	flusher, canFlush := w.(http.Flusher)
 	msgID := "msg_" + sanitizeMessageIDFragment(anthroReq.Model)
 
-	state := newStreamState(w, flusher, canFlush, msgID)
+	state := newStreamState(w, flusher, canFlush, msgID, 0)
 
 	state.writeSSE("message_start", map[string]interface{}{
 		"type": "message_start",
