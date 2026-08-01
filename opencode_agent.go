@@ -36,6 +36,9 @@ func isOpencodeActive() bool { return isAgentActive("opencode") }
 // Returns the provider blocks to merge into the config.
 
 // buildOpencodeModelEntries returns model entries for a single provider block.
+// Each model gets context/output limits, modalities (so OpenCode allows image
+// attachments for vision models), and reasoningEffort variants for reasoning
+// models (default low/medium/high; max only when the model lists it).
 func buildOpencodeModelEntries(remap *ModelRemapping, cfg *Config, codexOnly bool) map[string]interface{} {
 	models := map[string]interface{}{}
 	for _, m := range remap.KnownModels {
@@ -51,13 +54,33 @@ func buildOpencodeModelEntries(remap *ModelRemapping, cfg *Config, codexOnly boo
 		if out == 0 {
 			out = 16384
 		}
-		models[m.ID] = map[string]interface{}{
+		input := []string{"text"}
+		if m.Capabilities != nil && m.Capabilities.Vision {
+			input = append(input, "image")
+		}
+		entry := map[string]interface{}{
 			"name": prismManagedTag + " " + humanizeModelID(m.ID),
 			"limit": map[string]interface{}{
 				"context": ctx,
 				"output":  out,
 			},
+			"modalities": map[string]interface{}{
+				"input":  input,
+				"output": []string{"text"},
+			},
 		}
+		if m.Reasoning {
+			efforts := m.ReasoningEffort
+			if len(efforts) == 0 {
+				efforts = []string{"low", "medium", "high"}
+			}
+			variants := map[string]interface{}{}
+			for _, level := range efforts {
+				variants[level] = map[string]interface{}{"reasoningEffort": level}
+			}
+			entry["variants"] = variants
+		}
+		models[m.ID] = entry
 	}
 	return models
 }
@@ -90,19 +113,25 @@ func installOpencodeConfig(port int, remap *ModelRemapping) error {
 	}
 
 	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
+	options := map[string]interface{}{
+		"baseURL": baseURL,
+		"apiKey":  "prism",
+		"headers": map[string]interface{}{
+			// Lets Prism's detectClient identify OpenCode even when the
+			// User-Agent is not informative.
+			"X-Client-Name": "OpenCode",
+		},
+	}
 	nonCodexModels := buildOpencodeModelEntries(remap, cfg, false)
 	codexModels := buildOpencodeModelEntries(remap, cfg, true)
 
 	// Replace our provider blocks wholesale (clean slate)
 	if len(nonCodexModels) > 0 {
 		providers[opencodeProviderID] = map[string]interface{}{
-			"npm":  "@ai-sdk/openai-compatible",
-			"name": "Prism",
-			"options": map[string]interface{}{
-				"baseURL": baseURL,
-				"apiKey":  "prism",
-			},
-			"models": nonCodexModels,
+			"npm":     "@ai-sdk/openai-compatible",
+			"name":    "Prism",
+			"options": options,
+			"models":  nonCodexModels,
 		}
 	} else {
 		delete(providers, opencodeProviderID)
@@ -110,13 +139,10 @@ func installOpencodeConfig(port int, remap *ModelRemapping) error {
 
 	if len(codexModels) > 0 {
 		providers[opencodeProviderID+"-codex"] = map[string]interface{}{
-			"npm":  "@ai-sdk/openai",
-			"name": "Prism Codex",
-			"options": map[string]interface{}{
-				"baseURL": baseURL,
-				"apiKey":  "prism",
-			},
-			"models": codexModels,
+			"npm":     "@ai-sdk/openai",
+			"name":    "Prism Codex",
+			"options": options,
+			"models":  codexModels,
 		}
 	} else {
 		delete(providers, opencodeProviderID+"-codex")
