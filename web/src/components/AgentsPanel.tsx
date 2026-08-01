@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, apiPost } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -18,7 +18,6 @@ const AGENTS = [
 const TIER_LABELS: Record<string, string> = { opus: 'Opus tier model', sonnet: 'Sonnet tier model', haiku: 'Haiku tier model', subagent: 'Subagent model' };
 
 export default function AgentsPanel() {
-  const { toast } = useToast();
   const [codexStatus, setCodexStatus] = useState<any>(null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, any>>({});
   const [claudeCodeTiers, setClaudeCodeTiers] = useState<Record<string, string>>({});
@@ -45,14 +44,14 @@ export default function AgentsPanel() {
   }, [checkCodex, checkAgent]);
 
   const setupCodex = async () => {
-    try { await apiPost('/codex-desktop/setup'); toast('Codex Desktop configured successfully'); checkCodex(); }
-    catch (e) { toast('Setup failed: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/codex-desktop/setup'); toast.add({ title: 'Codex Desktop configured successfully', type: 'success' }); checkCodex(); }
+    catch (e) { toast.add({ title: 'Setup failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const restoreCodex = async () => {
     if (!confirm('Remove Prism configuration from Codex Desktop?')) return;
-    try { await apiPost('/codex-desktop/restore'); toast('Codex Desktop configuration restored'); checkCodex(); }
-    catch (e) { toast('Restore failed: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/codex-desktop/restore'); toast.add({ title: 'Codex Desktop configuration restored', type: 'success' }); checkCodex(); }
+    catch (e) { toast.add({ title: 'Restore failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const setupAgent = async (id: string) => {
@@ -64,10 +63,10 @@ export default function AgentsPanel() {
       }
       const res = await fetch('/admin/agent/setup?id=' + encodeURIComponent(id), opts);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { toast(data.error || 'Setup failed', 'error'); return; }
-      toast((data.displayName || id) + ' configured successfully');
+      if (!res.ok) { toast.add({ title: data.error || 'Setup failed', type: 'error' }); return; }
+      toast.add({ title: (data.displayName || id) + ' configured successfully', type: 'success' });
       checkAgent(id);
-    } catch (e) { toast('Setup failed: ' + (e as Error).message, 'error'); }
+    } catch (e) { toast.add({ title: 'Setup failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const restoreAgent = async (id: string) => {
@@ -75,10 +74,10 @@ export default function AgentsPanel() {
     try {
       const res = await fetch('/admin/agent/restore?id=' + encodeURIComponent(id), { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { toast(data.error || 'Restore failed', 'error'); return; }
-      toast(id + ' configuration restored');
+      if (!res.ok) { toast.add({ title: data.error || 'Restore failed', type: 'error' }); return; }
+      toast.add({ title: id + ' configuration restored', type: 'success' });
       checkAgent(id);
-    } catch (e) { toast('Restore failed: ' + (e as Error).message, 'error'); }
+    } catch (e) { toast.add({ title: 'Restore failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const statusHTML = (s: any, displayName?: string) => {

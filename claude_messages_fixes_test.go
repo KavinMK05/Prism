@@ -342,11 +342,11 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	if msg.Content != "first turn\n\nsecond turn" {
 		t.Errorf("text blocks were not separated: %q", msg.Content)
 	}
-	// Historical thinking blocks are dropped on the Ollama path (unsigned →
-	// drop, matching CLIProxyAPI#2172 and our OpenAI path). The model must not
-	// re-see its stale "confirm" reasoning every turn.
-	if msg.Thinking != "" {
-		t.Errorf("expected historical thinking to be dropped, got %q", msg.Thinking)
+	// Historical thinking blocks are preserved on the Ollama path (keep-last,
+	// matching Ollama's own anthropic.convertMessage). The model's template
+	// then decides whether to include or strip prior thinking.
+	if msg.Thinking != "continue" {
+		t.Errorf("expected last historical thinking to be preserved, got %q", msg.Thinking)
 	}
 	if len(msg.ToolCalls) != 1 {
 		t.Fatalf("expected one tool call, got %d", len(msg.ToolCalls))
@@ -363,35 +363,37 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	}
 }
 
-// TestTranslateAnthropicToOllama_DropsUnsignedThinkingHistory verifies the
-// default (drop) behaviour for the Ollama path: an assistant history turn that
-// contains ONLY unsigned thinking blocks is dropped entirely, mirroring
-// CLIProxyAPI#2172 and our OpenAI path (TestTranslateToOpenAI_
-// DropsUnsignedThinkingHistory).
-func TestTranslateAnthropicToOllama_DropsUnsignedThinkingHistory(t *testing.T) {
+// TestTranslateAnthropicToOllama_PreservesUnsignedThinkingHistory verifies the
+// default (keep-last) behaviour for the Ollama path: an assistant history turn
+// that contains ONLY unsigned thinking blocks still produces a message with the
+// thinking field preserved, matching Ollama's own anthropic.convertMessage.
+func TestTranslateAnthropicToOllama_PreservesUnsignedThinkingHistory(t *testing.T) {
 	msgs := translateContentBlocksWithToolLookup("assistant", []interface{}{
 		map[string]interface{}{"type": "thinking", "thinking": "stale plan", "signature": ""},
 	}, nil)
-	if len(msgs) != 0 {
-		t.Fatalf("expected unsigned thinking-only history to be dropped, got %#v", msgs)
+	if len(msgs) != 1 {
+		t.Fatalf("expected unsigned thinking-only history to be preserved, got %#v", msgs)
+	}
+	if msgs[0].Thinking != "stale plan" {
+		t.Errorf("expected thinking content preserved, got %q", msgs[0].Thinking)
 	}
 }
 
-// TestTranslateAnthropicToOllama_PreserveFlagKeepsLastThinking verifies the
-// opt-in preserveHistoryThinkingOnOllamaPath toggle restores the prior
-// keep-last behaviour (useful for models that require a thinking field on
-// assistant history turns).
-func TestTranslateAnthropicToOllama_PreserveFlagKeepsLastThinking(t *testing.T) {
-	preserveHistoryThinkingOnOllamaPath = true
-	defer func() { preserveHistoryThinkingOnOllamaPath = false }()
+// TestTranslateAnthropicToOllama_DropFlagDropsThinking verifies the opt-out
+// preserveHistoryThinkingOnOllamaPath=false toggle drops thinking blocks
+// entirely (the old default), for users who want to suppress all historical
+// thinking regardless of Ollama's own behaviour.
+func TestTranslateAnthropicToOllama_DropFlagDropsThinking(t *testing.T) {
+	preserveHistoryThinkingOnOllamaPath = false
+	defer func() { preserveHistoryThinkingOnOllamaPath = true }()
 	blocks := []interface{}{
 		map[string]interface{}{"type": "thinking", "thinking": "plan", "signature": ""},
 		map[string]interface{}{"type": "text", "text": "go"},
 		map[string]interface{}{"type": "thinking", "thinking": "continue", "signature": ""},
 	}
 	msgs := translateContentBlocksWithToolLookup("assistant", blocks, nil)
-	if len(msgs) != 1 || msgs[0].Thinking != "continue" {
-		t.Fatalf("expected keep-last thinking when preserve flag set, got %#v", msgs)
+	if len(msgs) != 1 || msgs[0].Thinking != "" {
+		t.Fatalf("expected thinking to be dropped when preserve flag is false, got %#v", msgs)
 	}
 }
 

@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func makeTestRouter(upstreamURL string) *ProviderRouter {
@@ -1713,4 +1715,137 @@ func toIntVal(v interface{}) int {
 		return n
 	}
 	return 0
+}
+
+// TestSendStreamError_ClosesOpenBlocks verifies the fix for the bug observed
+// in debug file 000134: when the upstream stream is cancelled (or fails) while
+// a content block is open, sendStreamError must close every open block with a
+// matching content_block_stop before emitting the terminal error event.
+// Without the fix the SSE stream was structurally unbalanced — the open
+// thinking/text/tool_use block was left dangling, violating the Anthropic
+// paired content_block_start/content_block_stop contract.
+func TestSendStreamError_ClosesOpenBlocks(t *testing.T) {
+	cases := []struct {
+		name       string
+		openBlock  func(s *streamState)
+		blockType  string
+	}{
+		{"thinking", func(s *streamState) { s.openThinkingBlock() }, "thinking"},
+		{"text", func(s *streamState) { s.openTextBlock() }, "text"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			s := &streamState{
+				w:              rec,
+				flusher:        rec,
+				canFlush:       true,
+				pendingToolMap: map[string]*pendingToolUse{},
+			}
+			tc.openBlock(s)
+			s.sendStreamError("api_error", "context canceled")
+
+			events := parseSSEEvents(rec.Body.String())
+			order := []string{}
+			for _, e := range events {
+				order = append(order, e.Event)
+			}
+
+			stopIdx, errIdx := -1, -1
+			for i, e := range events {
+				if e.Event == "content_block_stop" && stopIdx == -1 {
+					stopIdx = i
+				}
+				if e.Event == "error" {
+					errIdx = i
+				}
+			}
+			if stopIdx == -1 {
+				t.Fatalf("[%s] expected content_block_stop closing the open block before error; events: %v", tc.name, order)
+			}
+			if errIdx == -1 {
+				t.Fatalf("[%s] expected an error event; events: %v", tc.name, order)
+			}
+			if stopIdx > errIdx {
+				t.Errorf("[%s] content_block_stop must precede error (stop=%d error=%d); events: %v", tc.name, stopIdx, errIdx, order)
+			}
+			// The open block must be flagged closed afterwards.
+			if s.thinkingBlockOpen || s.textBlockOpen || s.toolUseBlockOpen {
+				t.Errorf("[%s] expected no open blocks after error; thinking=%v text=%v tool=%v", tc.name, s.thinkingBlockOpen, s.textBlockOpen, s.toolUseBlockOpen)
+			}
+		})
+	}
+}
+
+// TestOllamaStreaming_CancelClosesOpenBlocks is an integration-level check for
+// the same fix: a real mid-stream context cancellation (client ESC) while a
+// thinking block is open must still produce a balanced SSE stream — the
+// thinking block gets a content_block_stop before the terminal error event.
+func TestOllamaStreaming_CancelClosesOpenBlocks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		// Emit one thinking chunk to open a thinking block on the client side,
+		// then stall until the client cancels so the body Read errors.
+		w.Write([]byte(makeOllamaChunk("test-model", "", "thinking...", false, "")))
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	router := makeTestRouter(upstream.URL)
+	rp := makeTestRP(upstream.URL, "ollama")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+
+	anthroReq := &AnthropicRequest{Model: "test", Stream: true, MaxTokens: 100}
+	ollamaReq := &OllamaChatRequest{Model: "test", Stream: true}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.handleStreaming(w, req, ollamaReq, anthroReq, rp)
+	}()
+	// Allow the handler to read the thinking chunk and open the block.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+
+	events := parseSSEEvents(w.Body.String())
+	order := []string{}
+	for _, e := range events {
+		order = append(order, e.Event)
+	}
+
+	stopIdx, errIdx := -1, -1
+	hasThinkingStart := false
+	for i, e := range events {
+		if e.Event == "content_block_start" {
+			var data map[string]interface{}
+			json.Unmarshal([]byte(e.Data), &data)
+			if block, ok := data["content_block"].(map[string]interface{}); ok && block["type"] == "thinking" {
+				hasThinkingStart = true
+			}
+		}
+		if e.Event == "content_block_stop" && stopIdx == -1 {
+			stopIdx = i
+		}
+		if e.Event == "error" {
+			errIdx = i
+		}
+	}
+	if !hasThinkingStart {
+		t.Fatalf("expected a thinking block to be opened before cancel; events: %v", order)
+	}
+	if stopIdx == -1 {
+		t.Fatalf("expected content_block_stop closing the thinking block before error; events: %v", order)
+	}
+	if errIdx == -1 {
+		t.Fatalf("expected an error event after cancel; events: %v", order)
+	}
+	if stopIdx > errIdx {
+		t.Fatalf("content_block_stop must precede error (stop=%d error=%d); events: %v", stopIdx, errIdx, order)
+	}
 }

@@ -1,11 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, apiPost, apiPut } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 
 export default function ProxyPanel() {
-  const { toast } = useToast();
   const [running, setRunning] = useState<boolean | null>(null);
   const [autoStart, setAutoStart] = useState(false);
   const [autoStartLabel, setAutoStartLabel] = useState('Auto-start at Login');
@@ -61,10 +60,10 @@ export default function ProxyPanel() {
     setActionInProgress(true);
     try {
       await apiPost('/proxy/start');
-      toast('Proxy starting...');
+      toast.add({ title: 'Proxy starting...' });
       setTimeout(() => { updateStatus(); setActionInProgress(false); }, 1500);
     } catch (e) {
-      toast('Failed to start proxy: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to start proxy: ' + (e as Error).message, type: 'error' });
       setActionInProgress(false);
     }
   };
@@ -73,10 +72,10 @@ export default function ProxyPanel() {
     setActionInProgress(true);
     try {
       await apiPost('/proxy/stop');
-      toast('Proxy stopping...');
+      toast.add({ title: 'Proxy stopping...' });
       setTimeout(() => { updateStatus(); setActionInProgress(false); }, 1000);
     } catch (e) {
-      toast('Failed to stop proxy: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to stop proxy: ' + (e as Error).message, type: 'error' });
       setActionInProgress(false);
     }
   };
@@ -85,10 +84,10 @@ export default function ProxyPanel() {
     setActionInProgress(true);
     try {
       await apiPost('/proxy/restart');
-      toast('Proxy restarting...');
+      toast.add({ title: 'Proxy restarting...' });
       setTimeout(() => { updateStatus(); setActionInProgress(false); }, 2000);
     } catch (e) {
-      toast('Failed to restart proxy: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to restart proxy: ' + (e as Error).message, type: 'error' });
       setActionInProgress(false);
     }
   };
@@ -97,10 +96,10 @@ export default function ProxyPanel() {
     try {
       await apiPut('/autostart', { enabled });
       setAutoStart(enabled);
-      toast(enabled ? 'Auto-start enabled' : 'Auto-start disabled');
+      toast.add({ title: enabled ? 'Auto-start enabled' : 'Auto-start disabled', type: 'success' });
     } catch (e) {
       setAutoStart(!enabled);
-      toast('Failed to update auto-start: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to update auto-start: ' + (e as Error).message, type: 'error' });
     }
   };
 

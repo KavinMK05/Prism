@@ -118,6 +118,9 @@ func mergeSearchConfig(c *SearchConfig) *SearchConfig {
 	if c.Fallback == nil {
 		c.Fallback = []string{}
 	}
+	if c.CustomProviders == nil {
+		c.CustomProviders = []*CustomSearchProviderConfig{}
+	}
 	if c.Providers == nil {
 		c.Providers = map[string]*SearchProviderConfig{}
 	}
@@ -179,6 +182,17 @@ func (r *SearchRunner) providerConfig(id string) *SearchProviderConfig {
 	return c.Providers[id]
 }
 
+// customConfig returns the user-defined provider with the given id, or nil.
+func (r *SearchRunner) customConfig(id string) *CustomSearchProviderConfig {
+	c := r.config()
+	for _, cp := range c.CustomProviders {
+		if cp != nil && cp.ID == id {
+			return cp
+		}
+	}
+	return nil
+}
+
 // resolveKey returns the API key for a provider: config value first, then the
 // provider's conventional env var (so existing EXA_API_KEY etc. just work).
 func (r *SearchRunner) resolveKey(id, envVar string) string {
@@ -195,12 +209,24 @@ func (r *SearchRunner) enabled(id string) bool {
 	if pc := r.providerConfig(id); pc != nil {
 		return pc.Enabled
 	}
+	if cp := r.customConfig(id); cp != nil {
+		return cp.Enabled
+	}
 	return false
 }
 
 // hasKey reports whether a provider is usable: either no key needed, or a key
 // is present in config/env. Used by the admin UI status badges and the runner.
 func (r *SearchRunner) hasKey(id string) (has, fromEnv bool) {
+	if cp := r.customConfig(id); cp != nil {
+		if cp.APIKey != "" {
+			return true, false
+		}
+		if cp.KeyEnv != "" && os.Getenv(cp.KeyEnv) != "" {
+			return true, true
+		}
+		return false, false
+	}
 	m := searchCatalogMeta(id)
 	if m == nil || !m.NeedsKey {
 		return true, false
@@ -216,13 +242,16 @@ func (r *SearchRunner) hasKey(id string) (has, fromEnv bool) {
 
 // build constructs a live provider instance for the given id from current config.
 func (r *SearchRunner) build(id string) (SearchProvider, error) {
+	r.mu.RLock()
+	client := r.client
+	r.mu.RUnlock()
+	if cp := r.customConfig(id); cp != nil {
+		return newCustomSearchProvider(cp, client), nil
+	}
 	ctor, ok := searchRegistry[id]
 	if !ok {
 		return nil, errUnknownSearchProvider(id)
 	}
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
 	pc := r.providerConfig(id)
 	if pc == nil {
 		pc = &SearchProviderConfig{}
@@ -262,7 +291,22 @@ func (r *SearchRunner) Search(ctx context.Context, q SearchQuery) (*SearchOutcom
 		if !r.enabled(id) {
 			continue
 		}
-		if m := searchCatalogMeta(id); m != nil && m.NeedsKey {
+		m := searchCatalogMeta(id)
+		cp := r.customConfig(id)
+		if m == nil && cp == nil {
+			if _, inRegistry := searchRegistry[id]; !inRegistry {
+				errs = append(errs, id+": unknown provider")
+				continue
+			}
+		}
+		if cp != nil {
+			if cp.needsKey() {
+				if has, _ := r.hasKey(id); !has {
+					errs = append(errs, id+": missing key")
+					continue
+				}
+			}
+		} else if m != nil && m.NeedsKey {
 			if has, _ := r.hasKey(id); !has {
 				errs = append(errs, id+": missing key")
 				continue
@@ -336,6 +380,43 @@ type adminSearchProviderInput struct {
 	APIKey  string `json:"apiKey,omitempty"`
 }
 
+// adminCustomProviderInput is the custom (declarative) provider block the UI
+// sends on PUT. APIKey is write-only: empty string = keep existing key.
+type adminCustomProviderInput struct {
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Endpoint        string                 `json:"endpoint"`
+	Method          string                 `json:"method,omitempty"`
+	AuthHeader      string                 `json:"authHeader,omitempty"`
+	APIKey          string                 `json:"apiKey,omitempty"`
+	KeyEnv          string                 `json:"keyEnv,omitempty"`
+	QueryParam      string                 `json:"queryParam,omitempty"`
+	Body            map[string]interface{} `json:"body,omitempty"`
+	Params          map[string]string      `json:"params,omitempty"`
+	ResultsJSONPath string                 `json:"resultsJSONPath"`
+	FieldMap        map[string]string      `json:"fieldMap"`
+	Enabled         bool                   `json:"enabled"`
+}
+
+// adminCustomProviderState is the masked view of a custom provider: APIKey is
+// omitted, HasKey/KeyFromEnv report status instead.
+type adminCustomProviderState struct {
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Endpoint        string                 `json:"endpoint"`
+	Method          string                 `json:"method,omitempty"`
+	AuthHeader      string                 `json:"authHeader,omitempty"`
+	KeyEnv          string                 `json:"keyEnv,omitempty"`
+	QueryParam      string                 `json:"queryParam,omitempty"`
+	Body            map[string]interface{} `json:"body,omitempty"`
+	Params          map[string]string      `json:"params,omitempty"`
+	ResultsJSONPath string                 `json:"resultsJSONPath"`
+	FieldMap        map[string]string      `json:"fieldMap"`
+	Enabled         bool                   `json:"enabled"`
+	HasKey          bool                   `json:"hasKey"`
+	KeyFromEnv      bool                   `json:"keyFromEnv,omitempty"`
+}
+
 type adminSearchConfigInput struct {
 	Active            string                              `json:"active"`
 	Fallback          []string                            `json:"fallback"`
@@ -343,6 +424,7 @@ type adminSearchConfigInput struct {
 	TimeoutMs         int                                 `json:"timeoutMs"`
 	DefaultNumResults int                                 `json:"defaultNumResults"`
 	Providers         map[string]adminSearchProviderInput `json:"providers"`
+	CustomProviders   []adminCustomProviderInput          `json:"customProviders,omitempty"`
 }
 
 type adminSearchConfig struct {
@@ -352,6 +434,7 @@ type adminSearchConfig struct {
 	TimeoutMs         int                                 `json:"timeoutMs"`
 	DefaultNumResults int                                 `json:"defaultNumResults"`
 	Providers         map[string]adminSearchProviderState `json:"providers"`
+	CustomProviders   []adminCustomProviderState          `json:"customProviders,omitempty"`
 }
 
 // adminSearchConfigView builds the masked view of the current search config.
@@ -383,6 +466,34 @@ func adminSearchConfigView(c *SearchConfig) adminSearchConfig {
 			st.HasKey = true
 		}
 		out.Providers[m.ID] = st
+	}
+	for _, cp := range c.CustomProviders {
+		if cp == nil {
+			continue
+		}
+		st := adminCustomProviderState{
+			ID:              cp.ID,
+			Name:            cp.Name,
+			Endpoint:        cp.Endpoint,
+			Method:          cp.Method,
+			AuthHeader:      cp.AuthHeader,
+			KeyEnv:          cp.KeyEnv,
+			QueryParam:      cp.QueryParam,
+			Body:            cp.Body,
+			Params:          cp.Params,
+			ResultsJSONPath: cp.ResultsJSONPath,
+			FieldMap:        cp.FieldMap,
+			Enabled:         cp.Enabled,
+		}
+		if cp.needsKey() {
+			st.HasKey = cp.APIKey != ""
+			if !st.HasKey && cp.KeyEnv != "" && os.Getenv(cp.KeyEnv) != "" {
+				st.HasKey, st.KeyFromEnv = true, true
+			}
+		} else {
+			st.HasKey = true
+		}
+		out.CustomProviders = append(out.CustomProviders, st)
 	}
 	return out
 }

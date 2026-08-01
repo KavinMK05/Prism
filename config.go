@@ -36,6 +36,27 @@ type SearchProviderConfig struct {
 	BaseURL string `json:"base_url,omitempty"` // searxng/ollama only
 }
 
+// CustomSearchProviderConfig is a user-defined REST search API declared without
+// code (design doc §4). Body and Params support {{query}}, {{numResults}},
+// {{allowedDomains}}, {{blockedDomains}} templates. ResultsJSONPath is a dot
+// path into the JSON response; FieldMap maps each result item's fields.
+// APIKey is write-only from the admin API (empty = keep existing).
+type CustomSearchProviderConfig struct {
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Endpoint        string                 `json:"endpoint"`
+	Method          string                 `json:"method,omitempty"` // GET or POST (default POST)
+	AuthHeader      string                 `json:"authHeader,omitempty"`
+	APIKey          string                 `json:"apiKey,omitempty"`
+	KeyEnv          string                 `json:"keyEnv,omitempty"`
+	QueryParam      string                 `json:"queryParam,omitempty"`
+	Body            map[string]interface{} `json:"body,omitempty"`
+	Params          map[string]string      `json:"params,omitempty"`
+	ResultsJSONPath string                 `json:"resultsJSONPath"`
+	FieldMap        map[string]string      `json:"fieldMap"`
+	Enabled         bool                   `json:"enabled"`
+}
+
 // SearchConfig is the top-level search block. It drives the SearchRunner that
 // the per-agent web-search interception calls through.
 type SearchConfig struct {
@@ -45,6 +66,7 @@ type SearchConfig struct {
 	TimeoutMs         int                          `json:"timeout_ms,omitempty"`
 	DefaultNumResults int                          `json:"default_num_results,omitempty"`
 	Providers         map[string]*SearchProviderConfig `json:"providers,omitempty"`
+	CustomProviders   []*CustomSearchProviderConfig    `json:"custom_providers,omitempty"`
 }
 
 type Config struct {
@@ -82,6 +104,41 @@ func (c *Config) clone() *Config {
 			oa := *a
 			cp.OAuthAccounts[i] = &oa
 		}
+	}
+	if c.Search != nil && c.Search.CustomProviders != nil {
+		cp.Search = c.Search.clone()
+	}
+	return &cp
+}
+
+// clone returns a deep copy of the SearchConfig's custom providers block.
+func (sc *SearchConfig) clone() *SearchConfig {
+	cp := *sc
+	cp.CustomProviders = make([]*CustomSearchProviderConfig, len(sc.CustomProviders))
+	for i, p := range sc.CustomProviders {
+		pc := *p
+		if p.Body != nil {
+			body := make(map[string]interface{}, len(p.Body))
+			for k, v := range p.Body {
+				body[k] = v
+			}
+			pc.Body = body
+		}
+		if p.Params != nil {
+			params := make(map[string]string, len(p.Params))
+			for k, v := range p.Params {
+				params[k] = v
+			}
+			pc.Params = params
+		}
+		if p.FieldMap != nil {
+			fm := make(map[string]string, len(p.FieldMap))
+			for k, v := range p.FieldMap {
+				fm[k] = v
+			}
+			pc.FieldMap = fm
+		}
+		cp.CustomProviders[i] = &pc
 	}
 	return &cp
 }

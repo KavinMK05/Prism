@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, memo } from 'react';
 import { api, apiPost } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { useTheme } from '../ThemeContext';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarController, LineController,
@@ -125,7 +125,6 @@ const FilterBar = memo(function FilterBar({
 });
 
 export default function StatsPanel() {
-  const { toast } = useToast();
   const { theme } = useTheme();
   const [liveData, setLiveData] = useState<any>(null);
   const [history, setHistory] = useState<any>(null);
@@ -200,8 +199,8 @@ export default function StatsPanel() {
 
   const clearStats = async () => {
     setShowClearModal(false);
-    try { await apiPost('/stats/clear'); toast('All stats cleared'); loadHistory(); loadFilterOpts(); }
-    catch (e) { toast('Failed to clear stats: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/stats/clear'); toast.add({ title: 'All stats cleared', type: 'success' }); loadHistory(); loadFilterOpts(); }
+    catch (e) { toast.add({ title: 'Failed to clear stats: ' + (e as Error).message, type: 'error' }); }
   };
 
   // Build heatmap data

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Button } from '@/components/ui/button';
 
 function fmtReset(ts: number): string {
@@ -25,7 +25,6 @@ function planLabel(rawPlan: string): string {
 }
 
 export default function OAuthPanel() {
-  const { toast } = useToast();
   const [accounts, setAccounts] = useState<any[]>([]);
   const [, setForceRender] = useState(0);
 
@@ -41,7 +40,7 @@ export default function OAuthPanel() {
   const addCodexAccount = async () => {
     try {
       const res = await fetch('/admin/oauth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'codex' }) });
-      if (!res.ok) { const text = await res.text(); try { toast(JSON.parse(text).error || text, 'error'); } catch { toast(text, 'error'); } return; }
+      if (!res.ok) { const text = await res.text(); try { toast.add({ title: JSON.parse(text).error || text, type: 'error' }); } catch { toast.add({ title: text, type: 'error' }); } return; }
       alert('Your browser has been opened for Codex login. Please complete the sign-in and return here.');
       let attempts = 0;
       const poll = setInterval(() => {
@@ -56,7 +55,7 @@ export default function OAuthPanel() {
     if (!confirm('Remove this OAuth account?')) return;
     try {
       const res = await fetch('/admin/oauth/accounts/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-      if (!res.ok) { const text = await res.text(); try { toast(JSON.parse(text).error || text, 'error'); } catch { toast(text, 'error'); } return; }
+      if (!res.ok) { const text = await res.text(); try { toast.add({ title: JSON.parse(text).error || text, type: 'error' }); } catch { toast.add({ title: text, type: 'error' }); } return; }
       loadAccounts();
     } catch (e) { alert('Failed to remove account: ' + (e as Error).message); }
   };
@@ -64,7 +63,7 @@ export default function OAuthPanel() {
   const activateAccount = async (id: string) => {
     try {
       const res = await fetch('/admin/oauth/accounts/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-      if (!res.ok) { const text = await res.text(); try { toast(JSON.parse(text).error || text, 'error'); } catch { toast(text, 'error'); } return; }
+      if (!res.ok) { const text = await res.text(); try { toast.add({ title: JSON.parse(text).error || text, type: 'error' }); } catch { toast.add({ title: text, type: 'error' }); } return; }
       loadAccounts();
     } catch (e) { alert('Failed to activate account: ' + (e as Error).message); }
   };

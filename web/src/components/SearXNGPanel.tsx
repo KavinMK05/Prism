@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, apiPost, apiPut } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,7 +18,6 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 export default function SearXNGPanel() {
-  const { toast } = useToast();
   const [status, setStatus] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
   const [settingsError, setSettingsError] = useState('');
@@ -41,21 +40,21 @@ export default function SearXNGPanel() {
   }, [refreshStatus, loadSettings]);
 
   const handleStart = async () => {
-    try { await apiPost('/searxng/start'); toast('SearXNG installing/starting\u2026'); }
-    catch (e) { toast('Failed: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/searxng/start'); toast.add({ title: 'SearXNG installing/starting\u2026' }); }
+    catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); }
   };
   const handleStop = async () => {
-    try { await apiPost('/searxng/stop'); toast('SearXNG stopping\u2026'); setTimeout(refreshStatus, 1000); }
-    catch (e) { toast('Failed: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/searxng/stop'); toast.add({ title: 'SearXNG stopping\u2026' }); setTimeout(refreshStatus, 1000); }
+    catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); }
   };
   const handleRestart = async () => {
-    try { await apiPost('/searxng/restart'); toast('SearXNG restarting\u2026'); setTimeout(refreshStatus, 2000); }
-    catch (e) { toast('Failed: ' + (e as Error).message, 'error'); }
+    try { await apiPost('/searxng/restart'); toast.add({ title: 'SearXNG restarting\u2026' }); setTimeout(refreshStatus, 2000); }
+    catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const handleAutostart = async (enabled: boolean) => {
-    try { await apiPut('/searxng/autostart', { enabled }); toast(enabled ? 'SearXNG will auto-start on Prism launch.' : 'SearXNG auto-start disabled.'); setTimeout(refreshStatus, 300); }
-    catch (e) { toast('Failed: ' + (e as Error).message, 'error'); refreshStatus(); }
+    try { await apiPut('/searxng/autostart', { enabled }); toast.add({ title: enabled ? 'SearXNG will auto-start on Prism launch.' : 'SearXNG auto-start disabled.', type: 'success' }); setTimeout(refreshStatus, 300); }
+    catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); refreshStatus(); }
   };
 
   const saveSettings = async () => {
@@ -75,8 +74,8 @@ export default function SearXNGPanel() {
       query_in_title: !!settings.query_in_title, center_alignment: !!settings.center_alignment,
       results_on_new_tab: !!settings.results_on_new_tab, search_on_category_select: !!settings.search_on_category_select,
     };
-    try { await apiPut('/searxng/settings', body); toast('Settings saved. Restart SearXNG to apply.'); }
-    catch (e) { toast('Save failed: ' + (e as Error).message, 'error'); }
+    try { await apiPut('/searxng/settings', body); toast.add({ title: 'Settings saved. Restart SearXNG to apply.', type: 'success' }); }
+    catch (e) { toast.add({ title: 'Save failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const regenSecret = () => {

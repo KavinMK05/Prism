@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, apiPut } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,6 @@ function normalizeURL(url: string): string {
 }
 
 export default function ProviderPanel() {
-  const { toast } = useToast();
   const [config, setConfig] = useState<any>(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -75,9 +74,9 @@ export default function ProviderPanel() {
   const saveEdit = async () => {
     if (!editingId) return;
     const provider = getProviderById(editingId);
-    if (!provider) { toast('No provider selected', 'error'); return; }
+    if (!provider) { toast.add({ title: 'No provider selected', type: 'error' }); return; }
     const isBuiltIn = editingId === 'ollama_cloud' || editingId === 'opencode_go';
-    if (!isBuiltIn && !editName.trim()) { toast('Provider name is required', 'error'); return; }
+    if (!isBuiltIn && !editName.trim()) { toast.add({ title: 'Provider name is required', type: 'error' }); return; }
     const newName = isBuiltIn ? provider.name : editName.trim();
     const newBaseURL = isBuiltIn ? provider.base_url : normalizeURL(editBaseURL);
     provider.name = newName;
@@ -85,19 +84,19 @@ export default function ProviderPanel() {
     if (editAPIKey.trim()) provider.api_key = editAPIKey.trim();
     try {
       await apiPut('/config', config);
-      toast('Provider updated');
+      toast.add({ title: 'Provider updated', type: 'success' });
       setShowEdit(false);
       setEditingId(null);
       await loadConfig();
     } catch (e) {
-      toast('Failed to update provider: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to update provider: ' + (e as Error).message, type: 'error' });
       await loadConfig();
     }
   };
 
   const addProvider = async () => {
-    if (!addName.trim()) { toast('Provider name is required', 'error'); return; }
-    if (!addBaseURL.trim()) { toast('Base URL is required', 'error'); return; }
+    if (!addName.trim()) { toast.add({ title: 'Provider name is required', type: 'error' }); return; }
+    if (!addBaseURL.trim()) { toast.add({ title: 'Base URL is required', type: 'error' }); return; }
     const id = 'custom_' + addName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') + '_' + Math.random().toString(36).substr(2, 6);
     const cfg = { ...config };
     if (!cfg.custom_providers) cfg.custom_providers = [];
@@ -105,11 +104,11 @@ export default function ProviderPanel() {
     cfg.default_provider = id;
     try {
       await apiPut('/config', cfg);
-      toast('Provider "' + addName + '" added');
+      toast.add({ title: 'Provider "' + addName + '" added', type: 'success' });
       setAddName(''); setAddBaseURL(''); setAddAPIKey('');
       await loadConfig();
     } catch (e) {
-      toast('Failed to add provider: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to add provider: ' + (e as Error).message, type: 'error' });
     }
   };
 
@@ -122,19 +121,19 @@ export default function ProviderPanel() {
     if (cfg.default_provider === id) cfg.default_provider = 'ollama_cloud';
     try {
       await apiPut('/config', cfg);
-      toast('Provider deleted');
+      toast.add({ title: 'Provider deleted', type: 'success' });
       setShowEdit(false);
       setEditingId(null);
       await loadConfig();
     } catch (e) {
-      toast('Failed to delete provider: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to delete provider: ' + (e as Error).message, type: 'error' });
       await loadConfig();
     }
     setPendingDeleteId(null);
   };
 
   const saveAPIKey = async () => {
-    if (!newAPIKey.trim()) { toast('Please enter a key', 'error'); return; }
+    if (!newAPIKey.trim()) { toast.add({ title: 'Please enter a key', type: 'error' }); return; }
     const cfg = { ...config };
     const p = cfg.default_provider;
     if (p === 'ollama_cloud') cfg.ollama_cloud.api_key = newAPIKey.trim();
@@ -142,15 +141,15 @@ export default function ProviderPanel() {
     else {
       const custom = (cfg.custom_providers || []).find((pr: any) => pr.id === p);
       if (custom) custom.api_key = newAPIKey.trim();
-      else { toast('Unknown provider', 'error'); return; }
+      else { toast.add({ title: 'Unknown provider', type: 'error' }); return; }
     }
     try {
       await apiPut('/config', cfg);
       setNewAPIKey('');
-      toast('API key updated');
+      toast.add({ title: 'API key updated', type: 'success' });
       await loadConfig();
     } catch (e) {
-      toast('Failed to update key: ' + (e as Error).message, 'error');
+      toast.add({ title: 'Failed to update key: ' + (e as Error).message, type: 'error' });
       await loadConfig();
     }
   };

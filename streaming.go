@@ -103,8 +103,16 @@ func (s *streamState) startPings() (stop func()) {
 }
 
 // sendStreamError emits an Anthropic SSE error event mid-stream, used when the
-// upstream connection fails after the SSE response has already begun.
+// upstream connection fails (or the client cancels) after the SSE response has
+// already begun. It first flushes any buffered tool calls and closes every
+// open content block so the SSE stream stays structurally balanced — every
+// content_block_start has a matching content_block_stop — before terminating
+// with the error event. Without this, a mid-stream cancellation leaves the
+// open block (e.g. thinking or text) dangling, which violates the Anthropic
+// paired-block contract and can desync clients' block accumulators.
 func (s *streamState) sendStreamError(errType, message string) {
+	s.flushPendingToolUses()
+	s.closeAllBlocks()
 	s.writeSSE("error", map[string]interface{}{
 		"type": "error",
 		"error": map[string]interface{}{

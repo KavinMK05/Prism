@@ -453,8 +453,8 @@ func translateRequest(anthro *AnthropicRequest) (*OllamaChatRequest, error) {
 	messages := []OllamaMessage{}
 
 	if anthro.System != nil {
-		sysContent := systemToString(anthro.System)
-		if sysContent != "" {
+		sysContent := stripLeadingAnthropicBillingHeader(systemToString(anthro.System))
+		if strings.TrimSpace(sysContent) != "" {
 			messages = append(messages, OllamaMessage{Role: "system", Content: sysContent})
 		}
 	}
@@ -541,16 +541,15 @@ func translateMessage(msg AnthropicMessage) []OllamaMessage {
 }
 
 // preserveHistoryThinkingOnOllamaPath controls whether historical thinking
-// blocks are replayed on the Ollama /api/chat path. Defaults to false (drop),
-// matching CLIProxyAPI's signature-gated drop (internal/translator/openai/claude/
-// openai_claude_request.go: shouldMapClaudeThinkingToGPTReasoning) and our own
-// OpenAI path. Our streaming code never emits a thinking signature, so every
-// thinking block Claude Code echoes back is unsigned and must not be replayed
-// — otherwise GLM-5.1 re-sees its own stale "Let me confirm" reasoning every
-// turn and loops (router-for-me/CLIProxyAPI#2172). Set to true to restore the
-// prior keep-last behaviour (Ollama's anthropic.convertMessage) for models that
-// genuinely require a thinking field on assistant history turns.
-var preserveHistoryThinkingOnOllamaPath = false
+// blocks are replayed on the Ollama /api/chat path. Set to true (keep-last)
+// to match Ollama's own Anthropic-compatible endpoint (anthropic.convertMessage)
+// which preserves the last thinking block per message in history. Ollama's
+// prompt templates then decide whether to include or strip that thinking based
+// on the model and the think flag — e.g. Qwen3's template strips prior
+// <think>…</think> blocks automatically. Dropping thinking entirely (the old
+// default) deviated from Ollama's own behaviour and could break models that
+// expect a thinking field on assistant turns during tool-call loops.
+var preserveHistoryThinkingOnOllamaPath = true
 
 func translateMessageWithToolLookup(msg AnthropicMessage, toolIDToName map[string]string) []OllamaMessage {
 	// Anthropic permits system messages inside the messages array. Ollama only

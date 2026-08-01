@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, apiPut } from '../api';
-import { useToast } from '../ToastContext';
+import { toast } from './ui/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,7 +30,6 @@ function buildProviderOptions(config: any): { value: string; label: string }[] {
 }
 
 export default function ModelsPanel() {
-  const { toast } = useToast();
   const [config, setConfig] = useState<any>(null);
   const [remap, setRemap] = useState<any>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
@@ -68,9 +67,9 @@ export default function ModelsPanel() {
   const saveRemap = async (updated: any) => {
     try {
       await apiPut('/model-remap', updated);
-      toast('Model config saved');
+      toast.add({ title: 'Model config saved', type: 'success' });
       await loadRemap();
-    } catch (e) { toast('Save failed: ' + (e as Error).message, 'error'); }
+    } catch (e) { toast.add({ title: 'Save failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const collectAndSave = async (overrideKnown?: any[], overrideDefault?: string, overrideAliases?: Record<string, string>) => {

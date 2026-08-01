@@ -802,6 +802,14 @@ func startAdminServer(cfg *Config, port string) {
 					pc.APIKey = incoming.APIKey
 				}
 			}
+			if in.CustomProviders != nil {
+				newList, err := mergeCustomProviderInput(sc.CustomProviders, in.CustomProviders)
+				if err != nil {
+					writeJSONError(w, err.Error(), 400)
+					return
+				}
+				sc.CustomProviders = newList
+			}
 			c.Search = sc
 			if err := saveConfig(c); err != nil {
 				writeJSONError(w, "save failed: "+err.Error(), 500)
@@ -832,12 +840,12 @@ func startAdminServer(cfg *Config, port string) {
 			writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 			return
 		}
-		if searchCatalogMeta(req.Provider) == nil {
+		c := loadConfig()
+		globalSearchRunner.Reload(c.Search) // ensure latest keys
+		if searchCatalogMeta(req.Provider) == nil && globalSearchRunner.customConfig(req.Provider) == nil {
 			writeJSONError(w, "unknown provider", 400)
 			return
 		}
-		c := loadConfig()
-		globalSearchRunner.Reload(c.Search) // ensure latest keys
 		p, err := globalSearchRunner.build(req.Provider)
 		if err != nil {
 			writeJSONError(w, err.Error(), 500)
