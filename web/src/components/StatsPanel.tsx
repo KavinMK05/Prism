@@ -225,6 +225,9 @@ export default function StatsPanel() {
   const byModel = history?.by_model || [];
   const byClient = history?.by_client || null;
 
+  const providerNameMap: Record<string, string> = {};
+  (filterOpts.providers || []).forEach((p: { id: string; name: string }) => { providerNameMap[p.id] = p.name; });
+
   const liveTps = liveData?.live_tokens_per_sec || 0;
   const dailyTotal = dailyData.reduce((s: number, d: any) => s + d.total, 0);
   const monthlyTotal = monthlyData.reduce((s: number, d: any) => s + d.total, 0);
@@ -399,7 +402,7 @@ export default function StatsPanel() {
             <thead><tr><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Model</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Provider</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Avg TPS</th><th className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border text-xs">Max TPS</th></tr></thead>
             <tbody>
               {byModel.length === 0 ? <tr><td colSpan={4} className="text-muted-foreground italic text-center py-4">No data yet.</td></tr> :
-                byModel.map((m: any, i: number) => <tr key={i}><td className="px-3 py-2 border-b border-border"><span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />{m.model}</td><td className="px-3 py-2 border-b border-border">{m.provider}</td><td className="px-3 py-2 border-b border-border">{(m.avg_tps ?? 0).toFixed(1)}</td><td className="px-3 py-2 border-b border-border">{(m.max_tps ?? 0).toFixed(1)}</td></tr>)}
+                byModel.map((m: any, i: number) => <tr key={i}><td className="px-3 py-2 border-b border-border"><span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />{m.model}</td><td className="px-3 py-2 border-b border-border">{providerNameMap[m.provider] || m.provider}</td><td className="px-3 py-2 border-b border-border">{(m.avg_tps ?? 0).toFixed(1)}</td><td className="px-3 py-2 border-b border-border">{(m.max_tps ?? 0).toFixed(1)}</td></tr>)}
             </tbody>
           </table>
           <div className="relative h-[220px] w-full">

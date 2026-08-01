@@ -21,7 +21,7 @@ function normalizeURL(url: string): string {
 
 export default function ProviderPanel() {
   const [config, setConfig] = useState<any>(null);
-  const [showEdit, setShowEdit] = useState(false);
+  const [editDrawerOpen, setEditDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editBaseURL, setEditBaseURL] = useState('');
@@ -68,7 +68,7 @@ export default function ProviderPanel() {
     setEditName(provider.name);
     setEditBaseURL(provider.base_url || '');
     setEditAPIKey('');
-    setShowEdit(true);
+    setEditDrawerOpen(true);
   };
 
   const saveEdit = async () => {
@@ -85,7 +85,7 @@ export default function ProviderPanel() {
     try {
       await apiPut('/config', config);
       toast.add({ title: 'Provider updated', type: 'success' });
-      setShowEdit(false);
+      setEditDrawerOpen(false);
       setEditingId(null);
       await loadConfig();
     } catch (e) {
@@ -122,7 +122,7 @@ export default function ProviderPanel() {
     try {
       await apiPut('/config', cfg);
       toast.add({ title: 'Provider deleted', type: 'success' });
-      setShowEdit(false);
+      setEditDrawerOpen(false);
       setEditingId(null);
       await loadConfig();
     } catch (e) {
@@ -223,33 +223,43 @@ export default function ProviderPanel() {
         </div>
       </div>
 
-      {showEdit && editingProvider && (
-        <div className="rounded-xl border border-border bg-card p-6 mb-4">
-          <h3 className="text-sm font-semibold tracking-tight mb-4">Edit: {editingProvider.name}</h3>
-          {!isBuiltInEditing && (
-            <div className="mb-5 last:mb-0">
-              <Label>Name</Label>
-              <Input type="text" placeholder="My Provider" value={editName} onChange={e => setEditName(e.target.value)} className="mt-1.5" />
-            </div>
-          )}
-          {!isBuiltInEditing && (
-            <div className="mb-5 last:mb-0">
-              <Label>Base URL</Label>
-              <Input type="text" placeholder="https://api.example.com" value={editBaseURL} onChange={e => setEditBaseURL(e.target.value)} className="mt-1.5" />
-            </div>
-          )}
-          <div className="mb-5 last:mb-0">
-            <Label>API Key</Label>
-            <div className="flex gap-2 items-center mt-1.5">
-              <Input type="password" placeholder={editingProvider.api_key ? 'Leave blank to keep current key' : 'Enter API key'} value={editAPIKey} onChange={e => setEditAPIKey(e.target.value)} />
-            </div>
+      <Drawer open={editDrawerOpen} onOpenChange={(open) => { setEditDrawerOpen(open); if (!open) setEditingId(null); }} direction="right">
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>Edit: {editingProvider?.name}</DrawerTitle>
+            <DrawerDescription>Update this provider's settings.</DrawerDescription>
+          </DrawerHeader>
+          <div className="px-4 pb-4 flex-1 overflow-y-auto">
+            {editingProvider && !isBuiltInEditing && (
+              <div className="mb-5 last:mb-0">
+                <Label>Name</Label>
+                <Input type="text" placeholder="My Provider" value={editName} onChange={e => setEditName(e.target.value)} className="mt-1.5" />
+              </div>
+            )}
+            {editingProvider && !isBuiltInEditing && (
+              <div className="mb-5 last:mb-0">
+                <Label>Base URL</Label>
+                <Input type="text" placeholder="https://api.example.com" value={editBaseURL} onChange={e => setEditBaseURL(e.target.value)} className="mt-1.5" />
+              </div>
+            )}
+            {editingProvider && (
+              <div className="mb-5 last:mb-0">
+                <Label>API Key</Label>
+                <div className="flex gap-2 items-center mt-1.5">
+                  <Input type="password" placeholder={editingProvider.api_key ? 'Leave blank to keep current key' : 'Enter API key'} value={editAPIKey} onChange={e => setEditAPIKey(e.target.value)} />
+                </div>
+              </div>
+            )}
           </div>
-          <div className="flex gap-2.5 mt-5 flex-wrap">
+          <DrawerFooter>
             <Button onClick={saveEdit}>Save Changes</Button>
-            {!isBuiltInEditing && <Button variant="destructive" onClick={() => { setPendingDeleteId(editingId); setPendingDeleteName(editingProvider.name); setShowDeleteModal(true); }}>Delete Provider</Button>}
-          </div>
-        </div>
-      )}
+            {editingProvider && !isBuiltInEditing && <Button variant="destructive" onClick={() => { setPendingDeleteId(editingId); setPendingDeleteName(editingProvider.name); setShowDeleteModal(true); }}>Delete Provider</Button>}
+            <DrawerClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DrawerClose>
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
 
       {!oauthAcct && (
         <div className="rounded-xl border border-border bg-card p-6 mb-4">

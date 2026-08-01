@@ -89,8 +89,6 @@ export default function AgentsPanel() {
 
   return (
     <>
-      <h3 className="text-base font-semibold mb-4">Agent Integrations</h3>
-
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
         <h3 className="text-sm font-semibold tracking-tight mb-1">Codex Desktop Integration</h3>
         <p className="text-[13px] text-muted-foreground mb-3">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
