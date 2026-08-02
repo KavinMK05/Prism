@@ -211,9 +211,9 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 		t.Errorf("prism-codex X-Client-Name = %v, want OpenCode", codexHeaders["X-Client-Name"])
 	}
 
-	// Default model points at the first (non-codex) model.
-	if m["model"] != opencodeProviderID+"/vision-model" {
-		t.Errorf("model = %v, want prism/vision-model", m["model"])
+	// Default model is left untouched: the user's choice survives install.
+	if m["model"] != "google/gemini-2.5-flash" {
+		t.Errorf("model = %v, want google/gemini-2.5-flash preserved", m["model"])
 	}
 
 	// Re-install (idempotency): still exactly one prism block, google intact.
@@ -237,8 +237,8 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 			t.Errorf("provider %q still present after restore", id)
 		}
 	}
-	if _, ok := m["model"]; ok {
-		t.Error("model key not cleared after restore")
+	if m["model"] != "google/gemini-2.5-flash" {
+		t.Error("model key not preserved after restore")
 	}
 	if _, ok := providers["google"]; !ok {
 		t.Error("google provider lost after restore")

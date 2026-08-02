@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 )
 
 const opencodeProviderID = "prism"
@@ -150,15 +149,8 @@ func installOpencodeConfig(port int, remap *ModelRemapping) error {
 
 	m["provider"] = providers
 
-	// Default model = prism/<first non-Codex model> or prism-codex/<first Codex model>
-	if len(remap.KnownModels) > 0 {
-		first := remap.KnownModels[0]
-		if cfg.isCodexProviderID(first.Provider) {
-			m["model"] = opencodeProviderID + "-codex/" + first.ID
-		} else {
-			m["model"] = opencodeProviderID + "/" + first.ID
-		}
-	}
+	// The top-level "model" key is left untouched: the user's default model
+	// choice is theirs to make, Prism never writes or clears it.
 
 	if err := writeJSONConfig(p, m); err != nil {
 		return fmt.Errorf("failed to write OpenCode config: %w", err)
@@ -166,9 +158,10 @@ func installOpencodeConfig(port int, remap *ModelRemapping) error {
 	return nil
 }
 
-// restoreOpencodeConfig removes the "prism" and "prism-codex" provider blocks
-// and clears the top-level "model"/"small_model" keys if they pointed at a
-// prism/ or prism-codex/ model, preserving all other providers and settings.
+// restoreOpencodeConfig removes the "prism" and "prism-codex" provider blocks,
+// preserving all other providers and settings. The top-level "model"/
+// "small_model" keys are left untouched: Prism never wrote them, so it never
+// clears them.
 func restoreOpencodeConfig() error {
 	p := opencodeConfigPath()
 	if p == "" {
@@ -187,13 +180,6 @@ func restoreOpencodeConfig() error {
 			}
 		}
 		m["provider"] = providers
-	}
-	// Clear default model keys only if they reference a prism provider.
-	for _, key := range []string{"model", "small_model"} {
-		if v, ok := m[key].(string); ok && (strings.HasPrefix(v, opencodeProviderID+"/") || strings.HasPrefix(v, opencodeProviderID+"-codex/")) {
-			delete(m, key)
-			changed = true
-		}
 	}
 	if changed {
 		if err := writeJSONConfig(p, m); err != nil {
