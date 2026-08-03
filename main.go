@@ -12,6 +12,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"ollama-proxy/internal/admin"
+	"ollama-proxy/internal/agents"
+	"ollama-proxy/internal/config"
+	"ollama-proxy/internal/db"
+	"ollama-proxy/internal/desktop"
+	"ollama-proxy/internal/platform"
+	"ollama-proxy/internal/proxy"
+	"ollama-proxy/internal/search"
+	"ollama-proxy/internal/stats"
 )
 
 var version = "dev"
@@ -22,24 +32,27 @@ func main() {
 		return
 	}
 
-	cleanup, err := acquireInstanceLock()
+	cleanup, err := platform.AcquireInstanceLock()
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	cleanupOldBinary()
+	desktop.SetVersion(version)
+	desktop.SetAdminServerStarter(func(cfg *config.Config, port string) { admin.StartAdminServer(adminFS, cfg, port) })
 
-	iconData, err := loadIconData()
+	desktop.CleanupOldBinary()
+
+	iconData, err := platform.LoadIconData()
 	if err != nil {
 		log.Fatalf("Failed to load icon: %v", err)
 	}
-	runTray(iconData, cleanup)
+	desktop.RunTray(iconData, cleanup)
 }
 
 func runProxyServer() {
 	// Open log file directly instead of relying on stderr redirection
-	logDir := getLogDir()
+	logDir := platform.LogDir()
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "proxy.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -48,13 +61,13 @@ func runProxyServer() {
 	}
 
 	// Init persistent stats DB
-	if err := initDB(); err != nil {
+	if err := db.Init(); err != nil {
 		log.Printf("[DB] failed to init: %v", err)
 	} else {
-		defer closeDB()
+		defer db.Close()
 	}
 
-	cfg := loadConfig()
+	cfg := config.Load()
 	proxyAPIKey := "prism"
 
 	port := os.Getenv("PRISM_PORT")
@@ -67,16 +80,16 @@ func runProxyServer() {
 		host = "127.0.0.1"
 	}
 
-	modelRemap := loadModelRemapping()
+	modelRemap := config.LoadModelRemapping()
 
 	// Sync Codex Desktop config if installed
-	SyncCodexDesktop(parseIntOr(port, 11434))
+	agents.SyncCodexDesktop(agents.ParseIntOr(port, 11434))
 
 	// Sync other agent integrations (Claude Code, Factory Droid, OpenCode) if installed
-	SyncAgents(parseIntOr(port, 11434))
+	agents.SyncAgents(agents.ParseIntOr(port, 11434))
 
-	router := NewProviderRouter(cfg, modelRemap)
-	globalSearchRunner.Reload(cfg.Search)
+	router := proxy.NewRouter(cfg, modelRemap)
+	search.Global.Reload(cfg.Search)
 
 	if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "::1") {
 		log.Printf("WARNING: Proxy is listening on %s which is accessible from the network. Consider using 127.0.0.1 for local-only access.", host)
@@ -121,13 +134,13 @@ func runProxyServer() {
 			http.Error(w, "missing id parameter", 400)
 			return
 		}
-		result, err := fetchModelsDevModel(modelID, "")
+		result, err := admin.FetchModelsDevModel(modelID, "")
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		writeModelsDevResult(w, result)
+		admin.WriteModelsDevResult(w, result)
 	}))
 
 	// Stats endpoint (proxied from admin UI)
@@ -138,7 +151,7 @@ func runProxyServer() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		data, err := StatsToJSON()
+		data, err := stats.StatsToJSON()
 		if err != nil {
 			http.Error(w, "failed to serialize stats", 500)
 			return
@@ -203,9 +216,9 @@ func startTPSSnapshotLoop() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		snapshot := globalStats.GetSnapshot()
+		snapshot := stats.Global.GetSnapshot()
 		if snapshot.RequestActive && snapshot.LiveTokensPerSec > 0 {
-			if err := dbRecordTPSSnapshot(snapshot.CurrentModel, snapshot.CurrentProvider, snapshot.CurrentClient, snapshot.LiveTokensPerSec); err != nil {
+			if err := db.RecordTPS(snapshot.CurrentModel, snapshot.CurrentProvider, snapshot.CurrentClient, snapshot.LiveTokensPerSec); err != nil {
 				log.Printf("[DB] TPS snapshot error: %v", err)
 			}
 		}
@@ -213,7 +226,7 @@ func startTPSSnapshotLoop() {
 }
 
 func handleCountTokens(w http.ResponseWriter, r *http.Request) {
-	writeAnthropicError(w, 404, "not_found_error", "Token counting is not supported")
+	proxy.WriteAnthropicError(w, 404, "not_found_error", "Token counting is not supported")
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +276,7 @@ func authMiddleware(proxyAPIKey string, next http.HandlerFunc) http.HandlerFunc 
 				clientKey = strings.TrimPrefix(clientKey, "bearer ")
 			}
 			if clientKey != proxyAPIKey {
-				writeAnthropicError(w, 401, "authentication_error", "Invalid or missing API key")
+				proxy.WriteAnthropicError(w, 401, "authentication_error", "Invalid or missing API key")
 				return
 			}
 		}
@@ -283,51 +296,10 @@ func openaiAuthMiddleware(proxyAPIKey string, next http.HandlerFunc) http.Handle
 				clientKey = strings.TrimPrefix(clientKey, "bearer ")
 			}
 			if clientKey != proxyAPIKey {
-				writeOpenAIError(w, 401, "authentication_error", "Invalid or missing API key")
+				proxy.WriteOpenAIError(w, 401, "authentication_error", "Invalid or missing API key")
 				return
 			}
 		}
 		next(w, r)
-	}
-}
-
-// detectClient identifies the calling client tool from request headers
-func detectClient(r *http.Request) string {
-	// Prefer explicit client name header if set by user
-	xClient := r.Header.Get("X-Client-Name")
-	if xClient != "" {
-		return xClient
-	}
-
-	ua := strings.ToLower(r.UserAgent())
-	switch {
-	case strings.Contains(ua, "factory-cli") || strings.Contains(ua, "factory-droid") || strings.Contains(ua, "factory-droid"):
-		return "Factory Droid"
-	case strings.Contains(ua, "claude-code") || strings.Contains(ua, "claude-code"):
-		return "Claude Code"
-	case strings.Contains(ua, "opencode") || strings.Contains(ua, "open-code"):
-		return "OpenCode"
-	case strings.Contains(ua, "cursor"):
-		return "Cursor"
-	case strings.Contains(ua, "copilot") || strings.Contains(ua, "github-copilot"):
-		return "GitHub Copilot"
-	case strings.Contains(ua, "aider"):
-		return "Aider"
-	case strings.Contains(ua, "continue"):
-		return "Continue"
-	case strings.Contains(ua, "supermaven"):
-		return "Supermaven"
-	case strings.Contains(ua, "windsurf"):
-		return "Windsurf"
-	case strings.Contains(ua, "trae"):
-		return "Trae"
-	case strings.Contains(ua, "claude") && strings.Contains(ua, "anthropic"):
-		return "Claude"
-	default:
-		rawUA := r.UserAgent()
-		if rawUA != "" {
-			return rawUA
-		}
-		return "Unknown"
 	}
 }
