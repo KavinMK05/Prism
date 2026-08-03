@@ -21,7 +21,7 @@ const prismManagedTag = "[Prism]"
 
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp", "grok-build", "pi"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp", "grok-build", "pi", "kimi-code"}
 
 // agentConfigPath returns the config file path for the given agent id.
 // Returns "" if the home directory cannot be determined or the id is unknown.
@@ -45,6 +45,13 @@ func agentConfigPath(agentID string) string {
 		return filepath.Join(home, ".grok", "config.toml")
 	case "pi":
 		return filepath.Join(home, ".pi", "agent", "settings.json")
+	case "kimi-code":
+		// Kimi Code reads its config from $KIMI_CODE_HOME/config.toml, defaulting
+		// to ~/.kimi-code/config.toml. The file name is always config.toml.
+		if root := os.Getenv("KIMI_CODE_HOME"); root != "" {
+			return filepath.Join(root, "config.toml")
+		}
+		return filepath.Join(home, ".kimi-code", "config.toml")
 	}
 	return ""
 }
@@ -66,6 +73,8 @@ func agentDisplayName(agentID string) string {
 		return "Grok Build"
 	case "pi":
 		return "Pi"
+	case "kimi-code":
+		return "Kimi Code"
 	}
 	return agentID
 }
@@ -181,7 +190,7 @@ func isAgentActive(agentID string) bool {
 	if err != nil {
 		return false
 	}
-	if agentID == "grok-build" {
+	if agentID == "grok-build" || agentID == "kimi-code" {
 		return strings.Contains(string(data), codexManagedBegin)
 	}
 	var m map[string]interface{}
@@ -382,6 +391,8 @@ func agentInstalled(id string) bool {
 		return isGrokBuildInstalled()
 	case "pi":
 		return isPiInstalled()
+	case "kimi-code":
+		return isKimiCodeInstalled()
 	}
 	return false
 }
@@ -407,6 +418,8 @@ func SyncAgents(port int) {
 			syncGrokBuild(port)
 		case "pi":
 			syncPi(port)
+		case "kimi-code":
+			syncKimiCode(port)
 		}
 	}
 }

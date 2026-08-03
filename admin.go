@@ -1121,6 +1121,21 @@ func startAdminServer(cfg *Config, port string) {
 				"status": "ok",
 				"models": len(remap.KnownModels),
 			})
+		case "kimi-code":
+			remap := loadModelRemapping()
+			if len(remap.KnownModels) == 0 {
+				writeJSONError(w, "no Prism models configured", 400)
+				return
+			}
+			if err := installKimiCodeConfig(proxyPortFromEnv(), remap); err != nil {
+				writeJSONError(w, "failed to install config: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"models": len(remap.KnownModels),
+			})
 		default:
 			// Phase 1 scaffold: per-agent setup for factory-droid/opencode lands in Phases 3-4.
 			writeJSONError(w, agentDisplayName(id)+" setup is not yet implemented", 501)
@@ -1182,6 +1197,13 @@ func startAdminServer(cfg *Config, port string) {
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		case "pi":
 			if err := restorePiConfig(); err != nil {
+				writeJSONError(w, "failed to restore: "+err.Error(), 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case "kimi-code":
+			if err := restoreKimiCodeConfig(); err != nil {
 				writeJSONError(w, "failed to restore: "+err.Error(), 500)
 				return
 			}
