@@ -375,7 +375,7 @@ func findSystemPython() (string, error) {
 		if err != nil {
 			continue
 		}
-		out, err := exec.Command(path, "--version").CombinedOutput()
+		out, err := runHidden(exec.Command(path, "--version")).CombinedOutput()
 		if err != nil {
 			continue
 		}
@@ -409,7 +409,7 @@ func systemPythonVersionOK(ver string) bool {
 // interpreter is Python ≥3.11. Used to detect a stale 3.10 venv/standalone that
 // must be rebuilt. Returns false on any error (treated as "needs rebuild").
 func searxngInterpreterVersionOK(path string) (bool, error) {
-	out, err := exec.Command(path, "--version").CombinedOutput()
+	out, err := runHidden(exec.Command(path, "--version")).CombinedOutput()
 	if err != nil {
 		return false, err
 	}

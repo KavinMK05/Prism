@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	"ollama-proxy/internal/config"
 )
 
 func OpenAdminUI(port string) {
@@ -123,27 +121,4 @@ while ($true) {
 
 	cmd := exec.Command("cmd", "/c", "start", "powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpPS1)
 	cmd.Start()
-}
-
-func openInFileExplorer(path string) {
-	exec.Command("explorer", path).Start()
-}
-
-func editModelConfig() {
-	remapPath := config.ModelRemappingPath()
-	if _, err := os.Stat(remapPath); os.IsNotExist(err) {
-		remap := config.DefaultModelRemapping()
-		config.SaveModelRemapping(remap)
-	}
-
-	cmd := exec.Command("notepad", remapPath)
-	if err := cmd.Start(); err != nil {
-		log.Printf("Failed to open model config editor: %v", err)
-		return
-	}
-
-	go func() {
-		cmd.Wait()
-		config.SetCurrent(config.Load())
-	}()
 }

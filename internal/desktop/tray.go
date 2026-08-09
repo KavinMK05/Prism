@@ -75,8 +75,6 @@ func RunTray(iconData []byte, cleanup func()) {
 		systray.AddSeparator()
 
 		openSettingsItem := systray.AddMenuItem("Open Settings", "Open web-based settings panel")
-		openFolderItem := systray.AddMenuItem("Open Folder", "Open proxy directory")
-		editModelConfigItem := systray.AddMenuItem("Edit Model config.Config", "Open model remapping config in editor")
 		showLogsItem := systray.AddMenuItem("Show Logs", "Open a console window with live logs")
 
 		systray.AddSeparator()
@@ -139,10 +137,6 @@ func RunTray(iconData []byte, cleanup func()) {
 					UpdateMenu(IsProxyRunning())
 				case <-openSettingsItem.ClickedCh:
 					OpenAdminUI(getAdminPort())
-				case <-openFolderItem.ClickedCh:
-					openInFileExplorer(filepath.Dir(getExePath()))
-				case <-editModelConfigItem.ClickedCh:
-					editModelConfig()
 				case <-showLogsItem.ClickedCh:
 					openLogsConsole()
 				case <-checkUpdateItem.ClickedCh:

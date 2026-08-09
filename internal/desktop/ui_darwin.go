@@ -4,12 +4,8 @@ package desktop
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
-	"time"
-
-	"ollama-proxy/internal/config"
 )
 
 func OpenAdminUI(port string) {
@@ -65,39 +61,4 @@ func openLogsConsole() {
 	do script "tail -f '%s'"
 end tell`, strings.ReplaceAll(logPath, "'", "'\\''"))
 	exec.Command("osascript", "-e", script).Start()
-}
-
-func openInFileExplorer(path string) {
-	exec.Command("open", "-R", path).Start()
-}
-
-func editModelConfig() {
-	remapPath := config.ModelRemappingPath()
-	if _, err := os.Stat(remapPath); os.IsNotExist(err) {
-		remap := config.DefaultModelRemapping()
-		config.SaveModelRemapping(remap)
-	}
-
-	exec.Command("open", "-t", remapPath).Start()
-
-	go func() {
-		initialModTime := getFileModTime(remapPath)
-		for i := 0; i < 120; i++ {
-			time.Sleep(1 * time.Second)
-			currentModTime := getFileModTime(remapPath)
-			if !currentModTime.Equal(initialModTime) {
-				time.Sleep(500 * time.Millisecond)
-				config.SetCurrent(config.Load())
-				return
-			}
-		}
-	}()
-}
-
-func getFileModTime(path string) time.Time {
-	info, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
-	}
-	return info.ModTime()
 }

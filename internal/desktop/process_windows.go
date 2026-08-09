@@ -18,7 +18,7 @@ const STILL_ACTIVE = 259
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 func findPIDsOnPort(port string) []int {
-	out, err := exec.Command("netstat", "-ano").Output()
+	out, err := runHidden(exec.Command("netstat", "-ano")).Output()
 	if err != nil {
 		return nil
 	}
