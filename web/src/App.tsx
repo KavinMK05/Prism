@@ -152,25 +152,19 @@ export default function App() {
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="w-[232px] shrink-0 flex flex-col px-4 py-5 border-r border-border bg-card h-screen">
-        <div className="flex items-center gap-3 mb-7 px-3">
+        <div className="flex items-center gap-3 mb-5 px-2">
           <svg className="w-[25px] h-[25px] rounded-md object-contain" viewBox="0 0 798 736" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M565.195 550.137C568.091 549.659 586.876 562.744 590.434 565.046L633.369 592.759C676.193 620.313 720.34 648.418 762.749 676.486C717.407 681.048 670.566 686.871 625.256 692.112L432.227 714.192L299.113 729.279C282.408 731.226 260.565 732.885 244.251 735.537L226.67 728.348L82.6293 670.779L44.4276 655.539C38.3646 653.133 27.2451 649.067 21.9272 646.067C41.832 643.562 64.6882 639.129 84.6775 635.712L200.844 615.751C322.585 595.533 444.044 573.662 565.195 550.137Z" fill="currentColor"/>
             <path d="M375.368 2.33536C377.052 6.89519 375.411 67.773 375.313 78.0682L374.211 218.378L151.99 599.752C151.99 599.752 152.29 599.237 86.9896 612.105C2.28882e-05 629.247 86.9896 612.105 0.278017 629.461L2.45096e-05 629.247C-0.106517 626.356 347.165 48.3347 375.368 2.33536Z" fill="currentColor"/>
             <path d="M398.329 0C401.77 3.03826 425.044 41.3783 428.65 47.2779C458.347 95.9769 487.775 144.841 516.933 193.869L673.536 456.662L759.803 600.199C772.123 620.748 785.232 641.487 797.123 662.213C795.188 661.325 785.146 654.21 782.642 652.514L750.968 631.157L629.18 550.29C624 546.861 584.311 520.905 583.423 519.197C571.391 496.132 547.529 457.556 534.304 435.636C490.536 363.959 447.209 292.017 404.317 219.814C404.452 195.363 403.736 169.525 403.35 145.016C402.603 97.7881 402.144 46.9209 398.329 0Z" fill="currentColor"/>
           </svg>
-          <div>
-            <h1 className="text-base font-bold tracking-tight leading-tight">Prism Settings</h1>
-            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground mt-1">
-              <span className={`w-2 h-2 rounded-full inline-block ${running ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-destructive'}`} />
-              <span>{running === null ? '\u2014' : running ? 'Running' : 'Stopped'}</span>
-            </span>
-          </div>
+          <h1 className="text-[20px] font-bold tracking-tight leading-none">Prism</h1>
         </div>
 
         <nav className="flex-1 overflow-y-auto" aria-label="Settings">
           {SECTIONS.map((section) => (
             <div className="mt-6 first:mt-0" key={section.label}>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-3 mb-2">{section.label}</div>
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-2 mb-2">{section.label}</div>
               <div className="flex flex-col gap-0.5">
                 {section.tabs.map((id) => {
                   const tab = TABS.find((t) => t.id === id)!;
@@ -178,7 +172,7 @@ export default function App() {
                   return (
                     <button
                       key={tab.id}
-                      className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
+                      className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
                       onClick={() => setActiveTab(tab.id)}
                       aria-pressed={isActive}
                     >
@@ -192,7 +186,11 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="mt-auto pt-4 border-t border-border">
+        <div className="mt-auto pt-4 flex items-center justify-between">
+          <span className="inline-flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
+            <span className={`w-2 h-2 rounded-full inline-block ${running ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-destructive'}`} />
+            <span>{running === null ? '\u2014' : running ? 'Running' : 'Stopped'}</span>
+          </span>
           <button className="w-9 h-9 rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-accent hover:border-border-strong flex items-center justify-center transition-colors" onClick={toggleTheme} title="Toggle theme">
             {theme === 'dark' ? (
               <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
