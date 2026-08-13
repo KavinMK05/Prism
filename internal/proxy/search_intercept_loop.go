@@ -82,7 +82,7 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 	defer stats.Global.EndRequest()
 	reqStart := time.Now()
 
-	dbg := newTranslationDebugCapture("messages", req.Stream, req.Model)
+	dbg := pr.dbgCapture("messages", req.Stream, req.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", req)

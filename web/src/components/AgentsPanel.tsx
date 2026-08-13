@@ -45,13 +45,13 @@ export default function AgentsPanel() {
   }, [checkCodex, checkAgent]);
 
   const setupCodex = async () => {
-    try { await apiPost('/codex-desktop/setup'); toast.add({ title: 'Codex Desktop configured successfully', type: 'success' }); checkCodex(); }
+    try { await apiPost('/codex-desktop/setup'); toast.add({ title: 'Codex configured successfully', type: 'success' }); checkCodex(); }
     catch (e) { toast.add({ title: 'Setup failed: ' + (e as Error).message, type: 'error' }); }
   };
 
   const restoreCodex = async () => {
-    if (!confirm('Remove Prism configuration from Codex Desktop?')) return;
-    try { await apiPost('/codex-desktop/restore'); toast.add({ title: 'Codex Desktop configuration restored', type: 'success' }); checkCodex(); }
+    if (!confirm('Remove Prism configuration from Codex?')) return;
+    try { await apiPost('/codex-desktop/restore'); toast.add({ title: 'Codex configuration restored', type: 'success' }); checkCodex(); }
     catch (e) { toast.add({ title: 'Restore failed: ' + (e as Error).message, type: 'error' }); }
   };
 
@@ -91,12 +91,12 @@ export default function AgentsPanel() {
   return (
     <>
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
-        <h3 className="text-sm font-semibold tracking-tight mb-1">Codex Desktop Integration</h3>
-        <p className="text-[13px] text-muted-foreground mb-3">Makes your Prism models appear in Codex Desktop's native model picker. Requires Codex Desktop to be installed.</p>
+        <h3 className="text-sm font-semibold tracking-tight mb-1">Codex</h3>
+        <p className="text-[13px] text-muted-foreground mb-3">Makes your Prism models appear in Codex's native model picker. Requires Codex to be installed.</p>
         <div className="my-3 text-[13px] text-muted-foreground">
           {codexStatus ? (
-            !codexStatus.installed ? <span>Codex Desktop not detected</span> :
-            codexStatus.active ? <span className="text-green-500">Active — models synced to Codex Desktop</span> :
+            !codexStatus.installed ? <span>Codex not detected</span> :
+            codexStatus.active ? <span className="text-green-500">Active — models synced to Codex</span> :
             <span className="text-amber-500">Installed but not configured</span>
           ) : 'Checking...'}
         </div>

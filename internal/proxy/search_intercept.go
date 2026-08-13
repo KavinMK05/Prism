@@ -120,7 +120,7 @@ func (pr *ProviderRouter) handleClaudeCodeWebSearch(w http.ResponseWriter, r *ht
 	reqStart := time.Now()
 
 	// Debug capture so the synthetic turn is logged like a normal one.
-	dbg := newTranslationDebugCapture("messages", req.Stream, req.Model)
+	dbg := pr.dbgCapture("messages", req.Stream, req.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", req)

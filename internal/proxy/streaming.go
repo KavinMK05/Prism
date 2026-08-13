@@ -349,7 +349,7 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	// Dump the original request, translated request, original Ollama response
 	// and translated response to disk for debugging. wrapWriter tees every SSE
 	// frame we emit to the client into the capture (#4).
-	dbg := newTranslationDebugCapture("messages", true, anthroReq.Model)
+	dbg := pr.dbgCapture("messages", true, anthroReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", anthroReq)

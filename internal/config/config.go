@@ -79,6 +79,7 @@ type Config struct {
 	OAuthAccounts     []*OAuthAccount          `json:"oauth_accounts"`
 	AgentIntegrations *AgentIntegrationsConfig `json:"agent_integrations,omitempty"`
 	SearXNGAutoStart  bool                     `json:"searxng_autostart,omitempty"`
+	DebugLogs         bool                     `json:"debug_logs,omitempty"`
 	Search            *search.Config           `json:"search,omitempty"`
 }
 

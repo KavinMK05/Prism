@@ -243,7 +243,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	// translated response to disk for debugging (same capture the Ollama path
 	// uses). No-ops when the directory cannot be created. wrapWriter tees every
 	// SSE frame we emit to the client into the capture.
-	dbg := newTranslationDebugCapture("responses", true, respReq.Model)
+	dbg := pr.dbgCapture("responses", true, respReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 
@@ -732,7 +732,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	// and translated response to disk when PRISM_DEBUG_RESPONSES is set. All
 	// methods are no-ops when the capture is nil (debug disabled). wrapWriter
 	// tees every SSE frame we emit to the client into the capture.
-	dbg := newTranslationDebugCapture("responses", true, respReq.Model)
+	dbg := pr.dbgCapture("responses", true, respReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 

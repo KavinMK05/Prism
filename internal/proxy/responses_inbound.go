@@ -146,7 +146,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *h
 	// Dump the original request, translated request, original Ollama response
 	// and translated response to disk when PRISM_DEBUG_RESPONSES is set. All
 	// methods are no-ops when the capture is nil (debug disabled).
-	dbg := newTranslationDebugCapture("responses", false, respReq.Model)
+	dbg := pr.dbgCapture("responses", false, respReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 

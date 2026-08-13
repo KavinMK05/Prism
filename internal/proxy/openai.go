@@ -586,7 +586,7 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	}
 
 	// Capture the complete Anthropic -> OpenAI-compatible translation hop.
-	dbg := newTranslationDebugCapture("messages-openai", false, anthroReq.Model)
+	dbg := pr.dbgCapture("messages-openai", false, anthroReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", anthroReq)

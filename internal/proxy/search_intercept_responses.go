@@ -303,7 +303,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 	client := detectClient(r)
 	reqStart := time.Now()
 
-	dbg := newTranslationDebugCapture("responses", respReq.Stream, respReq.Model)
+	dbg := pr.dbgCapture("responses", respReq.Stream, respReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", respReq)

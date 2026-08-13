@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch';
 export default function ProxyPanel() {
   const [running, setRunning] = useState<boolean | null>(null);
   const [autoStart, setAutoStart] = useState(false);
+  const [debugLogs, setDebugLogs] = useState(false);
   const [autoStartLabel, setAutoStartLabel] = useState('Auto-start at Login');
   const [logs, setLogs] = useState('Loading...');
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -41,10 +42,20 @@ export default function ProxyPanel() {
     }
   }, []);
 
+  const loadDebugLogs = useCallback(async () => {
+    try {
+      const data = await api('/debug-logs');
+      setDebugLogs(data.enabled);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     updateStatus();
     loadAutoStart();
-  }, [updateStatus, loadAutoStart]);
+    loadDebugLogs();
+  }, [updateStatus, loadAutoStart, loadDebugLogs]);
 
   useEffect(() => {
     refreshLogs();
@@ -103,6 +114,17 @@ export default function ProxyPanel() {
     }
   };
 
+  const handleToggleDebugLogs = async (enabled: boolean) => {
+    try {
+      await apiPut('/debug-logs', { enabled });
+      setDebugLogs(enabled);
+      toast.add({ title: enabled ? 'Debug logs enabled' : 'Debug logs disabled', type: 'success' });
+    } catch (e) {
+      setDebugLogs(!enabled);
+      toast.add({ title: 'Failed to update debug logs: ' + (e as Error).message, type: 'error' });
+    }
+  };
+
   return (
     <>
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
@@ -115,6 +137,20 @@ export default function ProxyPanel() {
           <Switch
             checked={autoStart}
             onCheckedChange={(checked) => handleToggleAutoStart(checked)}
+          />
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-4">Debug Logs</h3>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-foreground">Log request &amp; response bodies</div>
+            <div className="text-xs text-muted-foreground mt-0.5">Dump each translated request and response to the debug directory</div>
+          </div>
+          <Switch
+            checked={debugLogs}
+            onCheckedChange={(checked) => handleToggleDebugLogs(checked)}
           />
         </div>
       </div>

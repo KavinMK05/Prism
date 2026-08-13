@@ -52,6 +52,9 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	// API: Model remapping
 	mux.HandleFunc("/admin/model-remap", handleAdminModelRemap)
 
+	// API: Debug logs toggle
+	mux.HandleFunc("/admin/debug-logs", handleAdminDebugLogs)
+
 	// API: Proxy status
 	mux.HandleFunc("/admin/status", handleAdminStatus)
 

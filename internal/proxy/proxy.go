@@ -172,6 +172,16 @@ func (pr *ProviderRouter) getConfig() *config.Config {
 	return pr.cfg
 }
 
+// dbgCapture returns a translation debug capture if debug logging is enabled,
+// otherwise nil. All capture methods are nil-safe no-ops, so returning nil
+// disables request/response dumping entirely.
+func (pr *ProviderRouter) dbgCapture(endpoint string, stream bool, model string) *translationDebugCapture {
+	if !pr.getConfig().DebugLogs {
+		return nil
+	}
+	return newTranslationDebugCapture(endpoint, stream, model)
+}
+
 func (pr *ProviderRouter) getModelRemap() *config.ModelRemapping {
 	return pr.modelRemap.Load()
 }
@@ -367,7 +377,7 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	// Dump the original request, translated request, original Ollama response
 	// and translated response to disk for debugging. wrapWriter tees the bytes
 	// we send back to the client into the capture (#4).
-	dbg := newTranslationDebugCapture("messages", false, anthroReq.Model)
+	dbg := pr.dbgCapture("messages", false, anthroReq.Model)
 	defer dbg.finish()
 	w = dbg.wrapWriter(w)
 	dbg.writeJSON("1_original_request.json", anthroReq)
