@@ -60,12 +60,26 @@ func handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
 	client := r.URL.Query().Get("client")
 
+	// Parse from/to as either full datetime or date-only. When date-only,
+	// "to" is inclusive end-of-day (+24h). When datetime, "to" is exact.
+	const dateLayout = "2006-01-02"
+	const dtLayout = "2006-01-02T15:04"
 	var fromTime, toTime time.Time
+	var toIsDatetime bool
 	if fromStr != "" {
-		fromTime, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
+		if t, err := time.ParseInLocation(dtLayout, fromStr, time.Local); err == nil {
+			fromTime = t
+		} else if t, err := time.ParseInLocation(dateLayout, fromStr, time.Local); err == nil {
+			fromTime = t
+		}
 	}
 	if toStr != "" {
-		toTime, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
+		if t, err := time.ParseInLocation(dtLayout, toStr, time.Local); err == nil {
+			toTime = t
+			toIsDatetime = true
+		} else if t, err := time.ParseInLocation(dateLayout, toStr, time.Local); err == nil {
+			toTime = t
+		}
 	}
 	if fromTime.IsZero() {
 		fromTime = now.AddDate(0, 0, -7)
@@ -74,13 +88,32 @@ func handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 		toTime = now
 	}
 	fromUnix := fromTime.Unix()
-	toUnix := toTime.Add(24 * time.Hour).Unix()
+	toUnix := toTime.Unix()
+	if !toIsDatetime {
+		toUnix = toTime.Add(24 * time.Hour).Unix()
+	}
 
 	daily, _ := db.GetDailyTokens(fromUnix, toUnix, provider, model, client)
 	monthly, _ := db.GetMonthlyTokens(client)
 	tpsHist, _ := db.GetTPSHistory(fromUnix, toUnix, provider, model, client)
 	byModel, _ := db.GetModelHistory(fromUnix, toUnix, provider, model, client)
 	byClient, _ := db.GetClientHistory(fromUnix, toUnix, provider, model, client)
+
+	// For ranges <= 24h, return hourly-bucketed tokens (adaptive bucket size).
+	spanMin := int((toUnix - fromUnix) / 60)
+	var hourly []db.HourlyTokens
+	hasHourly := false
+	if spanMin > 0 && spanMin <= 24*60 {
+		bucket := 60
+		switch {
+		case spanMin <= 90:
+			bucket = 5
+		case spanMin <= 6*60:
+			bucket = 30
+		}
+		hourly, _ = db.GetHourlyTokens(fromUnix, toUnix, bucket, provider, model, client)
+		hasHourly = true
+	}
 
 	// Heatmap always shows the last 365 days, filtered by provider/model/client
 	heatmapTo := now.Add(24 * time.Hour).Unix()
@@ -95,6 +128,8 @@ func handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 		"by_model":       byModel,
 		"by_client":      byClient,
 		"heatmap_tokens": heatmap,
+		"hourly_tokens":  hourly,
+		"has_hourly":     hasHourly,
 	})
 }
 

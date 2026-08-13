@@ -190,6 +190,55 @@ func GetDailyTokens(from, to int64, provider, model, client string) ([]DailyToke
 	return result, rows.Err()
 }
 
+type HourlyTokens struct {
+	Bucket int64 `json:"bucket"` // unix seconds of bucket start
+	Input  int64 `json:"input"`
+	Output int64 `json:"output"`
+	Total  int64 `json:"total"`
+}
+
+// GetHourlyTokens returns token totals bucketed into bucketMinutes-sized windows.
+func GetHourlyTokens(from, to int64, bucketMinutes int, provider, model, client string) ([]HourlyTokens, error) {
+	if db == nil {
+		return nil, nil
+	}
+	bucketSec := int64(bucketMinutes) * 60
+	q := fmt.Sprintf(`SELECT (timestamp / %d) * %d as bucket, SUM(input_tokens), SUM(output_tokens)
+		  FROM requests
+		  WHERE timestamp >= ? AND timestamp <= ?`, bucketSec, bucketSec)
+	args := []interface{}{from, to}
+	if provider != "" {
+		q += " AND provider = ?"
+		args = append(args, provider)
+	}
+	if model != "" {
+		q += " AND model = ?"
+		args = append(args, model)
+	}
+	if client != "" {
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		args = append(args, client)
+	}
+	q += " GROUP BY bucket ORDER BY bucket"
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []HourlyTokens
+	for rows.Next() {
+		var h HourlyTokens
+		if err := rows.Scan(&h.Bucket, &h.Input, &h.Output); err != nil {
+			continue
+		}
+		h.Total = h.Input + h.Output
+		result = append(result, h)
+	}
+	return result, rows.Err()
+}
+
 type MonthlyTokens struct {
 	Month  string `json:"month"`
 	Input  int64  `json:"input"`

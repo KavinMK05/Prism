@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback, useRef, memo } from 'react';
+import { format } from 'date-fns';
 import { api, apiPost } from '../api';
 import { toast } from './ui/toast';
 import { useTheme } from '../ThemeContext';
+import { DateTimePicker } from '@/components/ui/date-time-picker';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarController, LineController,
   BarElement, PointElement, LineElement, Filler, Tooltip,
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 ChartJS.register(CategoryScale, LinearScale, BarController, LineController, BarElement, PointElement, LineElement, Filler, Tooltip);
@@ -24,6 +25,15 @@ function formatNumber(n: number): string {
 
 function fmtLocalDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function fmtLocalDateTime(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function parseStoredDate(s: string): Date | undefined {
+  if (!s) return undefined;
+  return s.includes('T') ? new Date(s) : new Date(s + 'T00:00:00');
 }
 
 function getHeatmapLevel(total: number, maxTotal: number): number {
@@ -73,6 +83,10 @@ const FilterBar = memo(function FilterBar({
           <Select value={timeRange} onValueChange={(v) => onTimeRangeChange(v)}>
             <SelectTrigger className="w-full"><SelectValue placeholder="Time Range" /></SelectTrigger>
             <SelectContent>
+              <SelectItem value="today">Today</SelectItem>
+              <SelectItem value="1h">Last Hour</SelectItem>
+              <SelectItem value="6h">Last 6 Hours</SelectItem>
+              <SelectItem value="12h">Last 12 Hours</SelectItem>
               <SelectItem value="7">Last 7 Days</SelectItem>
               <SelectItem value="30">Last 30 Days</SelectItem>
               <SelectItem value="90">Last 90 Days</SelectItem>
@@ -112,8 +126,8 @@ const FilterBar = memo(function FilterBar({
       {showCustomDate && (
         <div className="flex gap-3 items-center w-full justify-between">
           <div className="flex gap-3 items-center">
-            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">From</div><Input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} /></div>
-            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">To</div><Input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} /></div>
+            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">From</div><DateTimePicker triggerClassName="w-[200px]" value={parseStoredDate(filterFrom)} onValueChange={(d) => setFilterFrom(d ? fmtLocalDateTime(d) : '')} /></div>
+            <div className="flex items-center gap-1.5"><div className="text-xs text-muted-foreground font-medium">To</div><DateTimePicker triggerClassName="w-[200px]" value={parseStoredDate(filterTo)} onValueChange={(d) => setFilterTo(d ? fmtLocalDateTime(d) : '')} /></div>
           </div>
           <Button variant="outline" onClick={refreshAll} title="Refresh stats">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -188,11 +202,36 @@ export default function StatsPanel() {
     if (val === 'custom') { setShowCustomDate(true); return; }
     setShowCustomDate(false);
     const now = new Date();
-    let fromDate: Date;
-    if (val === 'all') fromDate = new Date(0);
-    else fromDate = new Date(now.getTime() - parseInt(val) * 24 * 60 * 60 * 1000);
-    setFilterFrom(fmtLocalDate(fromDate));
-    setFilterTo(fmtLocalDate(now));
+    let fromStr: string, toStr: string;
+    switch (val) {
+      case 'today':
+        fromStr = fmtLocalDateTime(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0));
+        toStr = fmtLocalDateTime(now);
+        break;
+      case '1h':
+        fromStr = fmtLocalDateTime(new Date(now.getTime() - 60 * 60 * 1000));
+        toStr = fmtLocalDateTime(now);
+        break;
+      case '6h':
+        fromStr = fmtLocalDateTime(new Date(now.getTime() - 6 * 60 * 60 * 1000));
+        toStr = fmtLocalDateTime(now);
+        break;
+      case '12h':
+        fromStr = fmtLocalDateTime(new Date(now.getTime() - 12 * 60 * 60 * 1000));
+        toStr = fmtLocalDateTime(now);
+        break;
+      case 'all':
+        fromStr = '1970-01-01';
+        toStr = fmtLocalDate(now);
+        break;
+      default: {
+        const days = parseInt(val, 10);
+        fromStr = fmtLocalDate(new Date(now.getTime() - days * 24 * 60 * 60 * 1000));
+        toStr = fmtLocalDate(now);
+      }
+    }
+    setFilterFrom(fromStr);
+    setFilterTo(toStr);
   }, []);
 
   const refreshAll = useCallback(async () => { await refreshLive(); await loadHistory(); await loadFilterOpts(); }, [refreshLive, loadHistory, loadFilterOpts]);
@@ -224,6 +263,8 @@ export default function StatsPanel() {
   const tpsHistoryData = history?.tps_history || [];
   const byModel = history?.by_model || [];
   const byClient = history?.by_client || null;
+  const isHourly = !!history?.has_hourly;
+  const hourlyData = history?.hourly_tokens || [];
 
   const providerNameMap: Record<string, string> = {};
   (filterOpts.providers || []).forEach((p: { id: string; name: string }) => { providerNameMap[p.id] = p.name; });
@@ -231,6 +272,7 @@ export default function StatsPanel() {
   const liveTps = liveData?.live_tokens_per_sec || 0;
   const dailyTotal = dailyData.reduce((s: number, d: any) => s + d.total, 0);
   const monthlyTotal = monthlyData.reduce((s: number, d: any) => s + d.total, 0);
+  const hourlyTotal = hourlyData.reduce((s: number, d: any) => s + d.total, 0);
 
   // Client stats
   let clientArr: any[] = [];
@@ -317,6 +359,20 @@ export default function StatsPanel() {
           </div>
         </div>
 
+        {isHourly ? (
+          <div className="rounded-xl border border-border bg-card p-6">
+            <div className="flex items-center justify-between mb-3"><span className="text-[13px] font-semibold text-foreground">Tokens Per Hour</span></div>
+            <div className="relative group">
+              <div className="text-2xl font-bold text-foreground tracking-tight leading-tight">{formatNumber(hourlyTotal)}<span className="text-xs font-medium text-muted-foreground ml-1">Total</span></div>
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
+                <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(hourlyData.reduce((s: number, d: any) => s + d.input, 0))}</span></div>
+                <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(hourlyData.reduce((s: number, d: any) => s + d.output, 0))}</span></div>
+              </div>
+            </div>
+            <div className="relative h-[180px] w-full"><Bar data={{ labels: hourlyData.map((d: any) => format(new Date(d.bucket * 1000), 'HH:mm')), datasets: [{ label: 'Input', data: hourlyData.map((d: any) => d.input), backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }, { label: 'Output', data: hourlyData.map((d: any) => d.output), backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 12 } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
+          </div>
+        ) : (
+          <>
         {/* Daily chart */}
         <div className="rounded-xl border border-border bg-card p-6">
           <div className="flex items-center justify-between mb-3"><span className="text-[13px] font-semibold text-foreground">Tokens Per Day</span></div>
@@ -342,6 +398,8 @@ export default function StatsPanel() {
           </div>
           <div className="relative h-[180px] w-full"><Line data={{ labels: monthlyData.map((d: any) => d.month), datasets: [{ label: 'Tokens', data: monthlyData.map((d: any) => d.total), fill: true, backgroundColor: 'rgba(139,92,246,0.12)', borderColor: '#8b5cf6', borderWidth: 2, pointBackgroundColor: '#8b5cf6', pointRadius: 3, pointHoverRadius: 5, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
         </div>
+          </>
+        )}
 
         {/* Live TPS */}
         <div className="rounded-xl border border-border bg-card p-6 col-span-1 lg:col-span-2">
