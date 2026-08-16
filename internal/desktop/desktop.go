@@ -17,6 +17,11 @@ func SetVersion(v string) {
 	version = v
 }
 
+// Version returns the recorded build version ("dev" if not set).
+func Version() string {
+	return version
+}
+
 // adminServerStarter starts the admin UI server (registered from main).
 var adminServerStarter func(cfg *config.Config, port string)
 

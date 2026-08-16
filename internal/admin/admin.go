@@ -55,6 +55,9 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	// API: Debug logs toggle
 	mux.HandleFunc("/admin/debug-logs", handleAdminDebugLogs)
 
+	// API: Anonymous analytics opt-in
+	mux.HandleFunc("/admin/analytics/settings", handleAdminAnalyticsSettings)
+
 	// API: Proxy status
 	mux.HandleFunc("/admin/status", handleAdminStatus)
 
@@ -435,6 +438,7 @@ func handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"running": desktop.IsProxyRunning(),
+		"version": desktop.Version(),
 	})
 }
 

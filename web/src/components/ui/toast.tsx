@@ -102,14 +102,14 @@ function ToastDescription({
 
 function ToastAction({
   className,
-  render = <Button variant="outline" size="sm" />,
+  render = <Button variant="outline" size="sm" className="w-full" />,
   ...props
 }: ToastPrimitive.Action.Props) {
   return (
     <ToastPrimitive.Action
       data-slot="toast-action"
       render={render}
-      className={cn("shrink-0", className)}
+      className={cn("w-full", className)}
       {...props}
     />
   )
@@ -118,7 +118,7 @@ function ToastAction({
 function ToastClose({
   className,
   children,
-  render = <Button variant="ghost" size="icon-sm" />,
+  render = <Button variant="ghost" size="sm" className="w-full" />,
   ...props
 }: ToastPrimitive.Close.Props) {
   return (
@@ -127,12 +127,12 @@ function ToastClose({
       aria-label="Close toast"
       render={render}
       className={cn(
-        "relative shrink-0 text-muted-foreground after:absolute after:-inset-2 after:content-[''] hover:text-foreground",
+        "relative w-full text-muted-foreground after:absolute after:-inset-2 after:content-[''] hover:text-foreground",
         className
       )}
       {...props}
     >
-      {children ?? <XIcon aria-hidden="true" />}
+      {children ?? "Close"}
     </ToastPrimitive.Close>
   )
 }
@@ -177,19 +177,51 @@ function ToastIcon({ type }: { type: string | undefined }) {
 function ToastList() {
   const { toasts } = ToastPrimitive.useToastManager()
 
-  return toasts.map((toastItem) => (
-    <Toast key={toastItem.id} toast={toastItem}>
-      <ToastContent>
-        <ToastIcon type={toastItem.type} />
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <ToastTitle />
-          <ToastDescription />
-        </div>
-        <ToastAction />
-        <ToastClose />
-      </ToastContent>
-    </Toast>
-  ))
+  return toasts.map((toastItem) => {
+    const closeAction = toastItem.data?.closeAction === true
+
+    if (closeAction) {
+      // Star toast: keep the action row (Star + full-width Close button).
+      return (
+        <Toast key={toastItem.id} toast={toastItem}>
+          <ToastContent>
+            <ToastIcon type={toastItem.type} />
+            <div className="flex min-w-0 flex-1 flex-col gap-3">
+              <div className="flex min-w-0 flex-col gap-1">
+                <ToastTitle />
+                <ToastDescription />
+              </div>
+              <div className="flex flex-col gap-2">
+                {toastItem.actionProps ? <ToastAction /> : null}
+                <ToastClose>Close</ToastClose>
+              </div>
+            </div>
+          </ToastContent>
+        </Toast>
+      )
+    }
+
+    // Default toasts: centered X-icon dismiss, no bottom Close button.
+    return (
+      <Toast key={toastItem.id} toast={toastItem}>
+        <ToastContent>
+          <ToastIcon type={toastItem.type} />
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <ToastTitle />
+            <ToastDescription />
+          </div>
+          <ToastPrimitive.Close
+            data-slot="toast-close"
+            aria-label="Close toast"
+            render={<Button variant="ghost" size="icon-sm" />}
+            className="relative shrink-0 text-muted-foreground after:absolute after:-inset-2 after:content-[''] hover:text-foreground"
+          >
+            <XIcon aria-hidden="true" />
+          </ToastPrimitive.Close>
+        </ToastContent>
+      </Toast>
+    )
+  })
 }
 
 function Toaster({

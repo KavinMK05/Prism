@@ -8,6 +8,8 @@ import OAuthPanel from './components/OAuthPanel';
 import ProviderPanel from './components/ProviderPanel';
 import ModelsPanel from './components/ModelsPanel';
 import StatsPanel from './components/StatsPanel';
+import StarPrompt from './components/StarPrompt';
+import AnalyticsBanner from './components/AnalyticsBanner';
 import { api } from './api';
 
 type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search';
@@ -117,12 +119,14 @@ const SECTIONS: { label: string; tabs: TabId[] }[] = [
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('provider');
   const [running, setRunning] = useState<boolean | null>(null);
+  const [version, setVersion] = useState<string>('');
   const { theme, toggleTheme } = useTheme();
 
   const updateStatus = useCallback(async () => {
     try {
       const s = await api('/status');
       setRunning(s.running);
+      if (typeof s.version === 'string') setVersion(s.version);
     } catch {
       // ignore
     }
@@ -150,6 +154,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <StarPrompt version={version} />
       {/* Sidebar */}
       <aside className="w-[232px] shrink-0 flex flex-col px-4 py-5 border-r border-border bg-card h-screen">
         <div className="flex items-center gap-3 mb-5 px-2">
@@ -208,6 +213,7 @@ export default function App() {
 
       {/* Main content */}
       <main className="flex-1 min-w-0 overflow-y-auto p-8">
+        <AnalyticsBanner />
         {activeTab !== 'provider' && (
           <h2 className="text-2xl font-semibold tracking-tight text-foreground mb-5 font-[system-ui]">
             {TABS.find((t) => t.id === activeTab)?.label}

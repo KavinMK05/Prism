@@ -81,6 +81,13 @@ type Config struct {
 	SearXNGAutoStart  bool                     `json:"searxng_autostart,omitempty"`
 	DebugLogs         bool                     `json:"debug_logs,omitempty"`
 	Search            *search.Config           `json:"search,omitempty"`
+
+	// AnalyticsOptIn records whether the user has opted in to anonymous usage
+	// telemetry (a single daily heartbeat to PostHog EU). Defaults to false.
+	AnalyticsOptIn bool `json:"analytics_opt_in,omitempty"`
+	// AnalyticsPrompted records whether the one-time first-run consent prompt
+	// has been shown. Defaults to false; once true it is never shown again.
+	AnalyticsPrompted bool `json:"analytics_prompted,omitempty"`
 }
 
 // Clone returns a deep copy of the Config, safe for mutation without affecting the original

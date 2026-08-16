@@ -8,6 +8,7 @@ export default function ProxyPanel() {
   const [running, setRunning] = useState<boolean | null>(null);
   const [autoStart, setAutoStart] = useState(false);
   const [debugLogs, setDebugLogs] = useState(false);
+  const [analyticsOptIn, setAnalyticsOptIn] = useState(false);
   const [autoStartLabel, setAutoStartLabel] = useState('Auto-start at Login');
   const [logs, setLogs] = useState('Loading...');
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -51,11 +52,21 @@ export default function ProxyPanel() {
     }
   }, []);
 
+  const loadAnalytics = useCallback(async () => {
+    try {
+      const data = await api('/analytics/settings');
+      setAnalyticsOptIn(data.opt_in);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     updateStatus();
     loadAutoStart();
     loadDebugLogs();
-  }, [updateStatus, loadAutoStart, loadDebugLogs]);
+    loadAnalytics();
+  }, [updateStatus, loadAutoStart, loadDebugLogs, loadAnalytics]);
 
   useEffect(() => {
     refreshLogs();
@@ -125,6 +136,17 @@ export default function ProxyPanel() {
     }
   };
 
+  const handleToggleAnalytics = async (enabled: boolean) => {
+    try {
+      await apiPut('/analytics/settings', { opt_in: enabled, prompted: true });
+      setAnalyticsOptIn(enabled);
+      toast.add({ title: enabled ? 'Anonymous analytics enabled' : 'Anonymous analytics disabled', type: 'success' });
+    } catch (e) {
+      setAnalyticsOptIn(!enabled);
+      toast.add({ title: 'Failed to update analytics: ' + (e as Error).message, type: 'error' });
+    }
+  };
+
   return (
     <>
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
@@ -151,6 +173,31 @@ export default function ProxyPanel() {
           <Switch
             checked={debugLogs}
             onCheckedChange={(checked) => handleToggleDebugLogs(checked)}
+          />
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-6 mb-4">
+        <h3 className="text-sm font-semibold tracking-tight mb-4">Anonymous Analytics</h3>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-foreground">Send anonymous usage data</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Sends an anonymous daily ping (app version + OS) to count active installs. No prompts,
+              models, or requests are ever sent.{' '}
+              <a
+                href="https://github.com/KavinMK05/Prism/blob/main/TELEMETRY.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Learn what&apos;s sent
+              </a>
+            </div>
+          </div>
+          <Switch
+            checked={analyticsOptIn}
+            onCheckedChange={(checked) => handleToggleAnalytics(checked)}
           />
         </div>
       </div>

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-proxy/internal/analytics"
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/oauth"
 	"ollama-proxy/internal/platform"
@@ -117,6 +118,9 @@ func RunTray(iconData []byte, cleanup func()) {
 
 		// Start background update checker
 		startUpdateCheckLoop()
+
+		// Start background anonymous analytics heartbeat (opt-in only)
+		analytics.StartLoop(Version())
 
 		go func() {
 			for {
