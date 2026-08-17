@@ -102,7 +102,7 @@ Prism is the only thing standing between your agents and the messy reality of LL
 
 Prism is the single local endpoint your agents talk to. It accepts requests in **four protocol formats** — **Anthropic Messages** (`/v1/messages`), **OpenAI Chat Completions** (`/v1/chat/completions`), **OpenAI Responses** (`/v1/responses`), and **Ollama Native** (`/api/chat`) — translates them to whatever your upstream provider speaks, and translates responses back. For Codex (OpenAI) accounts, Prism routes directly to the ChatGPT backend API, including Chat Completions ↔ Responses API translation so any agent can use your OAuth account regardless of its protocol. Streaming works seamlessly in all directions.
 
-For integrated agents, Prism writes the right config files automatically — environment variables, provider blocks, model catalogs — so your agents see Prism's models without any manual setup.
+For integrated agents, Prism writes the right config files — environment variables, provider blocks, and model catalogs — after you choose **Setup**. Existing active integrations keep their historical automatic sync behavior, while new installs start with agent setup off until you opt in.
 
 ## Free search
 
@@ -213,9 +213,9 @@ Prism integrates with Codex Desktop and Codex CLI's native model selector. When 
 
 **How it works:** Prism writes a managed provider block to `~/.codex/config.toml` and generates a model catalog JSON file. Codex Desktop/CLI reads these on launch and populates its model picker with your Prism models. Requests flow through Prism's Responses API endpoint, which translates them to your configured upstream provider.
 
-**Automatic sync:** Prism auto-syncs the catalog on every startup if Codex Desktop/CLI is detected (`~/.codex/config.toml` exists), so new models added to your remapping are picked up automatically.
+**Automatic sync:** After Setup, Prism auto-syncs the catalog on every startup and when models change, so new models added to your remapping are picked up automatically.
 
-**To disable:** Click **Restore** in the Agents tab. This removes Prism's managed blocks and restores any previous settings.
+**To disable:** Click **Disable** in the Agents tab. This removes Prism's managed blocks and keeps Codex disabled until you click Setup again.
 
 </details>
 
@@ -226,7 +226,7 @@ Prism adds your models as `[Prism]` custom entries in `~/.factory/settings.json`
 
 **One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Factory Droid". Prism backs up your existing config and injects all your Prism models.
 
-**To disable:** Click **Restore** to remove all Prism-tagged entries.
+**To disable:** Click **Disable** to remove all Prism-tagged entries. The integration stays disabled until you click Setup again.
 
 </details>
 
@@ -237,7 +237,7 @@ Prism registers two providers in `~/.config/opencode/opencode.json`: `prism` (fo
 
 **One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "OpenCode". Prism backs up your existing config and writes the provider blocks.
 
-**To disable:** Click **Restore** to remove the Prism providers and default model references.
+**To disable:** Click **Disable** to remove the Prism providers and default model references. The integration stays disabled until you click Setup again.
 
 </details>
 
@@ -248,7 +248,7 @@ Prism writes a provider block to `~/.zcode/v2/config.json` with your Prism base 
 
 **One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "ZCode". Prism backs up your existing config and writes the provider block.
 
-**To disable:** Click **Restore** to remove the Prism provider.
+**To disable:** Click **Disable** to remove the Prism provider. The integration stays disabled until you click Setup again.
 
 </details>
 
@@ -259,7 +259,7 @@ Prism writes a `[model.prism-*]` block per Prism model into `~/.grok/config.toml
 
 **One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Grok Build". Prism backs up your existing config and writes the model entries.
 
-**To disable:** Click **Restore** to remove the Prism model entries.
+**To disable:** Click **Disable** to remove the Prism model entries. The integration stays disabled until you click Setup again.
 
 </details>
 
@@ -295,7 +295,7 @@ response = client.responses.create(
 
 ## Agent integrations
 
-Prism includes built-in, one-click integrations for popular AI coding agents. Each integration auto-detects whether the agent is installed, writes the right config files, and keeps them in sync when your models change.
+Prism includes built-in, one-click integrations for popular AI coding agents. Each integration auto-detects whether the agent is installed, writes the right config files after Setup, and keeps enabled integrations in sync when your models change.
 
 | Agent | What it does | Config location |
 |---|---|---|
@@ -309,9 +309,10 @@ Prism includes built-in, one-click integrations for popular AI coding agents. Ea
 **How it works:**
 
 1. **Auto-detection** — Prism checks if each agent's config file or binary exists on disk. The Agents tab shows which agents are installed and active.
-2. **One-click setup** — Click **Setup** to back up the agent's existing config and write Prism's configuration. Click **Restore** to revert to the backup.
-3. **Auto-sync** — Prism syncs all agent configs on startup and whenever you add or remove models, so newly added models appear automatically.
-4. **Smart routing** — Codex OAuth models are routed through `/v1/responses`, all others through `/v1/chat/completions`. Each agent gets the right endpoint for its protocol.
+2. **One-click setup** — Click **Setup** to back up the agent's existing config and write Prism's configuration. Setup also enables that integration's future automatic sync.
+3. **Auto-sync** — Existing active integrations are migrated as enabled. New installs remain off until Setup; after Setup, the integration syncs on startup and whenever you add or remove models.
+4. **Disable** — Click **Disable** to remove Prism's configuration and persist the choice. It will not return until you click Setup again.
+5. **Smart routing** — Codex OAuth models are routed through `/v1/responses`, all others through `/v1/chat/completions`. Each agent gets the right endpoint for its protocol.
 
 ## System tray
 

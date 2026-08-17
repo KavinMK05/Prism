@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"ollama-proxy/internal/config"
 )
 
 // prismManagedTag is the display-name prefix used to tag model entries that
@@ -22,8 +24,11 @@ import (
 const prismManagedTag = "[Prism]"
 
 // supportedAgents is the canonical list of agent ids handled by the generic
-// /admin/agent/* endpoints and SyncAgents.
+// /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
+// separate endpoint and sync function, but shares the same auto-sync policy.
 var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp", "grok-build", "pi", "kimi-code"}
+
+var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
 // agentConfigPath returns the config file path for the given agent id.
 // Returns "" if the home directory cannot be determined or the id is unknown.
@@ -375,6 +380,85 @@ func ProxyPortFromEnv() int {
 // syncOpencode is implemented in opencode_agent.go (Phase 4).
 // syncZcode is implemented in zcode_agent.go.
 
+// AgentAutoSyncEnabled reports whether automatic synchronization is enabled
+// for an agent. Explicit Setup is allowed to enable an agent; this gate is
+// only for startup and model-change synchronization.
+func AgentAutoSyncEnabled(agentID string) bool {
+	if !isKnownAgentID(agentID) {
+		return false
+	}
+	cfg := config.Load()
+	if cfg.AgentIntegrations == nil || !cfg.AgentIntegrations.AutoSyncMigrated {
+		return false
+	}
+	return cfg.AgentIntegrations.AutoSync[agentID]
+}
+
+// SetAgentAutoSync persists the user's choice for an agent and keeps the
+// running admin process's in-memory config in sync.
+func SetAgentAutoSync(agentID string, enabled bool) error {
+	if !isKnownAgentID(agentID) {
+		return fmt.Errorf("unknown agent: %s", agentID)
+	}
+	cfg := config.Load()
+	integrations := cfg.EnsureAgentIntegrations()
+	integrations.AutoSync[agentID] = enabled
+	integrations.AutoSyncMigrated = true
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	config.UpdateCurrent(func(current *config.Config) {
+		if current == nil {
+			return
+		}
+		integrations := current.EnsureAgentIntegrations()
+		integrations.AutoSync[agentID] = enabled
+		integrations.AutoSyncMigrated = true
+	})
+	return nil
+}
+
+// InitializeAutoSync performs the one-time migration from Prism's historical
+// always-on agent behavior. Existing active integrations remain enabled;
+// agents that were not active, including all agents on a fresh install, start
+// disabled until the user clicks Setup.
+func InitializeAutoSync() error {
+	cfg := config.Load()
+	integrations := cfg.EnsureAgentIntegrations()
+	if integrations.AutoSyncMigrated {
+		return nil
+	}
+
+	autoSync := make(map[string]bool, len(allAgentIDs))
+	for _, id := range allAgentIDs {
+		if id == "codex" {
+			autoSync[id] = IsCodexDesktopActive()
+		} else {
+			autoSync[id] = IsAgentActive(id)
+		}
+	}
+	integrations.AutoSync = autoSync
+	integrations.AutoSyncMigrated = true
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("failed to initialize agent auto-sync: %w", err)
+	}
+	config.UpdateCurrent(func(current *config.Config) {
+		if current != nil {
+			current.AgentIntegrations = cfg.AgentIntegrations
+		}
+	})
+	return nil
+}
+
+func isKnownAgentID(id string) bool {
+	for _, known := range allAgentIDs {
+		if known == id {
+			return true
+		}
+	}
+	return false
+}
+
 // AgentInstalled reports whether the agent is installed, using the per-agent
 // installed check (OpenCode also accepts the binary being on PATH).
 func AgentInstalled(id string) bool {
@@ -407,6 +491,10 @@ func SyncAgents(port int) {
 			log.Printf("[%s] Not installed, skipping sync", AgentDisplayName(id))
 			continue
 		}
+		if !AgentAutoSyncEnabled(id) {
+			log.Printf("[%s] Auto-sync disabled, skipping sync", AgentDisplayName(id))
+			continue
+		}
 		switch id {
 		case "claude-code":
 			syncClaudeCode(port)
@@ -414,6 +502,8 @@ func SyncAgents(port int) {
 			syncFactoryDroid(port)
 		case "opencode":
 			syncOpencode(port)
+		case "zcode":
+			syncZcode(port)
 		case "omp":
 			syncOmp(port)
 		case "grok-build":

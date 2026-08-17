@@ -304,6 +304,10 @@ func SyncCodexDesktop(port int) {
 		log.Printf("[Codex Desktop] Not installed, skipping sync")
 		return
 	}
+	if !AgentAutoSyncEnabled("codex") {
+		log.Printf("[Codex Desktop] Auto-sync disabled, skipping sync")
+		return
+	}
 
 	remap := config.LoadModelRemapping()
 	if len(remap.KnownModels) == 0 {

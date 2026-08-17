@@ -69,6 +69,12 @@ type AgentIntegrationsConfig struct {
 	// "subagent") to a Prism model id. Empty values resolve to the first Prism
 	// model at sync time.
 	ClaudeCodeTiers map[string]string `json:"claude_code_tiers,omitempty"`
+	// AutoSync stores the user's choice for each agent integration. Setup sets
+	// an agent to true, while Disable/Restore sets it to false.
+	AutoSync map[string]bool `json:"auto_sync,omitempty"`
+	// AutoSyncMigrated marks that the one-time migration from the historical
+	// always-on behavior has completed.
+	AutoSyncMigrated bool `json:"auto_sync_migrated,omitempty"`
 }
 
 type Config struct {
@@ -88,6 +94,21 @@ type Config struct {
 	// AnalyticsPrompted records whether the one-time first-run consent prompt
 	// has been shown. Defaults to false; once true it is never shown again.
 	AnalyticsPrompted bool `json:"analytics_prompted,omitempty"`
+}
+
+// EnsureAgentIntegrations initializes the agent integration section and its
+// maps, returning the usable section for callers that need to mutate it.
+func (c *Config) EnsureAgentIntegrations() *AgentIntegrationsConfig {
+	if c.AgentIntegrations == nil {
+		c.AgentIntegrations = &AgentIntegrationsConfig{}
+	}
+	if c.AgentIntegrations.ClaudeCodeTiers == nil {
+		c.AgentIntegrations.ClaudeCodeTiers = map[string]string{}
+	}
+	if c.AgentIntegrations.AutoSync == nil {
+		c.AgentIntegrations.AutoSync = map[string]bool{}
+	}
+	return c.AgentIntegrations
 }
 
 // Clone returns a deep copy of the Config, safe for mutation without affecting the original
@@ -117,6 +138,22 @@ func (c *Config) Clone() *Config {
 	}
 	if c.Search != nil && c.Search.CustomProviders != nil {
 		cp.Search = c.Search.Clone()
+	}
+	if c.AgentIntegrations != nil {
+		ai := *c.AgentIntegrations
+		if c.AgentIntegrations.ClaudeCodeTiers != nil {
+			ai.ClaudeCodeTiers = make(map[string]string, len(c.AgentIntegrations.ClaudeCodeTiers))
+			for k, v := range c.AgentIntegrations.ClaudeCodeTiers {
+				ai.ClaudeCodeTiers[k] = v
+			}
+		}
+		if c.AgentIntegrations.AutoSync != nil {
+			ai.AutoSync = make(map[string]bool, len(c.AgentIntegrations.AutoSync))
+			for k, v := range c.AgentIntegrations.AutoSync {
+				ai.AutoSync[k] = v
+			}
+		}
+		cp.AgentIntegrations = &ai
 	}
 	return &cp
 }
@@ -269,14 +306,7 @@ func Load() *Config {
 	if cfg.OAuthAccounts == nil {
 		cfg.OAuthAccounts = []*OAuthAccount{}
 	}
-	if cfg.AgentIntegrations == nil {
-		cfg.AgentIntegrations = &AgentIntegrationsConfig{
-			ClaudeCodeTiers: map[string]string{},
-		}
-	}
-	if cfg.AgentIntegrations.ClaudeCodeTiers == nil {
-		cfg.AgentIntegrations.ClaudeCodeTiers = map[string]string{}
-	}
+	cfg.EnsureAgentIntegrations()
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "ollama_cloud"
 	}

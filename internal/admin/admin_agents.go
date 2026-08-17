@@ -3,7 +3,6 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 
 	"ollama-proxy/internal/agents"
 	"ollama-proxy/internal/config"
@@ -35,12 +34,12 @@ func handleCodexDesktopSetup(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "failed to write catalog: "+err.Error(), 500)
 		return
 	}
-	proxyPort := os.Getenv("PRISM_PORT")
-	if proxyPort == "" {
-		proxyPort = "11434"
-	}
-	if err := agents.InstallCodexConfig(agents.ParseIntOr(proxyPort, 11434)); err != nil {
+	if err := agents.InstallCodexConfig(agents.ProxyPortFromEnv()); err != nil {
 		writeJSONError(w, "failed to install config: "+err.Error(), 500)
+		return
+	}
+	if err := agents.SetAgentAutoSync("codex", true); err != nil {
+		writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -54,6 +53,10 @@ func handleCodexDesktopRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := agents.RestoreCodexConfig(); err != nil {
 		writeJSONError(w, "failed to restore config: "+err.Error(), 500)
+		return
+	}
+	if err := agents.SetAgentAutoSync("codex", false); err != nil {
+		writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -157,6 +160,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
@@ -170,6 +177,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := agents.InstallFactoryDroidConfig(agents.ProxyPortFromEnv(), remap); err != nil {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -187,6 +198,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
@@ -200,6 +215,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := agents.InstallZcodeConfig(agents.ProxyPortFromEnv(), remap); err != nil {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -217,6 +236,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
@@ -230,6 +253,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := agents.InstallGrokBuildConfig(agents.ProxyPortFromEnv(), remap); err != nil {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -247,6 +274,10 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
@@ -262,13 +293,16 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to install config: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
 			"models": len(remap.KnownModels),
 		})
 	default:
-		// Phase 1 scaffold: per-agent setup for factory-droid/opencode lands in Phases 3-4.
 		writeJSONError(w, agents.AgentDisplayName(id)+" setup is not yet implemented", 501)
 	}
 }
@@ -289,11 +323,19 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "factory-droid":
 		if err := agents.RestoreFactoryDroidConfig(); err != nil {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -303,11 +345,19 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "zcode":
 		if err := agents.RestoreZcodeConfig(); err != nil {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -317,11 +367,19 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "grok-build":
 		if err := agents.RestoreGrokBuildConfig(); err != nil {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -331,6 +389,10 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "kimi-code":
@@ -338,10 +400,13 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	default:
-		// Phase 1 scaffold: per-agent restore for factory-droid/opencode lands in Phases 3-4.
 		writeJSONError(w, agents.AgentDisplayName(id)+" restore is not yet implemented", 501)
 	}
 }

@@ -26,6 +26,10 @@ var assets embed.FS
 
 func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	assets = adminAssets
+	if err := agents.InitializeAutoSync(); err != nil {
+		log.Printf("[Agents] Failed to initialize auto-sync: %v", err)
+	}
+	cfg = config.Load()
 	config.SetCurrent(cfg)
 	config.SetChangeHook(func(_ *config.Config) { desktop.ReloadConfigAndRestartProxy() })
 
@@ -354,6 +358,24 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Preserve API keys if not provided (empty string = don't overwrite)
 		cur := config.Current()
+		if cur != nil && cur.AgentIntegrations != nil {
+			// Older clients may omit the agent integration fields from a
+			// full-config PUT. Never let that round-trip erase the user's
+			// auto-sync choices or Claude Code tier mappings.
+			if newCfg.AgentIntegrations == nil {
+				newCfg.AgentIntegrations = cur.AgentIntegrations
+			} else {
+				if newCfg.AgentIntegrations.ClaudeCodeTiers == nil {
+					newCfg.AgentIntegrations.ClaudeCodeTiers = cur.AgentIntegrations.ClaudeCodeTiers
+				}
+				if newCfg.AgentIntegrations.AutoSync == nil {
+					newCfg.AgentIntegrations.AutoSync = cur.AgentIntegrations.AutoSync
+				}
+				if cur.AgentIntegrations.AutoSyncMigrated {
+					newCfg.AgentIntegrations.AutoSyncMigrated = true
+				}
+			}
+		}
 		if newCfg.OllamaCloud.APIKey == "" && cur.OllamaCloud.APIKey != "" {
 			newCfg.OllamaCloud.APIKey = cur.OllamaCloud.APIKey
 		}
@@ -422,6 +444,7 @@ func handleAdminModelRemap(w http.ResponseWriter, r *http.Request) {
 		reloadProxyModelRemap()
 		// Sync agent configs so newly added models appear in Claude Code,
 		// Factory Droid, and OpenCode
+		agents.SyncCodexDesktop(agents.ProxyPortFromEnv())
 		agents.SyncAgents(agents.ProxyPortFromEnv())
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

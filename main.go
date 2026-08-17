@@ -67,6 +67,9 @@ func runProxyServer() {
 		defer db.Close()
 	}
 
+	if err := agents.InitializeAutoSync(); err != nil {
+		log.Printf("[Agents] Failed to initialize auto-sync: %v", err)
+	}
 	cfg := config.Load()
 	proxyAPIKey := "prism"
 

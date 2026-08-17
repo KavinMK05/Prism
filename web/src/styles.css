@@ -84,11 +84,11 @@
   --chart-3: #22c55e;
   --chart-4: #f59e0b;
   --chart-5: #ef4444;
-  --sidebar: var(--surface);
+  --sidebar: #F7F7F7;
   --sidebar-foreground: var(--text);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--surface-hover);
+  --sidebar-accent: #EAEAEA;
   --sidebar-accent-foreground: var(--text);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);

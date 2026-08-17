@@ -156,7 +156,7 @@ export default function App() {
     <div className="flex h-screen overflow-hidden">
       <StarPrompt version={version} />
       {/* Sidebar */}
-      <aside className="w-[232px] shrink-0 flex flex-col px-4 py-5 border-r border-border bg-card h-screen">
+      <aside className="w-[232px] shrink-0 flex flex-col px-4 py-5 border-r border-border bg-sidebar h-screen">
         <div className="flex items-center gap-3 mb-5 px-2">
           <svg className="w-[25px] h-[25px] rounded-md object-contain" viewBox="0 0 798 736" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M565.195 550.137C568.091 549.659 586.876 562.744 590.434 565.046L633.369 592.759C676.193 620.313 720.34 648.418 762.749 676.486C717.407 681.048 670.566 686.871 625.256 692.112L432.227 714.192L299.113 729.279C282.408 731.226 260.565 732.885 244.251 735.537L226.67 728.348L82.6293 670.779L44.4276 655.539C38.3646 653.133 27.2451 649.067 21.9272 646.067C41.832 643.562 64.6882 639.129 84.6775 635.712L200.844 615.751C322.585 595.533 444.044 573.662 565.195 550.137Z" fill="currentColor"/>
@@ -177,7 +177,7 @@ export default function App() {
                   return (
                     <button
                       key={tab.id}
-                      className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
+                      className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${isActive ? 'bg-sidebar-accent text-accent-foreground' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-accent-foreground'}`}
                       onClick={() => setActiveTab(tab.id)}
                       aria-pressed={isActive}
                     >
