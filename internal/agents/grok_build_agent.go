@@ -104,16 +104,17 @@ func stripPrismModelSections(content string) string {
 func buildGrokBuildModelSections(remap *config.ModelRemapping, cfg *config.Config, baseURL string) string {
 	var b strings.Builder
 	for _, m := range remap.KnownModels {
-		key := "prism-" + sanitizeGrokModelKey(m.ID)
+		routeKey := prismModelRouteKey(m)
+		key := "prism-" + sanitizeGrokModelKey(routeKey)
 		apiBackend := "responses"
 		ctx := m.ContextLength
 		if ctx == 0 {
 			ctx = 128000
 		}
 		b.WriteString("[model." + key + "]\n")
-		b.WriteString("model = " + tomlQuote(m.ID) + "\n")
+		b.WriteString("model = " + tomlQuote(routeKey) + "\n")
 		b.WriteString("base_url = " + tomlQuote(baseURL) + "\n")
-		b.WriteString("name = " + tomlQuote(prismManagedTag+" "+HumanizeModelID(m.ID)) + "\n")
+		b.WriteString("name = " + tomlQuote(prismModelDisplayName(cfg, m)) + "\n")
 		b.WriteString("api_key = \"prism\"\n")
 		b.WriteString("api_backend = " + tomlQuote(apiBackend) + "\n")
 		b.WriteString(fmt.Sprintf("context_window = %d\n", ctx))
@@ -155,7 +156,7 @@ func InstallGrokBuildConfig(port int, remap *config.ModelRemapping) error {
 	block.WriteString("\n" + codexManagedBegin + "\n")
 	if !hasModelsSection(cleaned) {
 		block.WriteString("[models]\n")
-		block.WriteString("default = " + tomlQuote("prism-"+sanitizeGrokModelKey(remap.KnownModels[0].ID)) + "\n")
+		block.WriteString("default = " + tomlQuote("prism-"+sanitizeGrokModelKey(prismModelRouteKey(remap.KnownModels[0]))) + "\n")
 		block.WriteString("\n")
 	}
 	block.WriteString(buildGrokBuildModelSections(remap, cfg, baseURL))

@@ -92,9 +92,10 @@ func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, code
 		if m.Capabilities != nil && m.Capabilities.Vision {
 			input = []string{"text", "image"}
 		}
+		routeKey := prismModelRouteKey(m)
 		entry := map[string]interface{}{
-			"id":            m.ID,
-			"name":          prismManagedTag + " " + HumanizeModelID(m.ID),
+			"id":            routeKey,
+			"name":          prismModelDisplayName(cfg, m),
 			"input":         input,
 			"contextWindow": ctx,
 			"maxTokens":     out,

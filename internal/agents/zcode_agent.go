@@ -36,10 +36,12 @@ func buildZcodeModels(remap *config.ModelRemapping, cfg *config.Config) map[stri
 		if m.Capabilities != nil && m.Capabilities.Vision {
 			inputModalities = append(inputModalities, "image")
 		}
+		routeKey := prismModelRouteKey(m)
 		entry := map[string]interface{}{
 			// `name` is the model's API slug (used in requests), matching ZCode's
 			// own convention of storing the lowercased model id here.
-			"name": m.ID,
+			"name":        routeKey,
+			"displayName": prismModelDisplayName(cfg, m),
 			"limit": map[string]interface{}{
 				"context": ctx,
 				"output":  out,
@@ -60,7 +62,7 @@ func buildZcodeModels(remap *config.ModelRemapping, cfg *config.Config) map[stri
 				"defaultVariant": "high",
 			}
 		}
-		models[m.ID] = entry
+		models[routeKey] = entry
 	}
 	return models
 }

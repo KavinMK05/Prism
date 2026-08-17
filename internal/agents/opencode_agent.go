@@ -59,8 +59,9 @@ func buildOpencodeModelEntries(remap *config.ModelRemapping, cfg *config.Config,
 		if m.Capabilities != nil && m.Capabilities.Vision {
 			input = append(input, "image")
 		}
+		routeKey := prismModelRouteKey(m)
 		entry := map[string]interface{}{
-			"name": prismManagedTag + " " + HumanizeModelID(m.ID),
+			"name": prismModelDisplayName(cfg, m),
 			"limit": map[string]interface{}{
 				"context": ctx,
 				"output":  out,
@@ -81,7 +82,7 @@ func buildOpencodeModelEntries(remap *config.ModelRemapping, cfg *config.Config,
 			}
 			entry["variants"] = variants
 		}
-		models[m.ID] = entry
+		models[routeKey] = entry
 	}
 	return models
 }

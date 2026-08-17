@@ -196,31 +196,26 @@ export default function ProviderPanel() {
         </Drawer>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-6 mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold tracking-tight">Default Provider</h3>
-        </div>
-        <div className="flex flex-col gap-2">
-          {providers.map(p => (
-            <div key={p.id} className="flex items-center gap-3.5 px-4 py-3.5 bg-card border border-border rounded-md hover:border-border-strong hover:bg-accent transition-colors cursor-default">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-foreground">
-                  {p.name}
-                  {p.isCustom && <span className="ml-2 text-[10px] font-medium text-muted-foreground bg-muted border border-border rounded-full px-1.5 py-0.5">Custom</span>}
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">{p.url}</div>
+      <div className="flex flex-col gap-3 mb-4">
+        {providers.map(p => (
+          <div key={p.id} className="flex items-center gap-3.5 px-4 py-3.5 bg-card border border-border rounded-md hover:border-border-strong hover:bg-accent transition-colors cursor-default">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-foreground">
+                {p.name}
+                {p.isCustom && <span className="ml-2 text-[10px] font-medium text-muted-foreground bg-muted border border-border rounded-full px-1.5 py-0.5">Custom</span>}
               </div>
-              <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0 transition-colors" title="Edit provider" onClick={() => openEdit(p.id)}>
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-              </button>
-              {p.isCustom && (
-                <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0 transition-colors" title="Delete provider" onClick={() => { setPendingDeleteId(p.id); setPendingDeleteName(p.name); setShowDeleteModal(true); }}>
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              )}
+              <div className="text-xs text-muted-foreground mt-0.5">{p.url}</div>
             </div>
-          ))}
-        </div>
+            <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0 transition-colors" title="Edit provider" onClick={() => openEdit(p.id)}>
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+            </button>
+            {p.isCustom && (
+              <button className="w-6 h-6 rounded-sm border-none bg-transparent text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0 transition-colors" title="Delete provider" onClick={() => { setPendingDeleteId(p.id); setPendingDeleteName(p.name); setShowDeleteModal(true); }}>
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            )}
+          </div>
+        ))}
       </div>
 
       <Drawer open={editDrawerOpen} onOpenChange={(open) => { setEditDrawerOpen(open); if (!open) setEditingId(null); }} direction="right">

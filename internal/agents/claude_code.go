@@ -56,9 +56,9 @@ func isClaudeCodeActive() bool { return IsAgentActive("claude-code") }
 
 // claudeCodeTierModel returns the Prism model id for a tier, falling back to
 // the first available Prism model when the tier mapping is unset/empty.
-func claudeCodeTierModel(tiers map[string]string, key, fallback string) string {
+func claudeCodeTierModel(tiers map[string]string, key, fallback string, remap *config.ModelRemapping) string {
 	if v, ok := tiers[key]; ok && v != "" {
-		return v
+		return prismRouteForModelID(remap, v)
 	}
 	return fallback
 }
@@ -68,9 +68,9 @@ func claudeCodeTierModel(tiers map[string]string, key, fallback string) string {
 func firstPrismModelID() string {
 	remap := config.LoadModelRemapping()
 	if len(remap.KnownModels) > 0 {
-		return remap.KnownModels[0].ID
+		return prismModelRouteKey(remap.KnownModels[0])
 	}
-	return remap.DefaultModel
+	return prismRouteForModelID(remap, remap.DefaultModel)
 }
 
 // InstallClaudeCodeConfig writes the Prism-managed env keys into the user
@@ -108,10 +108,11 @@ func InstallClaudeCodeConfig(port int, tiers map[string]string) error {
 
 	env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:" + fmt.Sprintf("%d", port)
 	env["ANTHROPIC_AUTH_TOKEN"] = "prism"
-	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = claudeCodeTierModel(tiers, "opus", first)
-	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = claudeCodeTierModel(tiers, "sonnet", first)
-	env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = claudeCodeTierModel(tiers, "haiku", first)
-	env["CLAUDE_CODE_SUBAGENT_MODEL"] = claudeCodeTierModel(tiers, "subagent", first)
+	remap := config.LoadModelRemapping()
+	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = claudeCodeTierModel(tiers, "opus", first, remap)
+	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = claudeCodeTierModel(tiers, "sonnet", first, remap)
+	env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = claudeCodeTierModel(tiers, "haiku", first, remap)
+	env["CLAUDE_CODE_SUBAGENT_MODEL"] = claudeCodeTierModel(tiers, "subagent", first, remap)
 	cfg["env"] = env
 
 	if err := writeJSONConfig(path, cfg); err != nil {

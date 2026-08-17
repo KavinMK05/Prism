@@ -94,7 +94,7 @@ func handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	daily, _ := db.GetDailyTokens(fromUnix, toUnix, provider, model, client)
-	monthly, _ := db.GetMonthlyTokens(client)
+	monthly, _ := db.GetMonthlyTokens(fromUnix, toUnix, provider, model, client)
 	tpsHist, _ := db.GetTPSHistory(fromUnix, toUnix, provider, model, client)
 	byModel, _ := db.GetModelHistory(fromUnix, toUnix, provider, model, client)
 	byClient, _ := db.GetClientHistory(fromUnix, toUnix, provider, model, client)

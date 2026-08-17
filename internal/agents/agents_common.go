@@ -23,6 +23,30 @@ import (
 // TOML managed-block markers used by the Codex Desktop integration.
 const prismManagedTag = "[Prism]"
 
+// prismModelRouteKey is the identifier exposed to agents. It is intentionally
+// different from ModelEntry.ID: Prism resolves this qualified key locally and
+// sends only the raw ID to the selected upstream provider.
+func prismModelRouteKey(model config.ModelEntry) string {
+	return config.ModelRouteKey(model)
+}
+
+func prismModelDisplayName(cfg *config.Config, model config.ModelEntry) string {
+	provider := cfg.GetProviderName(model.Provider)
+	return prismManagedTag + " " + provider + " · " + HumanizeModelID(model.ID)
+}
+
+// prismRouteForModelID upgrades a legacy bare model setting to the qualified
+// key used by agent integrations. Unknown values are preserved for backwards
+// compatibility and will be handled by the proxy's normal fallback logic.
+func prismRouteForModelID(remap *config.ModelRemapping, id string) string {
+	for _, model := range remap.KnownModels {
+		if id == model.ID || id == prismModelRouteKey(model) {
+			return prismModelRouteKey(model)
+		}
+	}
+	return id
+}
+
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
 // separate endpoint and sync function, but shares the same auto-sync policy.

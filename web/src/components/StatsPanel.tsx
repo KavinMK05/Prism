@@ -10,12 +10,14 @@ import {
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 ChartJS.register(CategoryScale, LinearScale, BarController, LineController, BarElement, PointElement, LineElement, Filler, Tooltip);
 
 const CHART_COLORS = ['#8b5cf6', '#22c55e', '#f59e0b', '#ef4444', '#3b82f6', '#ec4899', '#14b8a6'];
 const MAX_LIVE_POINTS = 120;
+
+type ModelFilterOption = { model: string; provider: string };
 
 function formatNumber(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
@@ -60,7 +62,7 @@ const FilterBar = memo(function FilterBar({
   showCustomDate, filterFrom, setFilterFrom, filterTo, setFilterTo,
   refreshAll,
 }: {
-  filterOpts: { providers: { id: string; name: string }[]; models: string[]; clients: string[] };
+  filterOpts: { providers: { id: string; name: string }[]; models: ModelFilterOption[]; clients: string[] };
   timeRange: string;
   onTimeRangeChange: (val: string) => void;
   filterProvider: string;
@@ -76,6 +78,14 @@ const FilterBar = memo(function FilterBar({
   setFilterTo: (v: string) => void;
   refreshAll: () => void;
 }) {
+  const providerNames = new Map(filterOpts.providers.map(p => [p.id, p.name]));
+  const modelGroups: Record<string, ModelFilterOption[]> = {};
+  filterOpts.models.forEach((m) => {
+    const group = m.provider || '__unknown__';
+    if (!modelGroups[group]) modelGroups[group] = [];
+    modelGroups[group].push(m);
+  });
+
   return (
     <div className="flex flex-col gap-3 mb-5 items-center w-full">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
@@ -109,7 +119,12 @@ const FilterBar = memo(function FilterBar({
             <SelectTrigger className="w-full"><SelectValue placeholder="All Models" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="">All Models</SelectItem>
-              {filterOpts.models.map((m: string) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+              {Object.entries(modelGroups).map(([provider, models]) => (
+                <SelectGroup key={provider}>
+                  <SelectLabel>{provider === '__unknown__' ? 'Unknown Provider' : (providerNames.get(provider) || provider)}</SelectLabel>
+                  {models.map((m) => <SelectItem key={`${m.provider}/${m.model}`} value={m.model}>{m.model}</SelectItem>)}
+                </SelectGroup>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -155,6 +170,9 @@ export default function StatsPanel() {
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; date: string; input: number; output: number; total: number } | null>(null);
   const liveInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const historyInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const historyRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRequestCount = useRef<number | null>(null);
+  const loadHistoryRef = useRef<(() => void) | null>(null);
 
   const chartTheme = {
     grid: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -162,7 +180,18 @@ export default function StatsPanel() {
   };
 
   const refreshLive = useCallback(async () => {
-    try { const d = await api('/stats'); setLiveData(d); setTpsBuffer(prev => { const buf = [...prev, d.live_tokens_per_sec || 0]; if (buf.length > MAX_LIVE_POINTS) buf.shift(); return buf; }); }
+    try {
+      const d = await api('/stats');
+      const requestCount = Number(d.total_requests) || 0;
+      const requestCountChanged = lastRequestCount.current !== null && requestCount !== lastRequestCount.current;
+      lastRequestCount.current = requestCount;
+      setLiveData(d);
+      setTpsBuffer(prev => { const buf = [...prev, d.live_tokens_per_sec || 0]; if (buf.length > MAX_LIVE_POINTS) buf.shift(); return buf; });
+      if (requestCountChanged && loadHistoryRef.current) {
+        if (historyRefreshTimer.current) clearTimeout(historyRefreshTimer.current);
+        historyRefreshTimer.current = setTimeout(() => loadHistoryRef.current?.(), 250);
+      }
+    }
     catch { /* ignore */ }
   }, []);
 
@@ -172,6 +201,10 @@ export default function StatsPanel() {
       setHistory(await api('/stats/history?' + qs.toString()));
     } catch { /* ignore */ }
   }, [filterFrom, filterTo, filterProvider, filterModel, filterClient]);
+
+  useEffect(() => {
+    loadHistoryRef.current = loadHistory;
+  }, [loadHistory]);
 
   const loadFilterOpts = useCallback(async () => {
     try {
@@ -194,7 +227,11 @@ export default function StatsPanel() {
     loadFilterOpts();
     liveInterval.current = setInterval(refreshLive, 1000);
     historyInterval.current = setInterval(loadHistory, 10000);
-    return () => { if (liveInterval.current) clearInterval(liveInterval.current); if (historyInterval.current) clearInterval(historyInterval.current); };
+    return () => {
+      if (liveInterval.current) clearInterval(liveInterval.current);
+      if (historyInterval.current) clearInterval(historyInterval.current);
+      if (historyRefreshTimer.current) clearTimeout(historyRefreshTimer.current);
+    };
   }, [refreshLive, loadHistory, loadFilterOpts, filterFrom, filterTo]);
 
   const onTimeRangeChange = useCallback((val: string) => {

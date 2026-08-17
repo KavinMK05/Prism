@@ -93,19 +93,20 @@ func buildKimiCodeProviderSection(port int) string {
 // buildKimiCodeModelSections writes one [models."prism-<key>"] section per
 // known Prism model, each referencing the Prism provider. Capabilities (vision,
 // reasoning, tool use) are declared explicitly so Kimi exposes them.
-func buildKimiCodeModelSections(remap *config.ModelRemapping) string {
+func buildKimiCodeModelSections(remap *config.ModelRemapping, cfg *config.Config) string {
 	var b strings.Builder
 	for _, m := range remap.KnownModels {
-		key := "prism-" + sanitizeKimiModelKey(m.ID)
+		routeKey := prismModelRouteKey(m)
+		key := "prism-" + sanitizeKimiModelKey(routeKey)
 		ctx := m.ContextLength
 		if ctx == 0 {
 			ctx = 128000
 		}
 		b.WriteString("[models.\"" + key + "\"]\n")
 		b.WriteString("provider = " + tomlQuote(kimiCodeProviderID) + "\n")
-		b.WriteString("model = " + tomlQuote(m.ID) + "\n")
+		b.WriteString("model = " + tomlQuote(routeKey) + "\n")
 		b.WriteString(fmt.Sprintf("max_context_size = %d\n", ctx))
-		b.WriteString("display_name = " + tomlQuote(prismManagedTag+" "+HumanizeModelID(m.ID)) + "\n")
+		b.WriteString("display_name = " + tomlQuote(prismModelDisplayName(cfg, m)) + "\n")
 		if m.MaxOutputTokens > 0 {
 			b.WriteString(fmt.Sprintf("max_output_size = %d\n", m.MaxOutputTokens))
 		}
@@ -173,7 +174,7 @@ func InstallKimiCodeConfig(port int, remap *config.ModelRemapping) error {
 	var block strings.Builder
 	block.WriteString("\n" + codexManagedBegin + "\n")
 	block.WriteString(buildKimiCodeProviderSection(port))
-	block.WriteString(buildKimiCodeModelSections(remap))
+	block.WriteString(buildKimiCodeModelSections(remap, config.Load()))
 	block.WriteString(codexManagedEnd + "\n")
 
 	result := strings.TrimRight(cleaned, "\r\n") + "\n" + block.String()

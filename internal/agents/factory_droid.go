@@ -61,9 +61,10 @@ func buildFactoryDroidModels(remap *config.ModelRemapping, baseURL string, cfg *
 		if cfg.IsCodexProviderID(m.Provider) {
 			providerType = "openai"
 		}
+		routeKey := prismModelRouteKey(m)
 		entry := map[string]interface{}{
-			"model":           m.ID,
-			"displayName":     prismManagedTag + " " + HumanizeModelID(m.ID),
+			"model":           routeKey,
+			"displayName":     prismModelDisplayName(cfg, m),
 			"baseUrl":         baseURL,
 			"apiKey":          "prism",
 			"provider":        providerType,

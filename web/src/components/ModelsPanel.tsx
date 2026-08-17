@@ -19,6 +19,19 @@ function getProviderDisplayName(providerId: string, config: any): string {
   return providerId;
 }
 
+function getModelRouteKey(model: any, config: any): string {
+  const id = typeof model === 'string' ? model : model.id;
+  const provider = typeof model === 'string'
+    ? (config?.default_provider || 'ollama_cloud')
+    : (model.provider || config?.default_provider || 'ollama_cloud');
+  return `${provider}/${id}`;
+}
+
+function getModelDisplayName(model: any): string {
+  const id = typeof model === 'string' ? model : model.id;
+  return id;
+}
+
 function buildProviderOptions(config: any): { value: string; label: string }[] {
   const providers = [
     { value: 'ollama_cloud', label: 'Ollama Cloud' },
@@ -53,15 +66,22 @@ export default function ModelsPanel() {
 
   const buildModelOptions = () => {
     const models = knownModels;
-    const groups: Record<string, string[]> = {};
+    const groups: Record<string, { value: string; label: string }[]> = {};
     models.forEach(m => {
-      const id = typeof m === 'string' ? m : m.id;
       const prov = typeof m === 'string' ? (config?.default_provider || 'ollama_cloud') : (m.provider || config?.default_provider || 'ollama_cloud');
       const provName = getProviderDisplayName(prov, config);
       if (!groups[provName]) groups[provName] = [];
-      groups[provName].push(id);
+      groups[provName].push({ value: getModelRouteKey(m, config), label: getModelDisplayName(m) });
     });
     return groups;
+  };
+
+  const selectedModelValue = (value: string) => {
+    const match = knownModels.find(m => {
+      const id = typeof m === 'string' ? m : m.id;
+      return value === id || value === getModelRouteKey(m, config);
+    });
+    return match ? getModelRouteKey(match, config) : value;
   };
 
   const saveRemap = async (updated: any) => {
@@ -162,10 +182,11 @@ export default function ModelsPanel() {
   const addKnownModel = () => {
     if (!newModel.id.trim()) return;
     const models = [...knownModels];
-    if (models.find(m => (typeof m === 'string' ? m : m.id) === newModel.id.trim())) return;
+    const selectedProvider = newModel.provider || (config?.default_provider || 'ollama_cloud');
+    if (models.find(m => getModelRouteKey(m, config) === `${selectedProvider}/${newModel.id.trim()}`)) return;
     const effortArr = newModel.effort.trim() ? newModel.effort.split(',').map(s => s.trim()).filter(s => s) : [];
     models.push({
-      id: newModel.id.trim(), provider: newModel.provider || (config?.default_provider || 'ollama_cloud'),
+      id: newModel.id.trim(), provider: selectedProvider,
       reasoning: newModel.reasoning, context_length: parseInt(newModel.ctxLen) || 0, max_output_tokens: parseInt(newModel.maxOut) || 0,
       reasoning_effort: effortArr, capabilities: { tool_calling: newModel.toolCall, structured_outputs: newModel.struct, vision: newModel.vision },
     });
@@ -201,7 +222,7 @@ export default function ModelsPanel() {
       <div className="rounded-xl border border-border bg-card p-6 mb-4">
         <h3 className="text-sm font-semibold tracking-tight mb-1">Default Model</h3>
         <p className="text-[13px] text-muted-foreground mb-4">When an unknown model is requested, route to this model instead.</p>
-        <Select value={remap.default_model || ''} onValueChange={handleDefaultModelChange}>
+        <Select value={selectedModelValue(remap.default_model || '')} onValueChange={handleDefaultModelChange}>
           <SelectTrigger className="w-full">
             <SelectValue placeholder="Select a model..." />
           </SelectTrigger>
@@ -209,7 +230,7 @@ export default function ModelsPanel() {
             {Object.entries(modelGroups).map(([provName, ids]) => (
               <SelectGroup key={provName}>
                 <SelectLabel>{provName}</SelectLabel>
-                {ids.map(id => <SelectItem key={id} value={id}>{id}</SelectItem>)}
+                {ids.map(model => <SelectItem key={model.value} value={model.value}>{model.label}</SelectItem>)}
               </SelectGroup>
             ))}
           </SelectContent>
@@ -372,7 +393,7 @@ export default function ModelsPanel() {
                 {Object.entries(modelGroups).map(([provName, ids]) => (
                   <SelectGroup key={provName}>
                     <SelectLabel>{provName}</SelectLabel>
-                    {ids.map(id => <SelectItem key={id} value={id}>{id}</SelectItem>)}
+                    {ids.map(model => <SelectItem key={model.value} value={model.value}>{model.label}</SelectItem>)}
                   </SelectGroup>
                 ))}
               </SelectContent>

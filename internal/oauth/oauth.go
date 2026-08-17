@@ -358,6 +358,12 @@ func RemoveOAuthAccount(id string) error {
 		return err
 	}
 
+	remap := config.LoadModelRemapping()
+	if config.RemoveModelsForProviders(remap, map[string]struct{}{id: {}}) {
+		if err := config.SaveModelRemapping(remap); err != nil {
+			return err
+		}
+	}
 	config.SetCurrent(config.Load())
 	return nil
 }

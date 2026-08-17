@@ -246,17 +246,26 @@ type MonthlyTokens struct {
 	Total  int64  `json:"total"`
 }
 
-// GetMonthlyTokens returns per-month token totals, optionally filtered by client.
-func GetMonthlyTokens(client string) ([]MonthlyTokens, error) {
+// GetMonthlyTokens returns per-month token totals, optionally filtered.
+func GetMonthlyTokens(from, to int64, provider, model, client string) ([]MonthlyTokens, error) {
 	if db == nil {
 		return nil, nil
 	}
 	q := `SELECT strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') as month,
 		       SUM(input_tokens), SUM(output_tokens)
-		FROM requests`
-	args := []interface{}{}
+		FROM requests
+		WHERE timestamp >= ? AND timestamp <= ?`
+	args := []interface{}{from, to}
+	if provider != "" {
+		q += " AND provider = ?"
+		args = append(args, provider)
+	}
+	if model != "" {
+		q += " AND model = ?"
+		args = append(args, model)
+	}
 	if client != "" {
-		q += " WHERE COALESCE(NULLIF(client, ''), 'Unknown') = ?"
+		q += " AND COALESCE(NULLIF(client, ''), 'Unknown') = ?"
 		args = append(args, client)
 	}
 	q += " GROUP BY month ORDER BY month"
@@ -392,20 +401,25 @@ func ClearAllStats() error {
 	return nil
 }
 
-// GetDistinctModels returns all distinct model names seen in requests.
-func GetDistinctModels() ([]string, error) {
+type ModelFilterOption struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+}
+
+// GetDistinctModels returns all distinct model/provider pairs seen in requests.
+func GetDistinctModels() ([]ModelFilterOption, error) {
 	if db == nil {
 		return nil, nil
 	}
-	rows, err := db.Query(`SELECT DISTINCT model FROM requests ORDER BY model`)
+	rows, err := db.Query(`SELECT DISTINCT model, provider FROM requests ORDER BY provider, model`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []string
+	var result []ModelFilterOption
 	for rows.Next() {
-		var m string
-		if err := rows.Scan(&m); err != nil {
+		var m ModelFilterOption
+		if err := rows.Scan(&m.Model, &m.Provider); err != nil {
 			continue
 		}
 		result = append(result, m)

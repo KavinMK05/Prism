@@ -63,12 +63,14 @@ func generateCodexCatalog(remap *config.ModelRemapping) []map[string]interface{}
 	}
 
 	entries := make([]map[string]interface{}, 0, len(remap.KnownModels))
+	cfg := config.Load()
 
 	for i, m := range remap.KnownModels {
+		routeKey := prismModelRouteKey(m)
 		entry := map[string]interface{}{
-			"slug":         m.ID,
-			"display_name": HumanizeModelID(m.ID),
-			"description":  HumanizeModelID(m.ID) + " via Prism.",
+			"slug":         routeKey,
+			"display_name": prismModelDisplayName(cfg, m),
+			"description":  prismModelDisplayName(cfg, m) + " via Prism.",
 			"visibility":   "list",
 			"priority":     maxInt(1, 1000-i),
 		}
@@ -151,7 +153,7 @@ func generateCodexCatalog(remap *config.ModelRemapping) []map[string]interface{}
 		entry["model_messages"] = map[string]interface{}{
 			"instructions_template": "You are Codex running on {model_name} through Prism, a local proxy. Be a helpful, direct coding collaborator.",
 			"instructions_variables": map[string]interface{}{
-				"model_name": HumanizeModelID(m.ID),
+				"model_name": prismModelDisplayName(cfg, m),
 			},
 		}
 
@@ -209,7 +211,7 @@ func InstallCodexConfig(port int) error {
 	remap := config.LoadModelRemapping()
 	defaultSlug := ""
 	if len(remap.KnownModels) > 0 {
-		defaultSlug = remap.KnownModels[0].ID
+		defaultSlug = prismModelRouteKey(remap.KnownModels[0])
 	}
 	if defaultSlug == "" && remap.DefaultModel != "" {
 		defaultSlug = remap.DefaultModel

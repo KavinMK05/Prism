@@ -176,10 +176,85 @@ type ModelEntry struct {
 	Capabilities    *ModelCapabilities `json:"capabilities,omitempty"`
 }
 
+// ModelRouteKey returns the provider-qualified model identifier used by
+// integrations that need to distinguish identical upstream model IDs.
+// ModelEntry.ID remains the raw model ID sent to the upstream provider.
+func ModelRouteKey(entry ModelEntry) string {
+	if entry.Provider == "" {
+		return entry.ID
+	}
+	return entry.Provider + "/" + entry.ID
+}
+
 type ModelRemapping struct {
 	DefaultModel string            `json:"default_model"`
 	KnownModels  []ModelEntry      `json:"known_models"`
 	Aliases      map[string]string `json:"aliases"`
+}
+
+// RemoveModelsForProviders removes known models assigned to any of the given
+// providers and aliases that point at those models. It also clears the
+// default model when it points at a removed model.
+func RemoveModelsForProviders(remap *ModelRemapping, providerIDs map[string]struct{}) bool {
+	if remap == nil || len(providerIDs) == 0 {
+		return false
+	}
+
+	removedModels := make(map[string]struct{})
+	removedRoutes := make(map[string]struct{})
+	keptModels := make([]ModelEntry, 0, len(remap.KnownModels))
+	changed := false
+	for _, model := range remap.KnownModels {
+		if _, removed := providerIDs[model.Provider]; removed {
+			removedModels[model.ID] = struct{}{}
+			removedRoutes[ModelRouteKey(model)] = struct{}{}
+			changed = true
+			continue
+		}
+		keptModels = append(keptModels, model)
+	}
+	if !changed {
+		return false
+	}
+	remap.KnownModels = keptModels
+
+	availableModels := make(map[string]struct{}, len(keptModels))
+	for _, model := range keptModels {
+		availableModels[model.ID] = struct{}{}
+	}
+	if modelTargetMatchesRemoved(remap.DefaultModel, removedModels, removedRoutes, availableModels) {
+		remap.DefaultModel = ""
+	}
+	for alias, target := range remap.Aliases {
+		if modelTargetMatchesRemoved(target, removedModels, removedRoutes, availableModels) {
+			delete(remap.Aliases, alias)
+		}
+	}
+	return true
+}
+
+func modelTargetMatchesRemoved(target string, removedModels, removedRoutes, availableModels map[string]struct{}) bool {
+	if _, removed := removedRoutes[target]; removed {
+		return true
+	}
+	for route := range removedRoutes {
+		if strings.HasPrefix(target, route+":") || strings.HasPrefix(target, route+"[") {
+			return true
+		}
+	}
+	if _, removed := removedModels[target]; removed {
+		_, stillAvailable := availableModels[target]
+		return !stillAvailable
+	}
+	for modelID := range removedModels {
+		if _, stillAvailable := availableModels[modelID]; stillAvailable {
+			continue
+		}
+		if strings.HasPrefix(target, modelID+":") || strings.HasPrefix(target, modelID+"[") {
+			return true
+		}
+	}
+	return false
 }
 
 // ProviderInfo holds resolved provider details for routing requests
@@ -432,11 +507,12 @@ func (c *Config) IsCodexProviderID(providerID string) bool {
 func ResolveModel(remap *ModelRemapping, requestedModel string) (string, string) {
 	// 1. Check aliases
 	if target, ok := remap.Aliases[requestedModel]; ok {
-		// Look up the target model in known_models to find its provider
+		// Prefer a provider-qualified target, then preserve the legacy
+		// first-match behavior for bare targets.
 		for _, entry := range remap.KnownModels {
-			if entry.ID == target {
+			if entryMatchesTarget(entry, target) {
 				logModelRemap(requestedModel, target+" (via alias, provider: "+entry.Provider+")", "alias")
-				return target, entry.Provider
+				return routeResolvedModel(entry, target), entry.Provider
 			}
 		}
 		// Target not in known_models, fall back to default provider
@@ -444,19 +520,28 @@ func ResolveModel(remap *ModelRemapping, requestedModel string) (string, string)
 		return target, remap.DefaultProvider()
 	}
 
-	// 2. Check known_models (exact + prefix match)
+	// 2. Check provider-qualified known model keys first. This allows agents
+	// to select a specific provider while keeping the upstream model ID raw.
+	for _, entry := range remap.KnownModels {
+		if entryMatchesRoute(entry, requestedModel) {
+			return routeResolvedModel(entry, requestedModel), entry.Provider
+		}
+	}
+
+	// 3. Check bare known_models (exact + prefix match). This intentionally
+	// keeps the historical first-entry-wins behavior for direct clients.
 	for _, entry := range remap.KnownModels {
 		if requestedModel == entry.ID || strings.HasPrefix(requestedModel, entry.ID+":") || strings.HasPrefix(requestedModel, entry.ID+"[") {
 			return requestedModel, entry.Provider
 		}
 	}
 
-	// 3. Fall back to default_model → look up in known_models
+	// 4. Fall back to default_model → look up in known_models
 	if remap.DefaultModel != "" {
 		for _, entry := range remap.KnownModels {
-			if entry.ID == remap.DefaultModel {
+			if entryMatchesTarget(entry, remap.DefaultModel) {
 				logModelRemap(requestedModel, remap.DefaultModel+" (default, provider: "+entry.Provider+")", "default")
-				return remap.DefaultModel, entry.Provider
+				return routeResolvedModel(entry, remap.DefaultModel), entry.Provider
 			}
 		}
 		// Default model not in known_models, use default provider
@@ -464,8 +549,31 @@ func ResolveModel(remap *ModelRemapping, requestedModel string) (string, string)
 		return remap.DefaultModel, ""
 	}
 
-	// 4. Last resort: return original model with empty provider (will use DefaultProvider)
+	// 5. Last resort: return original model with empty provider (will use DefaultProvider)
 	return requestedModel, ""
+}
+
+// entryMatchesRoute matches an exact provider/model key or a qualified model
+// variant such as provider/model:cloud or provider/model[variant].
+func entryMatchesRoute(entry ModelEntry, requested string) bool {
+	key := ModelRouteKey(entry)
+	return requested == key ||
+		strings.HasPrefix(requested, key+":") ||
+		strings.HasPrefix(requested, key+"[")
+}
+
+func entryMatchesTarget(entry ModelEntry, requested string) bool {
+	return entryMatchesRoute(entry, requested) || requested == entry.ID
+}
+
+// routeResolvedModel removes the provider prefix from a qualified request,
+// preserving any model suffix supplied by the caller.
+func routeResolvedModel(entry ModelEntry, requested string) string {
+	key := ModelRouteKey(entry)
+	if requested == key || requested == entry.ID {
+		return entry.ID
+	}
+	return strings.TrimPrefix(requested, entry.Provider+"/")
 }
 
 // DefaultProvider returns the default provider ID from the config

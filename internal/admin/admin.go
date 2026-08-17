@@ -394,9 +394,16 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		removedProviders := removedProviderIDs(cur, &newCfg)
 		if err := config.Save(&newCfg); err != nil {
 			http.Error(w, "save failed: "+err.Error(), 500)
 			return
+		}
+		if len(removedProviders) > 0 {
+			if err := removeProviderModels(removedProviders); err != nil {
+				http.Error(w, "provider saved but model cleanup failed: "+err.Error(), 500)
+				return
+			}
 		}
 		// Swap the live config; the change hook restarts the proxy (if running).
 		config.SetCurrent(&newCfg)
@@ -406,6 +413,54 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func removedProviderIDs(oldCfg, newCfg *config.Config) map[string]struct{} {
+	if oldCfg == nil || newCfg == nil {
+		return nil
+	}
+	current := make(map[string]struct{}, len(newCfg.CustomProviders)+len(newCfg.OAuthAccounts))
+	for _, p := range newCfg.CustomProviders {
+		if p != nil {
+			current[p.ID] = struct{}{}
+		}
+	}
+	for _, a := range newCfg.OAuthAccounts {
+		if a != nil {
+			current[a.ID] = struct{}{}
+		}
+	}
+
+	removed := make(map[string]struct{})
+	for _, p := range oldCfg.CustomProviders {
+		if p != nil {
+			if _, exists := current[p.ID]; !exists {
+				removed[p.ID] = struct{}{}
+			}
+		}
+	}
+	for _, a := range oldCfg.OAuthAccounts {
+		if a != nil {
+			if _, exists := current[a.ID]; !exists {
+				removed[a.ID] = struct{}{}
+			}
+		}
+	}
+	return removed
+}
+
+func removeProviderModels(providerIDs map[string]struct{}) error {
+	remap := config.LoadModelRemapping()
+	if !config.RemoveModelsForProviders(remap, providerIDs) {
+		return nil
+	}
+	if err := config.SaveModelRemapping(remap); err != nil {
+		return err
+	}
+	reloadProxyModelRemap()
+	agents.SyncCodexDesktop(agents.ProxyPortFromEnv())
+	agents.SyncAgents(agents.ProxyPortFromEnv())
+	return nil
 }
 
 func handleAdminModelRemap(w http.ResponseWriter, r *http.Request) {

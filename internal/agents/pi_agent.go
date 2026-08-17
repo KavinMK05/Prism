@@ -103,10 +103,11 @@ func buildPiModelEntries(remap *config.ModelRemapping, cfg *config.Config, codex
 		if m.Capabilities != nil && m.Capabilities.Vision {
 			input = []string{"text", "image"}
 		}
+		routeKey := prismModelRouteKey(m)
 
 		entry := map[string]interface{}{
-			"id":            m.ID,
-			"name":          prismManagedTag + " " + HumanizeModelID(m.ID),
+			"id":            routeKey,
+			"name":          prismModelDisplayName(cfg, m),
 			"input":         input,
 			"contextWindow": ctx,
 			"maxTokens":     out,
@@ -229,7 +230,7 @@ func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 
 	// Set defaultModel to the first known model
 	if len(remap.KnownModels) > 0 {
-		settings["defaultModel"] = remap.KnownModels[0].ID
+		settings["defaultModel"] = prismModelRouteKey(remap.KnownModels[0])
 	}
 
 	if err := writeJSONConfig(settingsPath, settings); err != nil {
