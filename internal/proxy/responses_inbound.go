@@ -3,7 +3,6 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -121,7 +120,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 
@@ -183,7 +182,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *h
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 

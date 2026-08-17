@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -384,7 +385,7 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteAnthropicUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 
@@ -435,6 +436,7 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 	// returns resp.Body unchanged when the capture is nil.
 	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	streamErrored := false
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -446,6 +448,12 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 		if err := json.Unmarshal(line, &chunk); err != nil {
 			log.Printf("[WARN] Failed to parse Ollama chunk: %v", err)
 			continue
+		}
+		if chunk.Error != "" {
+			upstreamErr := parseUpstreamResponseError(http.StatusBadGateway, []byte(`{"error":`+strconv.Quote(chunk.Error)+`}`))
+			state.sendStreamError(upstreamErr.errType, formatUpstreamErrorMessage(upstreamErr))
+			streamErrored = true
+			break
 		}
 
 		if chunk.PromptEvalCount > 0 {
@@ -572,7 +580,6 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	streamErrored := false
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream read error: %v", err)
 		state.sendStreamError("api_error", "Stream read error: "+err.Error())

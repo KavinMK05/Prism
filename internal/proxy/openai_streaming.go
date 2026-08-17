@@ -71,7 +71,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteAnthropicUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 
@@ -105,6 +105,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 	scanner := bufio.NewScanner(dbg.teeBody(resp.Body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	streamErrored := false
 
 	prevChunkHasThinking := false
 	// Track the active tool call by its stable provider identity. Some
@@ -139,6 +140,12 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Printf("[WARN] Failed to parse OpenAI chunk: %v", err)
 			continue
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			upstreamErr := parseUpstreamResponseError(http.StatusBadGateway, chunk.Error)
+			state.sendStreamError(upstreamErr.errType, formatUpstreamErrorMessage(upstreamErr))
+			streamErrored = true
+			break
 		}
 
 		// Capture usage first: with stream_options.include_usage=true the
@@ -323,7 +330,6 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	streamErrored := false
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream read error: %v", err)
 		state.sendStreamError("api_error", "Stream read error: "+err.Error())

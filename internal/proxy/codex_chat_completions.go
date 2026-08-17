@@ -198,7 +198,7 @@ func (pr *ProviderRouter) handleCodexChatCompletions(w http.ResponseWriter, r *h
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Codex upstream error: %s", string(respBody))
-		WriteOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Codex upstream returned status %d: %s", resp.StatusCode, string(respBody)))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 

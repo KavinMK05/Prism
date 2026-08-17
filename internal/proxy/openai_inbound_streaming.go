@@ -193,7 +193,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		writeStreamingOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode), openAIReq.Model)
+		writeStreamingOpenAIUpstreamError(w, resp.StatusCode, respBody, openAIReq.Model)
 		return
 	}
 
@@ -447,7 +447,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		writeStreamingOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode), openAIReq.Model)
+		writeStreamingOpenAIUpstreamError(w, resp.StatusCode, respBody, openAIReq.Model)
 		return
 	}
 
@@ -476,6 +476,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	streamErrored := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -484,6 +485,13 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 		// OpenAI chat completion chunk fields and tool call metadata.
 		if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
 			data := strings.TrimPrefix(line, "data: ")
+			var upstreamChunk OpenAIStreamChunk
+			if json.Unmarshal([]byte(data), &upstreamChunk) == nil &&
+				len(upstreamChunk.Error) > 0 && string(upstreamChunk.Error) != "null" {
+				writeStreamingOpenAIUpstreamError(w, http.StatusBadGateway, upstreamChunk.Error, openAIReq.Model)
+				streamErrored = true
+				break
+			}
 
 			var chunkMap map[string]interface{}
 			if json.Unmarshal([]byte(data), &chunkMap) == nil {
@@ -635,6 +643,9 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Stream passthrough read error: %v", err)
 	}
+	if streamErrored {
+		return
+	}
 }
 
 func writeOpenAISSE(w io.Writer, flusher http.Flusher, canFlush bool, chunk OpenAIStreamChunk) {
@@ -655,6 +666,10 @@ func writeOpenAISSE(w io.Writer, flusher http.Flusher, canFlush bool, chunk Open
 // Wrapping the error in an SSE chunk with an `id` field lets those clients
 // parse the response and detect the error via the `error` field.
 func writeStreamingOpenAIError(w http.ResponseWriter, statusCode int, errType string, message string, model string) {
+	writeStreamingOpenAIErrorWithCode(w, statusCode, errType, message, statusCode, model)
+}
+
+func writeStreamingOpenAIErrorWithCode(w http.ResponseWriter, statusCode int, errType string, message string, code interface{}, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -670,7 +685,7 @@ func writeStreamingOpenAIError(w http.ResponseWriter, statusCode int, errType st
 		"error": map[string]interface{}{
 			"message": message,
 			"type":    errType,
-			"code":    statusCode,
+			"code":    code,
 		},
 	}
 	dataJSON, _ := json.Marshal(errorChunk)

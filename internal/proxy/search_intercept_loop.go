@@ -133,7 +133,7 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 		resp, err := pr.upstreamChat(ollamaReq, rp)
 		if err != nil {
 			log.Printf("[search] pattern A upstream error: %v", err)
-			WriteAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
+			WriteAnthropicUpstreamFailure(w, 502, err)
 			return true
 		}
 		totalOutputTokens += resp.EvalCount
@@ -250,7 +250,7 @@ func (pr *ProviderRouter) upstreamChat(ollamaReq *OllamaChatRequest, rp *config.
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, parseUpstreamResponseError(resp.StatusCode, b)
 	}
 	var out OllamaChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

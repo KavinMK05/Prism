@@ -108,7 +108,7 @@ func (pr *ProviderRouter) handleOpenAIInboundToOllama(w http.ResponseWriter, r *
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 
@@ -162,7 +162,7 @@ func (pr *ProviderRouter) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteOpenAIError(w, resp.StatusCode, "server_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 

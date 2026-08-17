@@ -198,7 +198,7 @@ func (pr *ProviderRouter) upstreamResponsesChat(respReq *ResponsesAPIRequest, rp
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, string(b))
+			return nil, parseUpstreamResponseError(resp.StatusCode, b)
 		}
 		var oai OpenAIChatResponse
 		if err := json.NewDecoder(resp.Body).Decode(&oai); err != nil {
@@ -338,7 +338,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		turn, err := pr.upstreamResponsesChat(respReq, rp)
 		if err != nil {
 			log.Printf("[search] responses pattern A upstream error: %v", err)
-			WriteOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
+			WriteOpenAIUpstreamFailure(w, 502, err)
 			return true
 		}
 		if turn.inputTokens > 0 {

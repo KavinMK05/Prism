@@ -1,5 +1,7 @@
 package proxy
 
+import "encoding/json"
+
 type AnthropicRequest struct {
 	Model         string             `json:"model"`
 	MaxTokens     int                `json:"max_tokens"`
@@ -166,6 +168,7 @@ type OllamaChatResponse struct {
 	Model           string        `json:"model"`
 	CreatedAt       string        `json:"created_at"`
 	Message         OllamaMessage `json:"message"`
+	Error           string        `json:"error,omitempty"`
 	Done            bool          `json:"done"`
 	DoneReason      string        `json:"done_reason,omitempty"`
 	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
@@ -264,6 +267,7 @@ type OpenAIStreamChunk struct {
 	Model   string               `json:"model"`
 	Choices []OpenAIStreamChoice `json:"choices"`
 	Usage   *OpenAIStreamUsage   `json:"usage,omitempty"`
+	Error   json.RawMessage      `json:"error,omitempty"`
 }
 
 type OpenAIStreamUsage struct {
@@ -293,7 +297,8 @@ type OpenAIErrorResponse struct {
 }
 
 type OpenAIErrorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    int    `json:"code"`
+	Message string      `json:"message"`
+	Type    string      `json:"type"`
+	Code    interface{} `json:"code"`
+	Param   string      `json:"param,omitempty"`
 }

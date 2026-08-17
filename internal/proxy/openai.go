@@ -615,7 +615,7 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteAnthropicUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 

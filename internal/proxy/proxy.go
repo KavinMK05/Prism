@@ -412,7 +412,7 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[ERR] Upstream error response: %s", string(respBody))
-		WriteAnthropicError(w, resp.StatusCode, "api_error", fmt.Sprintf("Upstream returned status %d", resp.StatusCode))
+		WriteAnthropicUpstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 
