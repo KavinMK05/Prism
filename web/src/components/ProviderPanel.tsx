@@ -6,12 +6,6 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer';
 
-function maskKey(k: string): string {
-  if (!k) return '(not set)';
-  if (k.length <= 8) return '****';
-  return k.slice(0, 4) + '\u2026' + k.slice(-4);
-}
-
 function normalizeURL(url: string): string {
   url = url.trim();
   if (!url) return url;
@@ -29,7 +23,6 @@ export default function ProviderPanel() {
   const [addName, setAddName] = useState('');
   const [addBaseURL, setAddBaseURL] = useState('');
   const [addAPIKey, setAddAPIKey] = useState('');
-  const [newAPIKey, setNewAPIKey] = useState('');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingDeleteName, setPendingDeleteName] = useState('');
@@ -55,11 +48,6 @@ export default function ProviderPanel() {
     if (id === 'opencode_go') return config.opencode_go;
     return (config.custom_providers || []).find((p: any) => p.id === id) || null;
   };
-
-  const activeProvider = config.default_provider;
-  const oauthAcct = (config.oauth_accounts || []).find((a: any) => a.id === activeProvider);
-  const activeProvObj = getProviderById(activeProvider);
-  const providerName = activeProvObj?.name || activeProvider;
 
   const openEdit = (id: string) => {
     const provider = getProviderById(id);
@@ -130,28 +118,6 @@ export default function ProviderPanel() {
       await loadConfig();
     }
     setPendingDeleteId(null);
-  };
-
-  const saveAPIKey = async () => {
-    if (!newAPIKey.trim()) { toast.add({ title: 'Please enter a key', type: 'error' }); return; }
-    const cfg = { ...config };
-    const p = cfg.default_provider;
-    if (p === 'ollama_cloud') cfg.ollama_cloud.api_key = newAPIKey.trim();
-    else if (p === 'opencode_go') cfg.opencode_go.api_key = newAPIKey.trim();
-    else {
-      const custom = (cfg.custom_providers || []).find((pr: any) => pr.id === p);
-      if (custom) custom.api_key = newAPIKey.trim();
-      else { toast.add({ title: 'Unknown provider', type: 'error' }); return; }
-    }
-    try {
-      await apiPut('/config', cfg);
-      setNewAPIKey('');
-      toast.add({ title: 'API key updated', type: 'success' });
-      await loadConfig();
-    } catch (e) {
-      toast.add({ title: 'Failed to update key: ' + (e as Error).message, type: 'error' });
-      await loadConfig();
-    }
   };
 
   const isBuiltInEditing = editingId === 'ollama_cloud' || editingId === 'opencode_go';
@@ -255,25 +221,6 @@ export default function ProviderPanel() {
           </DrawerFooter>
         </DrawerContent>
       </Drawer>
-
-      {!oauthAcct && (
-        <div className="rounded-xl border border-border bg-card p-6 mb-4">
-          <h3 className="text-sm font-semibold tracking-tight mb-4">API Key — {providerName}</h3>
-          <div className="mb-5 last:mb-0">
-            <Label>Current Key</Label>
-            <div className="font-mono text-[13px] bg-muted px-3 py-2.5 rounded-md border border-border text-muted-foreground mt-1.5 break-all">{maskKey(activeProvObj?.api_key || '')}</div>
-          </div>
-          <div className="mb-5 last:mb-0">
-            <Label>Set New Key</Label>
-            <div className="flex gap-2 items-center mt-1.5">
-              <Input type="password" placeholder="Enter new API key" value={newAPIKey} onChange={e => setNewAPIKey(e.target.value)} />
-            </div>
-          </div>
-          <div className="flex gap-2.5 mt-5 flex-wrap">
-            <Button onClick={saveAPIKey}>Update Key</Button>
-          </div>
-        </div>
-      )}
 
       {showDeleteModal && (
         <div className="fixed inset-0 bg-black/35 z-[10000] flex items-center justify-center opacity-100 pointer-events-auto" onClick={() => setShowDeleteModal(false)}>

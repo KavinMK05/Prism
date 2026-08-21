@@ -21,7 +21,9 @@ export default function SearXNGPanel() {
   const [status, setStatus] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
   const [settingsError, setSettingsError] = useState('');
+  const [updateInfo, setUpdateInfo] = useState<any>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPhaseRef = useRef<string>('');
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api('/searxng/status')); } catch { /* ignore */ }
@@ -32,12 +34,32 @@ export default function SearXNGPanel() {
     catch { setSettingsError('Install SearXNG first to edit settings.'); }
   }, []);
 
+  const refreshUpdate = useCallback(async () => {
+    try { setUpdateInfo(await api('/searxng/update')); }
+    catch { setUpdateInfo(null); }
+  }, []);
+
   useEffect(() => {
     refreshStatus();
     loadSettings();
     intervalRef.current = setInterval(refreshStatus, 2000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [refreshStatus, loadSettings]);
+
+  // Check for upstream updates once installed; re-check after an update run
+  // finishes (install phase returns to idle) so the indicator clears itself.
+  const running = status?.running;
+  const installPhase = status?.install?.phase;
+  const busy = !!installPhase && !['idle', 'running', 'error'].includes(installPhase);
+  useEffect(() => { if (status?.installed) refreshUpdate(); }, [status?.installed, refreshUpdate]);
+  useEffect(() => {
+    const prev = lastPhaseRef.current;
+    lastPhaseRef.current = installPhase;
+    if (['downloading-searxng', 'extracting-searxng', 'installing-searxng'].includes(prev) && installPhase === 'idle') {
+      refreshUpdate();
+      if (prev !== 'installing-searxng') loadSettings(); // fresh install: settings file now exists
+    }
+  }, [installPhase, refreshUpdate, loadSettings]);
 
   const handleStart = async () => {
     try { await apiPost('/searxng/start'); toast.add({ title: 'SearXNG installing/starting\u2026' }); }
@@ -49,6 +71,34 @@ export default function SearXNGPanel() {
   };
   const handleRestart = async () => {
     try { await apiPost('/searxng/restart'); toast.add({ title: 'SearXNG restarting\u2026' }); setTimeout(refreshStatus, 2000); }
+    catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); }
+  };
+
+  const handleUpdate = async () => {
+    try {
+      await apiPost('/searxng/update');
+      toast.add({ title: 'Updating SearXNG to the latest build\u2026' });
+      // The update runs server-side and can finish between two ticks of the
+      // 2s status interval, so the phase-transition effect below can miss it
+      // entirely. Poll tightly until the busy phase ends, then re-check the
+      // update indicator so the banner clears itself.
+      const started = Date.now();
+      const timer = setInterval(async () => {
+        try {
+          const s = await api('/searxng/status');
+          setStatus(s);
+          const ph = s?.install?.phase;
+          const busyNow = !!ph && !['idle', 'running', 'error'].includes(ph);
+          // Grace period: the endpoint returns before the server-side
+          // goroutine enters the first busy phase.
+          if (!busyNow && Date.now() - started > 3000) {
+            clearInterval(timer);
+            refreshUpdate();
+          }
+        } catch { /* ignore transient errors */ }
+      }, 700);
+      setTimeout(refreshStatus, 1000);
+    }
     catch (e) { toast.add({ title: 'Failed: ' + (e as Error).message, type: 'error' }); }
   };
 
@@ -86,8 +136,6 @@ export default function SearXNGPanel() {
   };
 
   const update = (key: string, val: any) => setSettings((prev: any) => ({ ...prev, [key]: val }));
-  const running = status?.running;
-  const installPhase = status?.install?.phase;
   const installMsg = installPhase && PHASE_LABELS[installPhase] ? PHASE_LABELS[installPhase] + '\u2026' + (status.install.progress > 0 ? ' ' + status.install.progress + '%' : '') :
     installPhase === 'error' ? 'Error: ' + (status.install.error || '') : '';
   const searxUrl = 'http://127.0.0.1:' + (status?.port || 8888) + '/';
@@ -108,7 +156,16 @@ export default function SearXNGPanel() {
           <Button disabled={running} onClick={handleStart}>Start</Button>
           <Button variant="destructive" disabled={!running} onClick={handleStop}>Stop</Button>
           <Button variant="outline" disabled={!running} onClick={handleRestart}>Restart</Button>
+          {updateInfo?.update_available && (
+            <Button variant="outline" disabled={busy || updateInfo.in_progress} onClick={handleUpdate}>Update SearXNG</Button>
+          )}
         </div>
+        {updateInfo?.update_available && !busy && (
+          <div className="flex items-center gap-2 text-[13px] text-amber-600 dark:text-amber-400 my-2.5">
+            <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+            A newer SearXNG build is available upstream. Updating re-downloads the source and reinstalls dependencies; SearXNG is restarted automatically if it was running.
+          </div>
+        )}
         <p className={`text-[13px] text-muted-foreground my-2.5 min-h-[18px] ${installPhase === 'error' ? 'text-destructive' : ''}`}>{installMsg}</p>
         <div className="flex items-center justify-between gap-3 mt-4">
           <div>

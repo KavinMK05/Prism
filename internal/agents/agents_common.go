@@ -50,7 +50,7 @@ func prismRouteForModelID(remap *config.ModelRemapping, id string) string {
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
 // separate endpoint and sync function, but shares the same auto-sync policy.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "omp", "grok-build", "pi", "kimi-code"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code"}
 
 var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
@@ -70,6 +70,10 @@ func agentConfigPath(agentID string) string {
 		return filepath.Join(home, ".config", "opencode", "opencode.json")
 	case "zcode":
 		return filepath.Join(home, ".zcode", "v2", "config.json")
+	case "zed":
+		// Platform-specific path is resolved by zedConfigPath (agents_common's
+		// home-based switch can't express the macOS/Windows locations).
+		return zedConfigPath()
 	case "omp":
 		return filepath.Join(home, ".omp", "agent", "models.yml")
 	case "grok-build":
@@ -98,6 +102,8 @@ func AgentDisplayName(agentID string) string {
 		return "OpenCode"
 	case "zcode":
 		return "ZCode"
+	case "zed":
+		return "Zed"
 	case "omp":
 		return "Oh My Pi"
 	case "grok-build":
@@ -182,7 +188,15 @@ func lookupBinary(name string) (string, bool) {
 			filepath.Join(home, ".yarn", "bin"),
 			filepath.Join(home, ".deno", "bin"),
 			filepath.Join(home, ".cargo", "bin"),
+			// OpenCode official installer script target.
+			filepath.Join(home, ".opencode", "bin"),
+			// Go-installed binaries.
+			filepath.Join(home, "go", "bin"),
 		)
+	}
+	// npm global installs land here on Windows (%APPDATA%\npm\opencode.cmd).
+	if cfgDir, err := os.UserConfigDir(); err == nil && cfgDir != "" {
+		dirs = append(dirs, filepath.Join(cfgDir, "npm"))
 	}
 	for _, dir := range dirs {
 		candidates := []string{filepath.Join(dir, name)}
@@ -223,6 +237,20 @@ func IsAgentActive(agentID string) bool {
 	}
 	if agentID == "grok-build" || agentID == "kimi-code" {
 		return strings.Contains(string(data), codexManagedBegin)
+	}
+	if agentID == "zed" {
+		// Zed's settings.json is JSONC; use the comment-tolerant parser.
+		m, _, err := readJSONCConfig(p)
+		if err != nil {
+			return false
+		}
+		if lm, ok := m["language_models"].(map[string]interface{}); ok {
+			if compat, ok := lm["openai_compatible"].(map[string]interface{}); ok {
+				_, set := compat[zedProviderID]
+				return set
+			}
+		}
+		return false
 	}
 	var m map[string]interface{}
 	if agentID == "omp" {
@@ -293,6 +321,15 @@ func IsAgentActive(agentID string) bool {
 		if provs, ok := m["provider"].(map[string]interface{}); ok {
 			if _, set := provs[zcodeProviderID]; set {
 				return true
+			}
+		}
+		return false
+	case "zed":
+		if lm, ok := m["language_models"].(map[string]interface{}); ok {
+			if compat, ok := lm["openai_compatible"].(map[string]interface{}); ok {
+				if _, set := compat[zedProviderID]; set {
+					return true
+				}
 			}
 		}
 		return false
@@ -495,6 +532,8 @@ func AgentInstalled(id string) bool {
 		return isOpencodeInstalled()
 	case "zcode":
 		return isZcodeInstalled()
+	case "zed":
+		return isZedInstalled()
 	case "omp":
 		return isOmpInstalled()
 	case "grok-build":
@@ -528,6 +567,8 @@ func SyncAgents(port int) {
 			syncOpencode(port)
 		case "zcode":
 			syncZcode(port)
+		case "zed":
+			syncZed(port)
 		case "omp":
 			syncOmp(port)
 		case "grok-build":

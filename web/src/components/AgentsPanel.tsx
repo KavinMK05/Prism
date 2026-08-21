@@ -15,6 +15,7 @@ const AGENTS = [
   { id: 'factory-droid', name: 'Factory Droid', desc: 'Adds your Prism models as [Prism] custom models in ~/.factory/settings.local.json so they appear in Droid\u2019s /model picker. Requires Factory Droid to be installed.' },
   { id: 'opencode', name: 'OpenCode', desc: 'Registers a prism provider with your Prism base URL in ~/.config/opencode/opencode.json so OpenCode can use your local models. Requires OpenCode to be installed.' },
   { id: 'zcode', name: 'ZCode', desc: 'Registers a prism provider in ~/.zcode/v2/config.json so ZCode can use your local models via Prism. Requires ZCode to be installed.' },
+  { id: 'zed', name: 'Zed', desc: 'Registers a prism provider under language_models.openai_compatible in Zed\u2019s settings.json so the Zed Agent can use your local models via Prism. Codex models automatically use the Responses API. Requires Zed to be installed.' },
   { id: 'omp', name: 'Oh My Pi', desc: 'Registers prism and prism-codex providers in ~/.omp/agent/models.yml so Oh My Pi can use your local models via Prism. Requires Oh My Pi (omp) to be installed.' },
   { id: 'grok-build', name: 'Grok Build', desc: 'Registers [model.prism-*] entries in ~/.grok/config.toml so Grok Build can use your local models via Prism. Requires Grok Build (grok) to be installed.' },
   { id: 'pi', name: 'Pi', desc: 'Registers a prism provider in ~/.pi/agent/models.json so Pi can use your local models via Prism. Also sets defaultProvider and defaultModel in ~/.pi/agent/settings.json. Requires Pi to be installed.' },

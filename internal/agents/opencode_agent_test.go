@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"ollama-proxy/internal/config"
@@ -72,7 +73,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	codex := buildOpencodeModelEntries(remap, cfg, true)
 
 	// Vision model advertises image input.
-	entry := nonCodex["vision-model"].(map[string]interface{})
+	entry := nonCodex[config.ModelRouteKey(remap.KnownModels[0])].(map[string]interface{})
 	mods := entry["modalities"].(map[string]interface{})
 	in := stringSlice(mods["input"])
 	if len(in) != 2 || in[0] != "text" || in[1] != "image" {
@@ -80,7 +81,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Text-only model advertises text input only.
-	entry = nonCodex["text-model"].(map[string]interface{})
+	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})
 	mods = entry["modalities"].(map[string]interface{})
 	in = stringSlice(mods["input"])
 	if len(in) != 1 || in[0] != "text" {
@@ -88,7 +89,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Reasoning model without explicit efforts defaults to low/medium/high (no max).
-	entry = nonCodex["reasoning-default"].(map[string]interface{})
+	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[2])].(map[string]interface{})
 	variants := entry["variants"].(map[string]interface{})
 	for _, want := range []string{"low", "medium", "high"} {
 		if _, ok := variants[want]; !ok {
@@ -103,7 +104,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Reasoning model listing max explicitly gets it.
-	entry = nonCodex["reasoning-max"].(map[string]interface{})
+	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[3])].(map[string]interface{})
 	variants = entry["variants"].(map[string]interface{})
 	if _, ok := variants["max"]; !ok {
 		t.Error("reasoning-max missing max variant")
@@ -113,7 +114,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Non-reasoning model has no variants key.
-	if _, ok := nonCodex["text-model"].(map[string]interface{})["variants"]; ok {
+	if _, ok := nonCodex[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})["variants"]; ok {
 		t.Error("text-model should not have variants")
 	}
 
@@ -121,10 +122,10 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	if len(codex) != 1 {
 		t.Fatalf("expected 1 codex model, got %d", len(codex))
 	}
-	if _, ok := codex["codex-model"]; !ok {
+	if _, ok := codex[config.ModelRouteKey(remap.KnownModels[4])]; !ok {
 		t.Error("codex-model missing from codex block")
 	}
-	if _, ok := nonCodex["codex-model"]; ok {
+	if _, ok := nonCodex[config.ModelRouteKey(remap.KnownModels[4])]; ok {
 		t.Error("codex-model leaked into non-codex block")
 	}
 }
@@ -179,7 +180,7 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 	}
 
 	// Prism block: options carry the client-name header.
-	prism := opencodeModel(t, m, opencodeProviderID, "vision-model")
+	prism := opencodeModel(t, m, opencodeProviderID, config.ModelRouteKey(remap.KnownModels[0]))
 	prismProv := providers[opencodeProviderID].(map[string]interface{})
 	opts := prismProv["options"].(map[string]interface{})
 	headers, ok := opts["headers"].(map[string]interface{})
@@ -202,7 +203,7 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 	}
 
 	// Codex block created with its own header, model routed correctly.
-	codex := opencodeModel(t, m, opencodeProviderID+"-codex", "codex-model")
+	codex := opencodeModel(t, m, opencodeProviderID+"-codex", config.ModelRouteKey(remap.KnownModels[1]))
 	if _, ok := codex["modalities"]; !ok {
 		t.Error("codex-model missing modalities")
 	}
@@ -252,5 +253,74 @@ func TestInstallOpencodeConfigNoModelsError(t *testing.T) {
 	err := InstallOpencodeConfig(11434, &config.ModelRemapping{KnownModels: []config.ModelEntry{}})
 	if err == nil {
 		t.Fatal("expected error when no models configured")
+	}
+}
+
+// hideRealOpencode minimizes PATH so a real opencode install on the dev
+// machine cannot interfere with binary-detection tests.
+func hideRealOpencode(t *testing.T) {
+	t.Helper()
+	origPATH := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", origPATH) })
+	if err := os.Setenv("PATH", "/usr/bin:/bin"); err != nil {
+		t.Fatalf("setenv PATH: %v", err)
+	}
+}
+
+// TestIsOpencodeInstalledCreatesEmptyConfigForNewUsers simulates a fresh
+// OpenCode install: the binary exists but opencode.json doesn't (OpenCode only
+// creates it on first run). Prism must report the agent as installed, create
+// an EMPTY config file (no provider data), and only fill in providers when
+// setup runs.
+func TestIsOpencodeInstalledCreatesEmptyConfigForNewUsers(t *testing.T) {
+	tmp := setTestHomeAndConfigDir(t)
+	hideRealOpencode(t)
+
+	binDir := filepath.Join(tmp, ".opencode", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	binPath := filepath.Join(binDir, "opencode")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, ".config", "opencode", "opencode.json")
+
+	if !isOpencodeInstalled() {
+		t.Fatal("isOpencodeInstalled = false with binary present but no config file")
+	}
+	m := decodeOpenCodeConfig(t, cfgPath)
+	if len(m) != 0 {
+		t.Errorf("created config should be empty, got %v", m)
+	}
+
+	// Setup then writes provider data into the freshly created file.
+	writePrismConfig(t, `{"default_provider":"ollama_cloud"}`)
+	remap := &config.ModelRemapping{KnownModels: []config.ModelEntry{
+		{ID: "test-model", Provider: "ollama_cloud"},
+	}}
+	if err := InstallOpencodeConfig(11434, remap); err != nil {
+		t.Fatalf("install into created config: %v", err)
+	}
+	m = decodeOpenCodeConfig(t, cfgPath)
+	opencodeModel(t, m, opencodeProviderID, config.ModelRouteKey(remap.KnownModels[0]))
+}
+
+// TestIsOpencodeNotInstalledLeavesDiskAlone ensures Prism doesn't create an
+// empty opencode.json when OpenCode isn't installed at all.
+func TestIsOpencodeNotInstalledLeavesDiskAlone(t *testing.T) {
+	tmp := setTestHomeAndConfigDir(t)
+	hideRealOpencode(t)
+
+	if isOpencodeInstalled() {
+		t.Fatal("isOpencodeInstalled = true without binary or config file")
+	}
+	cfgPath := filepath.Join(tmp, ".config", "opencode", "opencode.json")
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Error("empty config file must not be created when OpenCode is absent")
 	}
 }

@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"ollama-proxy/internal/config"
 )
@@ -12,10 +13,33 @@ const opencodeProviderID = "prism"
 // opencodeConfigPath returns ~/.config/opencode/opencode.json (cross-platform).
 func opencodeConfigPath() string { return agentConfigPath("opencode") }
 
+// ensureOpencodeConfigFile creates an empty ~/.config/opencode/opencode.json
+// when the opencode binary is installed but the config file doesn't exist yet
+// (OpenCode only creates it on first run, which blocked Prism's setup gate for
+// new users). No provider data is written here — InstallOpencodeConfig fills
+// in the prism blocks when the user clicks Setup.
+func ensureOpencodeConfigFile() {
+	p := opencodeConfigPath()
+	if p == "" {
+		return
+	}
+	if _, err := os.Stat(p); err == nil {
+		return // already exists; never touch user content here
+	}
+	if bin, ok := lookupBinary("opencode"); !ok || bin == "" {
+		return // OpenCode not installed; don't litter the disk
+	}
+	if err := writeJSONConfig(p, map[string]interface{}{}); err != nil {
+		log.Printf("[OpenCode] Failed to create empty config: %v", err)
+		return
+	}
+	log.Printf("[OpenCode] Created empty config at %s (setup pending)", p)
+}
+
 // isOpencodeInstalled reports whether OpenCode is installed: the config file
-// exists OR the `opencode` binary is on PATH. (OpenCode may not create its
-// config file until first run, so the binary check avoids a false "not
-// installed" when the user clearly has OpenCode.)
+// exists OR the `opencode` binary is on PATH. When only the binary is found,
+// an empty opencode.json is created so Prism's setup gate passes; provider
+// data is written later by InstallOpencodeConfig on explicit setup.
 func isOpencodeInstalled() bool {
 	if isAgentConfigInstalled("opencode") {
 		return true
@@ -24,6 +48,7 @@ func isOpencodeInstalled() bool {
 	// to the binary. lookupBinary searches install dirs GUI apps don't
 	// inherit (Homebrew, ~/.bun/bin, mise, …) — see comment there.
 	if p, ok := lookupBinary("opencode"); ok && p != "" {
+		ensureOpencodeConfigFile()
 		return true
 	}
 	return false

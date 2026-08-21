@@ -442,7 +442,18 @@ func parseVersionMajorMinor(ver string) (int, int, bool) {
 func downloadAndPrepareSearxngSource(progressFn func(percent int)) error {
 	tarPath := filepath.Join(searxngDir(), "searxng.tar.gz")
 	setSearxngInstallPhase("downloading-searxng", 0)
+	// Pin the download to the exact master HEAD commit so we can record it and
+	// later detect staleness (see searxng_update.go). Fall back to the moving
+	// master.tar.gz when the API is unreachable; in that case any stale commit
+	// marker is cleared since the source can no longer be attributed to it.
 	url := "https://github.com/searxng/searxng/archive/refs/heads/master.tar.gz"
+	commit, err := fetchSearxngMasterCommit()
+	if err == nil && len(commit) >= 7 {
+		url = "https://github.com/searxng/searxng/archive/" + commit + ".tar.gz"
+	} else {
+		commit = ""
+		log.Printf("[SearXNG] could not resolve master HEAD (%v); downloading unpinned master tarball", err)
+	}
 	if err := downloadFile(url, tarPath, progressFn); err != nil {
 		return fmt.Errorf("download searxng source: %w", err)
 	}
@@ -482,6 +493,12 @@ func downloadAndPrepareSearxngSource(progressFn func(percent int)) error {
 	os.RemoveAll(tmpExtract)
 
 	patchSearxngForWindows(searxngSrcDir())
+
+	if commit != "" {
+		writeInstalledSearxngCommit(commit)
+	} else {
+		clearInstalledSearxngCommit()
+	}
 	return nil
 }
 
@@ -569,29 +586,10 @@ func installSearxng(progressFn func(percent int)) error {
 	}
 	if needInstall {
 		setSearxngInstallPhase("installing-searxng", -1)
-		installLogPath := filepath.Join(searxngDir(), "pip-install.log")
-		installLog, err := os.OpenFile(installLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			setSearxngInstallError("open pip-install.log: " + err.Error())
-			return fmt.Errorf("open pip-install.log: %w", err)
+		if err := pipInstallRequirements(); err != nil {
+			setSearxngInstallError(err.Error())
+			return err
 		}
-		reqPath := filepath.Join(searxngSrcDir(), "requirements.txt")
-		cmd := runHidden(exec.Command(searxngVenvPip(), "install", "-r", reqPath))
-		cmd.Stdout = installLog
-		cmd.Stderr = installLog
-		if err := cmd.Run(); err != nil {
-			installLog.Close()
-			msg := fmt.Sprintf("pip install -r requirements.txt failed; see %s", installLogPath)
-			setSearxngInstallError(msg)
-			return fmt.Errorf("%s", msg)
-		}
-		// tzdata is not in requirements.txt (Linux ships it) but Windows needs it
-		// for engines that use zoneinfo (e.g. bilibili). Safe no-op if already present.
-		cmd2 := runHidden(exec.Command(searxngVenvPip(), "install", "tzdata"))
-		cmd2.Stdout = installLog
-		cmd2.Stderr = installLog
-		_ = cmd2.Run()
-		installLog.Close()
 	}
 
 	// Step 5: default settings.yml (only if absent — user owns it after first gen).
@@ -603,6 +601,32 @@ func installSearxng(progressFn func(percent int)) error {
 	}
 
 	setSearxngInstallPhase("idle", -1)
+	return nil
+}
+
+// pipInstallRequirements pip-installs the source tree's requirements.txt into
+// the venv (plus tzdata on Windows), logging to pip-install.log. Used by both
+// fresh installs and updates (dependency pins change between SearXNG snapshots).
+func pipInstallRequirements() error {
+	installLogPath := filepath.Join(searxngDir(), "pip-install.log")
+	installLog, err := os.OpenFile(installLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open pip-install.log: %w", err)
+	}
+	defer installLog.Close()
+	reqPath := filepath.Join(searxngSrcDir(), "requirements.txt")
+	cmd := runHidden(exec.Command(searxngVenvPip(), "install", "-r", reqPath))
+	cmd.Stdout = installLog
+	cmd.Stderr = installLog
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pip install -r requirements.txt failed; see %s", installLogPath)
+	}
+	// tzdata is not in requirements.txt (Linux ships it) but Windows needs it
+	// for engines that use zoneinfo (e.g. bilibili). Safe no-op if already present.
+	cmd2 := runHidden(exec.Command(searxngVenvPip(), "install", "tzdata"))
+	cmd2.Stdout = installLog
+	cmd2.Stderr = installLog
+	_ = cmd2.Run()
 	return nil
 }
 
@@ -633,6 +657,9 @@ func SearxngAutostartEnabled() bool {
 }
 
 func StartSearxngProcess() error {
+	if SearxngUpdateInProgress() {
+		return fmt.Errorf("SearXNG update in progress")
+	}
 	if isSearxngRunning() {
 		return nil
 	}

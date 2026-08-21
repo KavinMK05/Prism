@@ -283,6 +283,25 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			"status": "ok",
 			"models": len(remap.KnownModels),
 		})
+	case "zed":
+		remap := config.LoadModelRemapping()
+		if len(remap.KnownModels) == 0 {
+			writeJSONError(w, "no Prism models configured", 400)
+			return
+		}
+		if err := agents.InstallZedConfig(agents.ProxyPortFromEnv(), remap); err != nil {
+			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"models": len(remap.KnownModels),
+		})
 	case "kimi-code":
 		remap := config.LoadModelRemapping()
 		if len(remap.KnownModels) == 0 {
@@ -386,6 +405,17 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "pi":
 		if err := agents.RestorePiConfig(); err != nil {
+			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	case "zed":
+		if err := agents.RestoreZedConfig(); err != nil {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}

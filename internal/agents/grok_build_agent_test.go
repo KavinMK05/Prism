@@ -91,10 +91,10 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 
 	// First model: responses backend (so web_search interception applies),
 	// supports_backend_search = true, reasoning flag, ctx preserved.
-	if !strings.Contains(out, "[model.prism-glm-5-2-cloud]") {
+	if !strings.Contains(out, "[model.prism-ollama-cloud-glm-5-2-cloud]") {
 		t.Error("missing first model section header")
 	}
-	if !strings.Contains(out, `model = "glm-5.2:cloud"`) {
+	if !strings.Contains(out, `model = "ollama_cloud/glm-5.2:cloud"`) {
 		t.Error("model id not quoted/preserved")
 	}
 	if !strings.Contains(out, `base_url = "http://127.0.0.1:11434/v1"`) {
@@ -116,7 +116,7 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 	}
 
 	// Second model: also responses, ctx defaulted to 128000, no reasoning flag line.
-	if !strings.Contains(out, "[model.prism-gpt-5-codex]") {
+	if !strings.Contains(out, "[model.prism-codex-acct-1-gpt-5-codex]") {
 		t.Error("missing second model section header")
 	}
 	if !strings.Contains(out, "api_backend = \"responses\"") {
@@ -175,7 +175,7 @@ model = "user-model"
 		t.Errorf("expected exactly one [models] section (user's), got %d:\n%s", strings.Count(s, "[models]"), s)
 	}
 	// Prism model sections present.
-	if !strings.Contains(s, "[model.prism-glm-5-2-cloud]") || !strings.Contains(s, "[model.prism-gpt-5]") {
+	if !strings.Contains(s, "[model.prism-ollama-cloud-glm-5-2-cloud]") || !strings.Contains(s, "[model.prism-codex-1-gpt-5]") {
 		t.Errorf("prism model sections missing:\n%s", s)
 	}
 
@@ -188,7 +188,7 @@ model = "user-model"
 	if strings.Count(s, codexManagedBegin) != 1 || strings.Count(s, codexManagedEnd) != 1 {
 		t.Fatalf("idempotency: expected one managed block, got %d:\n%s", strings.Count(s, codexManagedBegin), s)
 	}
-	if strings.Count(s, "[model.prism-glm-5-2-cloud]") != 1 || strings.Count(s, "[model.prism-gpt-5]") != 1 {
+	if strings.Count(s, "[model.prism-ollama-cloud-glm-5-2-cloud]") != 1 || strings.Count(s, "[model.prism-codex-1-gpt-5]") != 1 {
 		t.Errorf("idempotency: model sections duplicated:\n%s", s)
 	}
 	if strings.Count(s, "[models]") != 1 {
@@ -232,7 +232,7 @@ func TestInstallGrokBuildConfigNoModelsSectionAddsDefault(t *testing.T) {
 	if strings.Count(s, "[models]") != 1 {
 		t.Errorf("expected one [models] section added when none existed, got %d", strings.Count(s, "[models]"))
 	}
-	if !strings.Contains(s, `default = "prism-glm-5-2-cloud"`) {
+	if !strings.Contains(s, `default = "prism-ollama-cloud-glm-5-2-cloud"`) {
 		t.Errorf("expected default pointing at first prism model:\n%s", s)
 	}
 }

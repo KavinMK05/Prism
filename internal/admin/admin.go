@@ -85,6 +85,8 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 
 	mux.HandleFunc("/admin/searxng/autostart", handleSearxngAutostart)
 
+	mux.HandleFunc("/admin/searxng/update", handleSearxngUpdate)
+
 	// API: Search providers (pluggable web-search backends for agent interception)
 	mux.HandleFunc("/admin/search/providers", handleSearchProviders)
 

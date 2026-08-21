@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"ollama-proxy/internal/config"
@@ -45,6 +46,33 @@ func handleSearxngRestart(w http.ResponseWriter, r *http.Request) {
 	go func() { _ = desktop.RestartSearxngProcess() }()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleSearxngUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		st, err := desktop.SearxngCheckUpdate()
+		if err != nil {
+			writeJSONError(w, err.Error(), 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(st)
+	case http.MethodPost:
+		if desktop.SearxngUpdateInProgress() {
+			writeJSONError(w, "SearXNG update already in progress", 409)
+			return
+		}
+		go func() {
+			if err := desktop.UpdateSearxng(); err != nil {
+				log.Printf("[admin] SearXNG update failed: %v", err)
+			}
+		}()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }
 
 func handleSearxngSettings(w http.ResponseWriter, r *http.Request) {

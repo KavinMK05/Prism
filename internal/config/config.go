@@ -444,26 +444,40 @@ func (c *Config) GetProviderByID(id string) (*ProviderInfo, error) {
 
 	switch id {
 	case "ollama_cloud":
-		apiKey := c.OllamaCloud.APIKey
+		apiKey := ""
+		baseURL := ""
+		name := ""
+		if c.OllamaCloud != nil {
+			apiKey = c.OllamaCloud.APIKey
+			baseURL = c.OllamaCloud.BaseURL
+			name = c.OllamaCloud.Name
+		}
 		if apiKey == "" {
 			apiKey = os.Getenv("OLLAMA_API_KEY")
 		}
 		return &ProviderInfo{
-			BaseURL:      c.OllamaCloud.BaseURL,
+			BaseURL:      baseURL,
 			APIKey:       apiKey,
 			ProviderType: "ollama",
-			Name:         c.OllamaCloud.Name,
+			Name:         name,
 		}, nil
 	case "opencode_go":
-		apiKey := c.OpenCodeGo.APIKey
+		apiKey := ""
+		baseURL := ""
+		name := ""
+		if c.OpenCodeGo != nil {
+			apiKey = c.OpenCodeGo.APIKey
+			baseURL = c.OpenCodeGo.BaseURL
+			name = c.OpenCodeGo.Name
+		}
 		if apiKey == "" {
 			apiKey = os.Getenv("OPENCODE_GO_API_KEY")
 		}
 		return &ProviderInfo{
-			BaseURL:      c.OpenCodeGo.BaseURL,
+			BaseURL:      baseURL,
 			APIKey:       apiKey,
 			ProviderType: "openai",
-			Name:         c.OpenCodeGo.Name,
+			Name:         name,
 		}, nil
 	}
 
