@@ -89,46 +89,69 @@ func TestBuildGrokBuildModelSections(t *testing.T) {
 
 	out := buildGrokBuildModelSections(remap, cfg, "http://127.0.0.1:11434/v1")
 
-	// First model: responses backend (so web_search interception applies),
-	// supports_backend_search = true, reasoning flag, ctx preserved.
+	// First model: chat_completions backend (non-codex, API unset). Prism does
+	// not execute Grok Build's web_search tool, so backend search is disabled
+	// for every model and Grok falls back to its client-side tool.
 	if !strings.Contains(out, "[model.prism-ollama-cloud-glm-5-2-cloud]") {
 		t.Error("missing first model section header")
 	}
-	if !strings.Contains(out, `model = "ollama_cloud/glm-5.2:cloud"`) {
+	first := grokModelSection(t, out, "prism-ollama-cloud-glm-5-2-cloud")
+	if !strings.Contains(first, `model = "ollama_cloud/glm-5.2:cloud"`) {
 		t.Error("model id not quoted/preserved")
 	}
-	if !strings.Contains(out, `base_url = "http://127.0.0.1:11434/v1"`) {
+	if !strings.Contains(first, `base_url = "http://127.0.0.1:11434/v1"`) {
 		t.Error("base_url wrong")
 	}
-	if !strings.Contains(out, "api_backend = \"responses\"") {
-		t.Error("prism model should use responses backend")
+	if !strings.Contains(first, "api_backend = \"chat_completions\"") {
+		t.Error("non-codex model should use chat_completions backend")
 	}
-	if !strings.Contains(out, "supports_backend_search = true") {
-		t.Error("prism model should advertise backend search")
+	if !strings.Contains(first, "supports_backend_search = false") {
+		t.Error("backend search should be disabled")
 	}
-	if !strings.Contains(out, "context_window = 200000") {
+	if !strings.Contains(first, "context_window = 200000") {
 		t.Error("context_window not preserved")
 	}
-	if !strings.Contains(out, "supports_reasoning_effort = true") {
+	if !strings.Contains(first, "supports_reasoning_effort = true") {
 		t.Error("reasoning model missing supports_reasoning_effort")
 	}
-	if !strings.Contains(out, `name = "[Prism] Glm 5.2:cloud"`) {
+	if !strings.Contains(first, `name = "[Prism]`) {
+		t.Error("display name missing [Prism] tag")
 	}
 
-	// Second model: also responses, ctx defaulted to 128000, no reasoning flag line.
+	// Second model: responses backend, ctx defaulted to 128000, no reasoning flag line.
 	if !strings.Contains(out, "[model.prism-codex-acct-1-gpt-5-codex]") {
 		t.Error("missing second model section header")
 	}
-	if !strings.Contains(out, "api_backend = \"responses\"") {
+	second := grokModelSection(t, out, "prism-codex-acct-1-gpt-5-codex")
+	if !strings.Contains(second, "api_backend = \"responses\"") {
 		t.Error("codex model should use responses")
 	}
-	if !strings.Contains(out, "context_window = 128000") {
+	if !strings.Contains(second, "supports_backend_search = false") {
+		t.Error("responses model should not advertise backend search")
+	}
+	if !strings.Contains(second, "context_window = 128000") {
 		t.Error("zero context_window should default to 128000")
 	}
 	// reasoning line must appear exactly once (only for the reasoning model).
 	if strings.Count(out, "supports_reasoning_effort = true") != 1 {
 		t.Errorf("expected exactly 1 reasoning flag, got %d", strings.Count(out, "supports_reasoning_effort = true"))
 	}
+}
+
+// grokModelSection returns the text of one [model.<key>] section, from its
+// header through the start of the next [model.*] section (or EOF), so
+// assertions apply to a specific model rather than the whole config.
+func grokModelSection(t *testing.T, out, key string) string {
+	t.Helper()
+	start := strings.Index(out, "[model."+key+"]")
+	if start < 0 {
+		t.Fatalf("section [model.%s] not found", key)
+	}
+	rest := out[start+len("[model."+key+"]"):]
+	if end := strings.Index(rest, "\n[model."); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
 }
 
 func TestInstallGrokBuildConfigLifecycle(t *testing.T) {

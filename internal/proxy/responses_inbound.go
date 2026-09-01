@@ -51,6 +51,13 @@ func (pr *ProviderRouter) HandleResponsesAPI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Per-model API routing: if model is configured for "responses" (e.g. Zen muse-spark/gpt/grok)
+	// forward Responses API directly to /v1/responses instead of translating to Chat Completions
+	if pr.getModelAPI(respReq.Model, rp.ProviderID) == "responses" && rp.ProviderType == "openai" {
+		pr.handleGenericResponsesAPI(w, r, &respReq, rp)
+		return
+	}
+
 	// Pattern A (Ollama/cloud AND OpenAI-compatible paths): intercept built-in
 	// web_search tool calls (Codex Desktop / Grok Build with Prism models), run
 	// them locally via the SearchRunner, and re-request upstream with the

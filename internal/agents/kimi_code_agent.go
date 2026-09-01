@@ -50,17 +50,19 @@ func sanitizeKimiModelKey(id string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// stripKimiPrismSections removes any [providers.prism] or [models."prism-*"]
-// section blocks that may exist outside the managed markers (e.g. written by an
-// older version), so a re-sync never leaves duplicates. Each section starts with
-// a matching header and runs until the next section header (or EOF).
+// stripKimiPrismSections removes the managed [providers.prism] /
+// [providers.prism-responses] and [models."prism-*"] section blocks that may
+// exist outside the managed markers (e.g. written by an older version), so a
+// re-sync never leaves duplicates. Each section starts with a matching header
+// and runs until the next section header (or EOF).
 func stripKimiPrismSections(content string) string {
 	lines := strings.Split(content, "\n")
 	var result []string
 	skipping := false
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "[providers."+kimiCodeProviderID+"]") ||
+		if t == "[providers."+kimiCodeProviderID+"]" ||
+			t == "[providers."+kimiCodeProviderID+"-responses]" ||
 			strings.HasPrefix(t, "[models.\"prism-") ||
 			strings.HasPrefix(t, "[models.prism-") {
 			skipping = true
@@ -78,32 +80,56 @@ func stripKimiPrismSections(content string) string {
 	return strings.Join(result, "\n")
 }
 
+func usesKimiResponses(m config.ModelEntry, cfg *config.Config) bool {
+	if m.API == "responses" {
+		return true
+	}
+	if m.API == "chat_completions" {
+		return false
+	}
+	return cfg.IsCodexProviderID(m.Provider)
+}
+
 // buildKimiCodeProviderSection writes the [providers.prism] block that points
-// Kimi Code CLI at the Prism proxy's OpenAI-compatible /v1/chat/completions
-// endpoint. api_key "prism" is the token the proxy accepts.
-func buildKimiCodeProviderSection(port int) string {
+// Kimi Code CLI at the Prism proxy. When any responses models exist, a second
+// [providers.prism-responses] block is also written so Kimi can route those
+// models via /v1/responses. api_key "prism" is the token the proxy accepts.
+func buildKimiCodeProviderSection(port int, hasResponses bool) string {
 	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
-	return "[providers." + kimiCodeProviderID + "]\n" +
+	s := "[providers." + kimiCodeProviderID + "]\n" +
 		"type = \"openai\"\n" +
 		"base_url = " + tomlQuote(baseURL) + "\n" +
 		"api_key = \"prism\"\n" +
 		"\n"
+	if hasResponses {
+		s += "[providers." + kimiCodeProviderID + "-responses]\n" +
+			"type = \"openai\"\n" +
+			"base_url = " + tomlQuote(baseURL) + "\n" +
+			"api_key = \"prism\"\n" +
+			"\n"
+	}
+	return s
 }
 
 // buildKimiCodeModelSections writes one [models."prism-<key>"] section per
-// known Prism model, each referencing the Prism provider. Capabilities (vision,
-// reasoning, tool use) are declared explicitly so Kimi exposes them.
+// known Prism model, each referencing the appropriate Prism provider based on
+// its selected protocol (m.API). Responses models point to prism-responses,
+// chat models to prism.
 func buildKimiCodeModelSections(remap *config.ModelRemapping, cfg *config.Config) string {
 	var b strings.Builder
 	for _, m := range remap.KnownModels {
 		routeKey := prismModelRouteKey(m)
 		key := "prism-" + sanitizeKimiModelKey(routeKey)
+		providerID := kimiCodeProviderID
+		if usesKimiResponses(m, cfg) {
+			providerID = kimiCodeProviderID + "-responses"
+		}
 		ctx := m.ContextLength
 		if ctx == 0 {
 			ctx = 128000
 		}
 		b.WriteString("[models.\"" + key + "\"]\n")
-		b.WriteString("provider = " + tomlQuote(kimiCodeProviderID) + "\n")
+		b.WriteString("provider = " + tomlQuote(providerID) + "\n")
 		b.WriteString("model = " + tomlQuote(routeKey) + "\n")
 		b.WriteString(fmt.Sprintf("max_context_size = %d\n", ctx))
 		b.WriteString("display_name = " + tomlQuote(prismModelDisplayName(cfg, m)) + "\n")
@@ -171,10 +197,18 @@ func InstallKimiCodeConfig(port int, remap *config.ModelRemapping) error {
 	cleaned = stripKimiPrismSections(cleaned)
 	ensureAgentBackup(p)
 
+	cfg := config.Load()
+	hasResponses := false
+	for _, m := range remap.KnownModels {
+		if usesKimiResponses(m, cfg) {
+			hasResponses = true
+			break
+		}
+	}
 	var block strings.Builder
 	block.WriteString("\n" + codexManagedBegin + "\n")
-	block.WriteString(buildKimiCodeProviderSection(port))
-	block.WriteString(buildKimiCodeModelSections(remap, config.Load()))
+	block.WriteString(buildKimiCodeProviderSection(port, hasResponses))
+	block.WriteString(buildKimiCodeModelSections(remap, cfg))
 	block.WriteString(codexManagedEnd + "\n")
 
 	result := strings.TrimRight(cleaned, "\r\n") + "\n" + block.String()

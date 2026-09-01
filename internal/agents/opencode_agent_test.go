@@ -69,11 +69,18 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}}
 	cfg.OAuthAccounts = []*config.OAuthAccount{{ID: "codex-1", Provider: "codex"}}
 
-	nonCodex := buildOpencodeModelEntries(remap, cfg, false)
-	codex := buildOpencodeModelEntries(remap, cfg, true)
+	chatModels := buildOpencodeModelEntries(remap, cfg, false)
+	responsesModels := buildOpencodeModelEntries(remap, cfg, true)
+	all := map[string]interface{}{}
+	for k, v := range chatModels {
+		all[k] = v
+	}
+	for k, v := range responsesModels {
+		all[k] = v
+	}
 
 	// Vision model advertises image input.
-	entry := nonCodex[config.ModelRouteKey(remap.KnownModels[0])].(map[string]interface{})
+	entry := chatModels[config.ModelRouteKey(remap.KnownModels[0])].(map[string]interface{})
 	mods := entry["modalities"].(map[string]interface{})
 	in := stringSlice(mods["input"])
 	if len(in) != 2 || in[0] != "text" || in[1] != "image" {
@@ -81,7 +88,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Text-only model advertises text input only.
-	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})
+	entry = chatModels[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})
 	mods = entry["modalities"].(map[string]interface{})
 	in = stringSlice(mods["input"])
 	if len(in) != 1 || in[0] != "text" {
@@ -89,7 +96,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Reasoning model without explicit efforts defaults to low/medium/high (no max).
-	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[2])].(map[string]interface{})
+	entry = chatModels[config.ModelRouteKey(remap.KnownModels[2])].(map[string]interface{})
 	variants := entry["variants"].(map[string]interface{})
 	for _, want := range []string{"low", "medium", "high"} {
 		if _, ok := variants[want]; !ok {
@@ -104,7 +111,7 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Reasoning model listing max explicitly gets it.
-	entry = nonCodex[config.ModelRouteKey(remap.KnownModels[3])].(map[string]interface{})
+	entry = chatModels[config.ModelRouteKey(remap.KnownModels[3])].(map[string]interface{})
 	variants = entry["variants"].(map[string]interface{})
 	if _, ok := variants["max"]; !ok {
 		t.Error("reasoning-max missing max variant")
@@ -114,19 +121,24 @@ func TestBuildOpencodeModelEntries(t *testing.T) {
 	}
 
 	// Non-reasoning model has no variants key.
-	if _, ok := nonCodex[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})["variants"]; ok {
+	if _, ok := chatModels[config.ModelRouteKey(remap.KnownModels[1])].(map[string]interface{})["variants"]; ok {
 		t.Error("text-model should not have variants")
 	}
 
-	// Codex model goes to the codex-only block, and vice versa.
-	if len(codex) != 1 {
-		t.Fatalf("expected 1 codex model, got %d", len(codex))
+	if len(chatModels) != 4 {
+		t.Fatalf("expected 4 chat models, got %d", len(chatModels))
 	}
-	if _, ok := codex[config.ModelRouteKey(remap.KnownModels[4])]; !ok {
-		t.Error("codex-model missing from codex block")
+	if len(responsesModels) != 1 {
+		t.Fatalf("expected 1 responses model, got %d", len(responsesModels))
 	}
-	if _, ok := nonCodex[config.ModelRouteKey(remap.KnownModels[4])]; ok {
-		t.Error("codex-model leaked into non-codex block")
+	if _, ok := responsesModels[config.ModelRouteKey(remap.KnownModels[4])]; !ok {
+		t.Error("codex-model missing from responses block")
+	}
+	if _, ok := chatModels[config.ModelRouteKey(remap.KnownModels[4])]; ok {
+		t.Error("codex-model leaked into chat block")
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected 5 total models, got %d", len(all))
 	}
 }
 
@@ -202,16 +214,21 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 		t.Error("vision-model missing reasoning variants")
 	}
 
-	// Codex block created with its own header, model routed correctly.
-	codex := opencodeModel(t, m, opencodeProviderID+"-codex", config.ModelRouteKey(remap.KnownModels[1]))
-	if _, ok := codex["modalities"]; !ok {
-		t.Error("codex-model missing modalities")
+	if _, ok := providers[opencodeProviderID+"-codex"]; ok {
+		t.Error("legacy prism-codex provider should not exist")
 	}
-	codexProv := providers[opencodeProviderID+"-codex"].(map[string]interface{})
+	if _, ok := providers[opencodeProviderID+"-responses"]; !ok {
+		t.Error("prism-responses provider missing")
+	}
+	codex := opencodeModel(t, m, opencodeProviderID+"-responses", config.ModelRouteKey(remap.KnownModels[1]))
+	if _, ok := codex["modalities"]; !ok {
+		t.Error("codex-model missing modalities in responses provider")
+	}
+	codexProv := providers[opencodeProviderID+"-responses"].(map[string]interface{})
 	codexOpts := codexProv["options"].(map[string]interface{})
 	codexHeaders := codexOpts["headers"].(map[string]interface{})
 	if codexHeaders["X-Client-Name"] != "OpenCode" {
-		t.Errorf("prism-codex X-Client-Name = %v, want OpenCode", codexHeaders["X-Client-Name"])
+		t.Errorf("prism-responses X-Client-Name = %v, want OpenCode", codexHeaders["X-Client-Name"])
 	}
 
 	// Default model is left untouched: the user's choice survives install.
@@ -235,7 +252,7 @@ func TestInstallOpencodeConfigLifecycle(t *testing.T) {
 	}
 	m = decodeOpenCodeConfig(t, cfgPath)
 	providers, _ = m["provider"].(map[string]interface{})
-	for _, id := range []string{opencodeProviderID, opencodeProviderID + "-codex"} {
+	for _, id := range []string{opencodeProviderID, opencodeProviderID + "-responses", opencodeProviderID + "-codex"} {
 		if _, ok := providers[id]; ok {
 			t.Errorf("provider %q still present after restore", id)
 		}

@@ -49,7 +49,7 @@ export default function ModelsPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [newModel, setNewModel] = useState({ id: '', provider: '', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
+  const [newModel, setNewModel] = useState({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newAliasFrom, setNewAliasFrom] = useState('');
   const [newAliasTo, setNewAliasTo] = useState('');
@@ -114,7 +114,7 @@ export default function ModelsPanel() {
     setExpandedRows(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
     if (!editStates[i] && typeof knownModels[i] !== 'string') {
       const m = knownModels[i];
-      setEditStates(prev => ({ ...prev, [i]: { provider: m.provider || '', ctxLen: m.context_length || 0, maxOut: m.max_output_tokens || 0, effort: Array.isArray(m.reasoning_effort) ? m.reasoning_effort.join(',') : (m.reasoning_effort || ''), reasoning: m.reasoning || false, toolCall: m.capabilities?.tool_calling || false, struct: m.capabilities?.structured_outputs || false, vision: m.capabilities?.vision || false } }));
+      setEditStates(prev => ({ ...prev, [i]: { provider: m.provider || '', api: m.api || 'chat_completions', ctxLen: m.context_length || 0, maxOut: m.max_output_tokens || 0, effort: Array.isArray(m.reasoning_effort) ? m.reasoning_effort.join(',') : (m.reasoning_effort || ''), reasoning: m.reasoning || false, toolCall: m.capabilities?.tool_calling || false, struct: m.capabilities?.structured_outputs || false, vision: m.capabilities?.vision || false } }));
     }
   };
 
@@ -125,7 +125,7 @@ export default function ModelsPanel() {
     const es = editStates[i];
     if (!es) return;
     models[i] = {
-      id, provider: es.provider, context_length: parseInt(es.ctxLen) || 0, max_output_tokens: parseInt(es.maxOut) || 0,
+      id, provider: es.provider, api: es.api || 'chat_completions', context_length: parseInt(es.ctxLen) || 0, max_output_tokens: parseInt(es.maxOut) || 0,
       reasoning: es.reasoning, reasoning_effort: es.effort ? es.effort.split(',').map((s: string) => s.trim()).filter((s: string) => s) : [],
       capabilities: { tool_calling: es.toolCall, structured_outputs: es.struct, vision: es.vision },
     };
@@ -186,14 +186,14 @@ export default function ModelsPanel() {
     if (models.find(m => getModelRouteKey(m, config) === `${selectedProvider}/${newModel.id.trim()}`)) return;
     const effortArr = newModel.effort.trim() ? newModel.effort.split(',').map(s => s.trim()).filter(s => s) : [];
     models.push({
-      id: newModel.id.trim(), provider: selectedProvider,
+      id: newModel.id.trim(), provider: selectedProvider, api: newModel.api || 'chat_completions',
       reasoning: newModel.reasoning, context_length: parseInt(newModel.ctxLen) || 0, max_output_tokens: parseInt(newModel.maxOut) || 0,
       reasoning_effort: effortArr, capabilities: { tool_calling: newModel.toolCall, structured_outputs: newModel.struct, vision: newModel.vision },
     });
     const updated = { ...remap, known_models: models };
     setRemap(updated);
     saveRemap(updated);
-    setNewModel({ id: '', provider: '', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
+    setNewModel({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
     setSearchQuery('');
   };
 
@@ -264,13 +264,20 @@ export default function ModelsPanel() {
                     </div>
                   )}
                   </div>
-                  <Select value={newModel.provider} onValueChange={(val) => setNewModel(prev => ({ ...prev, provider: val }))}>
-                    <SelectTrigger className="min-w-[140px]"><SelectValue /></SelectTrigger>
+                  <Select value={newModel.provider} onValueChange={(val) => setNewModel(prev => ({ ...prev, provider: val, api: (config.oauth_accounts || []).some((a: { id: string }) => a.id === val) ? 'responses' : 'chat_completions' }))}>
+                    <SelectTrigger className="min-w-[140px]"><SelectValue placeholder="Provider" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="ollama_cloud">Ollama Cloud</SelectItem>
                       <SelectItem value="opencode_go">OpenCode Go</SelectItem>
                       {(config.custom_providers || []).map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                       {(config.oauth_accounts || []).map((a: any) => <SelectItem key={a.id} value={a.id}>{a.email || a.label || a.id} (OAuth)</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={newModel.api} onValueChange={(val) => setNewModel(prev => ({ ...prev, api: val }))}>
+                    <SelectTrigger className="min-w-[160px]"><SelectValue placeholder="API" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chat_completions">Chat Completions</SelectItem>
+                      <SelectItem value="responses">Responses</SelectItem>
                     </SelectContent>
                   </Select>
                   <Button variant="outline" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</Button>
@@ -305,6 +312,7 @@ export default function ModelsPanel() {
           {knownModels.map((m: any, i: number) => {
             const id = typeof m === 'string' ? m : m.id;
             const provider = typeof m === 'string' ? '' : (m.provider || '');
+            const api = typeof m === 'string' ? '' : (m.api || '');
             const reasoning = typeof m === 'string' ? false : (m.reasoning || false);
             const caps = typeof m === 'string' ? null : m.capabilities;
             const hasTools = caps?.tool_calling; const hasStruct = caps?.structured_outputs; const hasVision = caps?.vision;
@@ -313,6 +321,7 @@ export default function ModelsPanel() {
               <div className="border-b border-border last:border-b-0" key={i}>
                 <div className="flex items-center gap-3 px-6 py-3.5 cursor-pointer transition-colors hover:bg-accent" onClick={() => toggleRow(i)}>
                   <span className="text-sm font-medium text-foreground flex-1">{id}</span>
+                  {api === 'responses' && <span className="text-[11px] text-purple-600 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">responses</span>}
                   {provider && <span className="text-[11px] text-muted-foreground bg-muted border border-border rounded-full px-2 py-0.5">{getProviderDisplayName(provider, config)}</span>}
                   <div className="flex gap-1">
                     <span className={`w-[7px] h-[7px] rounded-full ${reasoning ? 'bg-purple-500' : 'bg-border-strong'}`} />
@@ -333,6 +342,16 @@ export default function ModelsPanel() {
                           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {buildProviderOptions(config).map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1">API</Label>
+                        <Select value={es.api || 'chat_completions'} onValueChange={(val) => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], api: val } }))}>
+                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="chat_completions">Chat Completions</SelectItem>
+                            <SelectItem value="responses">Responses</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>

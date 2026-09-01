@@ -95,18 +95,31 @@ func stripPrismModelSections(content string) string {
 }
 
 // buildGrokBuildModelSections writes one [model.prism-<key>] section per known
-// Prism model. All Prism models use api_backend = "responses" so Grok Build
-// routes through /v1/responses, where Prism intercepts the hosted web_search
-// tool and runs it locally via the SearchRunner. supports_backend_search = true
-// tells Grok Build the backend can execute web search, so it emits the typed
-// web_search tool Prism emulates (instead of falling back to a client-side tool
-// the model then claims it doesn't have).
+// Prism model. Models with API=="responses" (Zen muse-spark/gpt/grok or Codex)
+// use api_backend = "responses"; all others use "chat_completions".
+// supports_backend_search stays false: Prism does not execute Grok Build's
+// web_search tool on either backend, so Grok Build falls back to its own
+// client-side search tool instead of emitting a typed web_search call that
+// would go nowhere.
+func usesGrokResponses(m config.ModelEntry, cfg *config.Config) bool {
+	if m.API == "responses" {
+		return true
+	}
+	if m.API == "chat_completions" {
+		return false
+	}
+	return cfg.IsCodexProviderID(m.Provider)
+}
+
 func buildGrokBuildModelSections(remap *config.ModelRemapping, cfg *config.Config, baseURL string) string {
 	var b strings.Builder
 	for _, m := range remap.KnownModels {
 		routeKey := prismModelRouteKey(m)
 		key := "prism-" + sanitizeGrokModelKey(routeKey)
-		apiBackend := "responses"
+		apiBackend := "chat_completions"
+		if usesGrokResponses(m, cfg) {
+			apiBackend = "responses"
+		}
 		ctx := m.ContextLength
 		if ctx == 0 {
 			ctx = 128000
@@ -118,7 +131,7 @@ func buildGrokBuildModelSections(remap *config.ModelRemapping, cfg *config.Confi
 		b.WriteString("api_key = \"prism\"\n")
 		b.WriteString("api_backend = " + tomlQuote(apiBackend) + "\n")
 		b.WriteString(fmt.Sprintf("context_window = %d\n", ctx))
-		b.WriteString("supports_backend_search = true\n")
+		b.WriteString("supports_backend_search = false\n")
 		if m.Reasoning {
 			b.WriteString("supports_reasoning_effort = true\n")
 		}

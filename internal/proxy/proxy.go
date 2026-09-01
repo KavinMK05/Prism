@@ -265,6 +265,43 @@ func (pr *ProviderRouter) isModelReasoning(model string) bool {
 	return false
 }
 
+// getModelEntry returns the ModelEntry matching a resolved model ID on the
+// given provider, or nil if not found. model must be the provider-stripped
+// resolved name (resolveProviderForModel output); providerID disambiguates the
+// same upstream ID configured under two providers with different API values.
+// An empty providerID falls back to matching any provider (first entry wins).
+func (pr *ProviderRouter) getModelEntry(model, providerID string) *config.ModelEntry {
+	mr := pr.getModelRemap()
+	if mr == nil {
+		return nil
+	}
+	for i := range mr.KnownModels {
+		m := &mr.KnownModels[i]
+		if providerID != "" && m.Provider != providerID {
+			continue
+		}
+		if m.ID == model || strings.HasPrefix(model, m.ID+":") || strings.HasPrefix(model, m.ID+"[") {
+			entry := *m
+			return &entry
+		}
+	}
+	return nil
+}
+
+// getModelAPI returns the API protocol for a resolved model: "responses" or
+// "chat_completions". Falls back to "responses" for codex OAuth providers
+// when the entry carries no explicit API (pre-migration data).
+func (pr *ProviderRouter) getModelAPI(model, providerID string) string {
+	entry := pr.getModelEntry(model, providerID)
+	if entry != nil && entry.API != "" {
+		return entry.API
+	}
+	if entry != nil && pr.getConfig().IsCodexProviderID(entry.Provider) {
+		return "responses"
+	}
+	return "chat_completions"
+}
+
 // validateReasoningEffort returns a valid reasoning_effort value for the model.
 // If the model is not a reasoning model, it returns "" (strip it).
 // If the model is a reasoning model but the effort value is not in the allowed list,
@@ -344,6 +381,14 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
+		// Per-model API routing: responses models (e.g. Zen muse-spark/gpt/grok) via Anthropic inbound
+		// go to /v1/responses even though the provider is "openai". The result is converted back to
+		// Anthropic protocol for the client (handleGenericChatToResponses would answer in OpenAI
+		// Chat Completions protocol, which /v1/messages clients cannot parse).
+		if rp.ProviderType == "openai" && pr.getModelAPI(anthroReq.Model, rp.ProviderID) == "responses" {
+			pr.handleGenericResponsesForAnthropic(w, r, &anthroReq, rp)
+			return
+		}
 		pr.HandleOpenAIMessages(w, r, &anthroReq, rp)
 		return
 	}

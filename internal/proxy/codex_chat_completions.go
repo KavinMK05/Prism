@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -133,7 +134,9 @@ func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest) map[string
 		body["reasoning"] = map[string]interface{}{"effort": req.ReasoningEffort}
 	}
 
-	// NOTE: max_output_tokens is intentionally NOT forwarded
+	// NOTE: max_output_tokens is intentionally NOT forwarded here — the ChatGPT
+	// Codex backend rejects it. The generic /v1/responses handlers forward it
+	// themselves after calling this translator.
 
 	return body
 }
@@ -158,6 +161,54 @@ func contentToString(content interface{}) string {
 		return strings.Join(parts, "")
 	}
 	return ""
+}
+
+// handleGenericChatToResponses translates a Chat Completions request to the
+// Responses API for generic OpenAI-compatible providers (e.g. Zen muse-spark)
+// that expose /v1/responses. Reuses the same translation as Codex but with
+// generic Authorization header instead of Codex headers.
+func (pr *ProviderRouter) handleGenericChatToResponses(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider) {
+	reqStart := time.Now()
+	client := detectClient(r)
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq)
+	// Unlike the Codex backend (which rejects it), generic /v1/responses
+	// endpoints accept max_output_tokens; forward the client's limit.
+	if openAIReq.MaxTokens > 0 {
+		bodyMap["max_output_tokens"] = openAIReq.MaxTokens
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		WriteOpenAIError(w, 500, "server_error", "Failed to marshal request: "+err.Error())
+		return
+	}
+	upstreamURL := rp.ResponsesURL()
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		WriteOpenAIError(w, 500, "server_error", "Failed to create upstream request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
+	log.Printf("-> %s %s (generic chat -> responses)", req.Method, upstreamURL)
+	resp, err := pr.client.Do(req)
+	if err != nil {
+		log.Printf("[ERR] Generic upstream request failed: %v", err)
+		WriteOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	log.Printf("<- %d from upstream", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[ERR] Upstream error response: %s", string(respBody))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
+		return
+	}
+	if openAIReq.Stream {
+		pr.translateCodexResponsesToChatCompletionsStream(w, r, resp, openAIReq, rp, client, reqStart)
+	} else {
+		pr.translateCodexResponsesToChatCompletions(w, r, resp, openAIReq, rp, client, reqStart)
+	}
 }
 
 // handleCodexChatCompletions translates a Chat Completions request to the
@@ -384,10 +435,22 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 // translateCodexResponsesToChatCompletions collects SSE events from the Codex
 // backend and builds a complete Chat Completions JSON response.
 func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.ResponseWriter, r *http.Request, resp *http.Response, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider, client string, reqStart time.Time) {
+	chatResp, inputTokens, outputTokens := collectCodexResponsesSSE(resp, openAIReq.Model)
+
+	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(chatResp)
+}
+
+// collectCodexResponsesSSE drains a Responses API SSE stream (requested with
+// stream=true even for non-streaming clients) and accumulates it into a
+// complete Chat Completions response. Shared by the Codex Chat Completions
+// translator and the generic Anthropic-inbound responses translator.
+func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenAIChatResponse, inputTokens, outputTokens int) {
 	var contentText string
-	var reasoningText string
 	var toolCalls []OpenAIToolCall
-	var inputTokens, outputTokens int
 	var finishReason = "stop"
 	var completedResponse map[string]interface{}
 
@@ -415,10 +478,6 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.Respon
 		case "response.output_text.delta":
 			delta, _ := event["delta"].(string)
 			contentText += delta
-
-		case "response.reasoning_summary_text.delta":
-			delta, _ := event["delta"].(string)
-			reasoningText += delta
 
 		case "response.output_item.added":
 			item, _ := event["item"].(map[string]interface{})
@@ -491,15 +550,17 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.Respon
 		}
 	}
 
-	_ = reasoningText // available if needed for reasoning_content in response
+	// A response carrying tool calls must report finish_reason tool_calls so
+	// downstream translators (translateFromOpenAI) map it to Anthropic's
+	// tool_use stop reason instead of end_turn.
+	if len(toolCalls) > 0 && finishReason == "stop" {
+		finishReason = "tool_calls"
+	}
 
-	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
-
-	// Build Chat Completions response
-	chatResp := OpenAIChatResponse{
+	return OpenAIChatResponse{
 		ID:     fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		Object: "chat.completion",
-		Model:  openAIReq.Model,
+		Model:  model,
 		Choices: []OpenAIChoice{
 			{
 				Index: 0,
@@ -516,9 +577,5 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.Respon
 			CompletionTokens: outputTokens,
 			TotalTokens:      inputTokens + outputTokens,
 		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(chatResp)
+	}, inputTokens, outputTokens
 }

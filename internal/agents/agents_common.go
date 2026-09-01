@@ -312,6 +312,9 @@ func IsAgentActive(agentID string) bool {
 			if _, set := provs["prism"]; set {
 				return true
 			}
+			if _, set := provs["prism-responses"]; set {
+				return true
+			}
 			if _, set := provs["prism-codex"]; set {
 				return true
 			}
@@ -336,6 +339,9 @@ func IsAgentActive(agentID string) bool {
 	case "omp":
 		if provs, ok := m["providers"].(map[string]interface{}); ok {
 			if _, set := provs[ompProviderID]; set {
+				return true
+			}
+			if _, set := provs[ompProviderID+"-responses"]; set {
 				return true
 			}
 			if _, set := provs[ompProviderID+"-codex"]; set {

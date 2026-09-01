@@ -58,6 +58,14 @@ func (pr *ProviderRouter) HandleOpenAIChatCompletions(w http.ResponseWriter, r *
 		return
 	}
 
+	// Per-model API routing: if model is configured for "responses" API (e.g. Zen muse-spark/gpt/grok)
+	// translate Chat Completions -> Responses and send to /v1/responses even though provider is "openai"
+	if pr.getModelAPI(openAIReq.Model, rp.ProviderID) == "responses" && rp.ProviderType == "openai" {
+		openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
+		pr.handleGenericChatToResponses(w, r, &openAIReq, rp)
+		return
+	}
+
 	if openAIReq.Stream {
 		if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
 			pr.handleOpenAIInboundOpenAIStreaming(w, r, &openAIReq, rp)

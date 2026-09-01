@@ -150,9 +150,10 @@ func stripJSONC(text string) string {
 }
 
 // buildZedModels returns the available_models array for the Prism provider
-// block. Codex OAuth models set capabilities.chat_completions=false so Zed
-// talks to Prism's /v1/responses endpoint for them, while all other models
-// use /v1/chat/completions — both within the single provider block.
+// block. Models with API=="responses" (e.g. Zen muse-spark/gpt/grok or Codex OAuth)
+// set capabilities.chat_completions=false so Zed talks to Prism's /v1/responses
+// endpoint for them, while all other models use /v1/chat/completions — both
+// within the single provider block. Per-model protocol is stored in m.API.
 func buildZedModels(remap *config.ModelRemapping, cfg *config.Config) []interface{} {
 	models := make([]interface{}, 0, len(remap.KnownModels))
 	for _, m := range remap.KnownModels {
@@ -164,7 +165,7 @@ func buildZedModels(remap *config.ModelRemapping, cfg *config.Config) []interfac
 		if out == 0 {
 			out = 16384
 		}
-		isCodex := cfg.IsCodexProviderID(m.Provider)
+		useResponsesBackend := m.API == "responses" || cfg.IsCodexProviderID(m.Provider)
 		// Zed requires every capabilities field to be present once the object
 		// is provided (no serde defaults), so write the full set.
 		entry := map[string]interface{}{
@@ -176,7 +177,7 @@ func buildZedModels(remap *config.ModelRemapping, cfg *config.Config) []interfac
 				"images":                m.Capabilities != nil && m.Capabilities.Vision,
 				"parallel_tool_calls":   false,
 				"prompt_cache_key":      false,
-				"chat_completions":      !isCodex,
+				"chat_completions":      !useResponsesBackend,
 				"interleaved_reasoning": false,
 				"max_tokens_parameter":  false,
 			},

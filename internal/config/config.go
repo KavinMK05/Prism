@@ -174,6 +174,7 @@ type ModelEntry struct {
 	ContextLength   int                `json:"context_length,omitempty"`
 	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
 	Capabilities    *ModelCapabilities `json:"capabilities,omitempty"`
+	API             string             `json:"api,omitempty"` // "chat_completions" (default) or "responses"
 }
 
 // ModelRouteKey returns the provider-qualified model identifier used by
@@ -506,11 +507,11 @@ func (c *Config) GetProviderName(id string) string {
 }
 
 // IsCodexProviderID returns true if the provider ID corresponds to a Codex OAuth account.
-// Checks both exact matches against configured OAuth accounts and the "codex_" prefix
+// Checks both exact matches against configured Codex OAuth accounts and the "codex_" prefix
 // (in case the account was removed/re-added with a new ID but the model still references the old one).
 func (c *Config) IsCodexProviderID(providerID string) bool {
 	for _, a := range c.OAuthAccounts {
-		if a.ID == providerID {
+		if a.ID == providerID && a.Provider == "codex" {
 			return true
 		}
 	}
@@ -694,6 +695,20 @@ func LoadModelRemapping() *ModelRemapping {
 		}
 	}
 
+	// Migration: if API field is empty, set default based on provider
+	// Codex models use "responses", all others default to "chat_completions"
+	needsAPIMigration := false
+	for i := range remap.KnownModels {
+		if remap.KnownModels[i].API == "" {
+			needsAPIMigration = true
+			if cfg.IsCodexProviderID(remap.KnownModels[i].Provider) {
+				remap.KnownModels[i].API = "responses"
+			} else {
+				remap.KnownModels[i].API = "chat_completions"
+			}
+		}
+	}
+
 	if remap.KnownModels == nil {
 		remap.KnownModels = []ModelEntry{}
 	}
@@ -702,7 +717,7 @@ func LoadModelRemapping() *ModelRemapping {
 	}
 
 	// Save if we migrated
-	if err != nil || needsMigration(data) {
+	if err != nil || needsMigration(data) || needsAPIMigration {
 		SaveModelRemapping(remap)
 	}
 

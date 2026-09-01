@@ -43,9 +43,10 @@ func isFactoryDroidInstalled() bool {
 func isFactoryDroidActive() bool { return IsAgentActive("factory-droid") }
 
 // buildFactoryDroidModels returns [Prism]-tagged customModels entries, one
-// per Prism known model. Codex OAuth models use the "openai" provider type
-// (sends to /v1/responses); all others use "generic-chat-completion-api"
-// (sends to /v1/chat/completions).
+// per Prism known model. Models with API=="responses" (e.g. Zen muse-spark/gpt/grok
+// or Codex OAuth) use provider "openai" (/v1/responses); all others use
+// "generic-chat-completion-api" (/v1/chat/completions). Per-model protocol is
+// stored in m.API and handled by the proxy.
 func buildFactoryDroidModels(remap *config.ModelRemapping, baseURL string, cfg *config.Config) []interface{} {
 	entries := make([]interface{}, 0, len(remap.KnownModels))
 	for _, m := range remap.KnownModels {
@@ -57,8 +58,9 @@ func buildFactoryDroidModels(remap *config.ModelRemapping, baseURL string, cfg *
 		if maxOut == 0 {
 			maxOut = 16384
 		}
+		useResponsesBackend := m.API == "responses" || cfg.IsCodexProviderID(m.Provider)
 		providerType := "generic-chat-completion-api"
-		if cfg.IsCodexProviderID(m.Provider) {
+		if useResponsesBackend {
 			providerType = "openai"
 		}
 		routeKey := prismModelRouteKey(m)

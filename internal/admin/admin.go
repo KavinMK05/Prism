@@ -486,11 +486,24 @@ func handleAdminModelRemap(w http.ResponseWriter, r *http.Request) {
 		if remap.Aliases == nil {
 			remap.Aliases = map[string]string{}
 		}
-		// Ensure all model entries have a provider
+		// Ensure all model entries have a provider and a valid API. Unknown
+		// API values are reset so the backfill below re-derives them — an
+		// arbitrary string would otherwise silently degrade the model to
+		// chat-completions routing (getModelAPI only honors exact values).
 		cfg := config.Load()
 		for i := range remap.KnownModels {
 			if remap.KnownModels[i].Provider == "" {
 				remap.KnownModels[i].Provider = cfg.DefaultProvider
+			}
+			if remap.KnownModels[i].API != "chat_completions" && remap.KnownModels[i].API != "responses" {
+				remap.KnownModels[i].API = ""
+			}
+			if remap.KnownModels[i].API == "" {
+				if cfg.IsCodexProviderID(remap.KnownModels[i].Provider) {
+					remap.KnownModels[i].API = "responses"
+				} else {
+					remap.KnownModels[i].API = "chat_completions"
+				}
 			}
 		}
 		if err := config.SaveModelRemapping(&remap); err != nil {

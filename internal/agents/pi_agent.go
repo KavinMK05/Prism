@@ -71,8 +71,10 @@ func isPiActive() bool {
 	if !ok {
 		return false
 	}
-	// Check for both "prism" (non-Codex) and "prism-codex" providers
 	if _, ok := providers["prism"]; ok {
+		return true
+	}
+	if _, ok := providers["prism-responses"]; ok {
 		return true
 	}
 	if _, ok := providers["prism-codex"]; ok {
@@ -81,14 +83,22 @@ func isPiActive() bool {
 	return false
 }
 
-// buildPiModelEntries returns model entries for the Pi models.json provider
-// block. Each model gets context/output limits, modalities, reasoning config,
-// and thinking level map.
-func buildPiModelEntries(remap *config.ModelRemapping, cfg *config.Config, codexOnly bool) []interface{} {
+func usesPiResponses(m config.ModelEntry, cfg *config.Config) bool {
+	if m.API == "responses" {
+		return true
+	}
+	if m.API == "chat_completions" {
+		return false
+	}
+	return cfg.IsCodexProviderID(m.Provider)
+}
+
+// buildPiModelEntries returns model entries filtered by protocol.
+// When wantResponses is true, only responses models are included.
+func buildPiModelEntries(remap *config.ModelRemapping, cfg *config.Config, wantResponses bool) []interface{} {
 	models := make([]interface{}, 0, len(remap.KnownModels))
 	for _, m := range remap.KnownModels {
-		isCodex := cfg.IsCodexProviderID(m.Provider)
-		if codexOnly != isCodex {
+		if usesPiResponses(m, cfg) != wantResponses {
 			continue
 		}
 		ctx := m.ContextLength
@@ -147,12 +157,11 @@ func buildPiModelEntries(remap *config.ModelRemapping, cfg *config.Config, codex
 	return models
 }
 
-// InstallPiConfig writes provider blocks into ~/.pi/agent/models.json:
-// - "prism" with api: openai-completions for non-Codex models (/v1/chat/completions)
-// - "prism-codex" with api: openai-responses for Codex OAuth models (/v1/responses)
-// It also updates ~/.pi/agent/settings.json to set defaultProvider and
-// defaultModel to point to Prism. All other providers and settings are
-// preserved. A one-time .prism-backup is kept for both files.
+// InstallPiConfig writes Prism provider blocks into ~/.pi/agent/models.json:
+// - "prism" with api: openai-completions for chat_completions models
+// - "prism-responses" with api: openai-responses for responses models (Zen muse-spark/gpt/grok or Codex)
+// Pi's provider api is per-provider (no per-model override), so two providers are required
+// when the user mixes protocols. All other providers and settings are preserved.
 func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 	modelsPath := piModelsPath()
 	settingsPath := piSettingsPath()
@@ -178,11 +187,10 @@ func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 		providers = map[string]interface{}{}
 	}
 
-	nonCodexModels := buildPiModelEntries(remap, cfg, false)
-	codexModels := buildPiModelEntries(remap, cfg, true)
+	chatModels := buildPiModelEntries(remap, cfg, false)
+	responsesModels := buildPiModelEntries(remap, cfg, true)
 
-	// Replace our provider blocks wholesale (clean slate)
-	if len(nonCodexModels) > 0 {
+	if len(chatModels) > 0 {
 		providers["prism"] = map[string]interface{}{
 			"baseUrl": baseURL,
 			"api":     "openai-completions",
@@ -191,22 +199,23 @@ func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 				"supportsDeveloperRole":   false,
 				"supportsReasoningEffort": true,
 			},
-			"models": nonCodexModels,
+			"models": chatModels,
 		}
 	} else {
 		delete(providers, "prism")
 	}
-
-	if len(codexModels) > 0 {
-		providers["prism-codex"] = map[string]interface{}{
+	if len(responsesModels) > 0 {
+		providers["prism-responses"] = map[string]interface{}{
 			"baseUrl": baseURL,
 			"api":     "openai-responses",
 			"apiKey":  "prism",
-			"models":  codexModels,
+			"models":  responsesModels,
 		}
 	} else {
-		delete(providers, "prism-codex")
+		delete(providers, "prism-responses")
 	}
+	// Clean up legacy "prism-codex" (pre-API-split)
+	delete(providers, "prism-codex")
 
 	models["providers"] = providers
 
@@ -221,11 +230,10 @@ func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 	}
 	ensureAgentBackup(settingsPath)
 
-	// Set defaultProvider to "prism" (or "prism-codex" if only Codex models exist)
-	if len(nonCodexModels) > 0 {
+	if len(chatModels) > 0 {
 		settings["defaultProvider"] = "prism"
-	} else if len(codexModels) > 0 {
-		settings["defaultProvider"] = "prism-codex"
+	} else if len(responsesModels) > 0 {
+		settings["defaultProvider"] = "prism-responses"
 	}
 
 	// Set defaultModel to the first known model
@@ -240,8 +248,8 @@ func InstallPiConfig(port int, remap *config.ModelRemapping) error {
 	return nil
 }
 
-// RestorePiConfig removes the "prism" and "prism-codex" provider blocks from
-// ~/.pi/agent/models.json and clears defaultProvider/defaultModel in
+// RestorePiConfig removes the "prism", "prism-responses" and legacy "prism-codex"
+// provider blocks from ~/.pi/agent/models.json and clears defaultProvider/defaultModel in
 // ~/.pi/agent/settings.json if they pointed at prism, preserving all other
 // providers and settings.
 func RestorePiConfig() error {
@@ -258,7 +266,7 @@ func RestorePiConfig() error {
 		return fmt.Errorf("failed to read Pi models config: %w", err)
 	}
 	if providers, ok := models["providers"].(map[string]interface{}); ok {
-		for _, provID := range []string{"prism", "prism-codex"} {
+		for _, provID := range []string{"prism", "prism-responses", "prism-codex"} {
 			if _, exists := providers[provID]; exists {
 				delete(providers, provID)
 				changed = true
@@ -280,7 +288,7 @@ func RestorePiConfig() error {
 	settingsChanged := false
 	for _, key := range []string{"defaultProvider", "defaultModel"} {
 		if v, ok := settings[key].(string); ok {
-			if v == "prism" || v == "prism-codex" || strings.HasPrefix(v, "prism/") || strings.HasPrefix(v, "prism-codex/") {
+			if v == "prism" || v == "prism-responses" || v == "prism-codex" || strings.HasPrefix(v, "prism/") || strings.HasPrefix(v, "prism-responses/") || strings.HasPrefix(v, "prism-codex/") {
 				delete(settings, key)
 				settingsChanged = true
 			}

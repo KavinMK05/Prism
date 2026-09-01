@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,7 +83,9 @@ func normalizeCodexResponsesRequest(respReq *ResponsesAPIRequest) map[string]int
 		body["text"] = respReq.Text
 	}
 
-	// NOTE: max_output_tokens is intentionally NOT forwarded (the backend rejects it)
+	// NOTE: max_output_tokens is intentionally NOT forwarded here — the ChatGPT
+	// Codex backend rejects it. The generic /v1/responses handler forwards it
+	// itself after calling this normalizer.
 
 	return body
 }
@@ -237,6 +240,53 @@ func (pr *ProviderRouter) passthroughCodexResponsesSSE(w http.ResponseWriter, r 
 			}
 			idle.Reset(codexKeepAliveInterval)
 		}
+	}
+}
+
+// handleGenericResponsesAPI forwards a Responses API request to a generic
+// OpenAI-compatible /v1/responses endpoint (e.g. Zen muse-spark). Unlike Codex
+// it uses standard Bearer auth and does not add Codex headers.
+func (pr *ProviderRouter) handleGenericResponsesAPI(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *config.ResolvedProvider) {
+	reqStart := time.Now()
+	client := detectClient(r)
+	bodyMap := normalizeCodexResponsesRequest(respReq)
+	// Unlike the Codex backend (which rejects it), generic /v1/responses
+	// endpoints accept max_output_tokens; forward the client's limit.
+	if respReq.MaxOutputTokens > 0 {
+		bodyMap["max_output_tokens"] = respReq.MaxOutputTokens
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		WriteOpenAIError(w, 500, "server_error", "Failed to marshal request: "+err.Error())
+		return
+	}
+	upstreamURL := rp.ResponsesURL()
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		WriteOpenAIError(w, 500, "server_error", "Failed to create upstream request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
+	log.Printf("-> %s %s (generic responses passthrough)", req.Method, upstreamURL)
+	resp, err := pr.client.Do(req)
+	if err != nil {
+		log.Printf("[ERR] Generic upstream request failed: %v", err)
+		WriteOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	log.Printf("<- %d from upstream", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[ERR] Upstream error response: %s", string(respBody))
+		WriteOpenAIUpstreamError(w, resp.StatusCode, respBody)
+		return
+	}
+	if respReq.Stream {
+		pr.passthroughCodexResponsesSSE(w, r, resp, respReq, rp, client, reqStart)
+	} else {
+		pr.reassembleCodexResponses(w, r, resp, respReq, rp, client, reqStart)
 	}
 }
 

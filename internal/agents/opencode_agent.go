@@ -56,20 +56,25 @@ func isOpencodeInstalled() bool {
 
 func isOpencodeActive() bool { return IsAgentActive("opencode") }
 
-// buildOpencodeModels splits models into two provider blocks:
-// - "prism" with @ai-sdk/openai-compatible for non-Codex models (sends to /v1/chat/completions)
-// - "prism-codex" with @ai-sdk/openai for Codex OAuth models (sends to /v1/responses)
-// Returns the provider blocks to merge into the config.
+// usesOpencodeResponses reports whether a model should use the Responses API (Zen muse-spark/gpt/grok
+// or Codex OAuth). Centralizes the m.API == "responses" check with the legacy IsCodex fallback.
+func usesOpencodeResponses(m config.ModelEntry, cfg *config.Config) bool {
+	if m.API == "responses" {
+		return true
+	}
+	if m.API == "chat_completions" {
+		return false
+	}
+	// Empty/missing API (pre-migration) -> infer from provider
+	return cfg.IsCodexProviderID(m.Provider)
+}
 
-// buildOpencodeModelEntries returns model entries for a single provider block.
-// Each model gets context/output limits, modalities (so OpenCode allows image
-// attachments for vision models), and reasoningEffort variants for reasoning
-// models (default low/medium/high; max only when the model lists it).
-func buildOpencodeModelEntries(remap *config.ModelRemapping, cfg *config.Config, codexOnly bool) map[string]interface{} {
+// buildOpencodeModelEntries returns model entries filtered by desired protocol.
+// When wantResponses is true, only models with API=="responses" are included; otherwise only chat.
+func buildOpencodeModelEntries(remap *config.ModelRemapping, cfg *config.Config, wantResponses bool) map[string]interface{} {
 	models := map[string]interface{}{}
 	for _, m := range remap.KnownModels {
-		isCodex := cfg.IsCodexProviderID(m.Provider)
-		if codexOnly != isCodex {
+		if usesOpencodeResponses(m, cfg) != wantResponses {
 			continue
 		}
 		ctx := m.ContextLength
@@ -112,9 +117,11 @@ func buildOpencodeModelEntries(remap *config.ModelRemapping, cfg *config.Config,
 	return models
 }
 
-// InstallOpencodeConfig writes provider blocks into ~/.config/opencode/opencode.json:
-// - "prism" with @ai-sdk/openai-compatible for non-Codex models (/v1/chat/completions)
-// - "prism-codex" with @ai-sdk/openai for Codex OAuth models (/v1/responses)
+// InstallOpencodeConfig writes Prism provider blocks into ~/.config/opencode/opencode.json:
+// - "prism" with @ai-sdk/openai-compatible for chat_completions models (/v1/chat/completions)
+// - "prism-responses" with @ai-sdk/openai for responses models (/v1/responses, e.g. Zen muse-spark/gpt/grok or Codex OAuth)
+// OpenCode's provider model is per-provider (no per-model `api` override), so two providers are
+// required when the user mixes protocols. When all models share one protocol only that provider is written.
 // All other providers and top-level keys are preserved. A one-time .prism-backup is kept.
 func InstallOpencodeConfig(port int, remap *config.ModelRemapping) error {
 	p := opencodeConfigPath()
@@ -131,7 +138,6 @@ func InstallOpencodeConfig(port int, remap *config.ModelRemapping) error {
 	}
 	ensureAgentBackup(p)
 
-	// Build set of Codex OAuth provider IDs
 	cfg := config.Load()
 
 	providers, _ := m["provider"].(map[string]interface{})
@@ -144,36 +150,34 @@ func InstallOpencodeConfig(port int, remap *config.ModelRemapping) error {
 		"baseURL": baseURL,
 		"apiKey":  "prism",
 		"headers": map[string]interface{}{
-			// Lets Prism's detectClient identify OpenCode even when the
-			// User-Agent is not informative.
 			"X-Client-Name": "OpenCode",
 		},
 	}
-	nonCodexModels := buildOpencodeModelEntries(remap, cfg, false)
-	codexModels := buildOpencodeModelEntries(remap, cfg, true)
+	chatModels := buildOpencodeModelEntries(remap, cfg, false)
+	responsesModels := buildOpencodeModelEntries(remap, cfg, true)
 
-	// Replace our provider blocks wholesale (clean slate)
-	if len(nonCodexModels) > 0 {
+	if len(chatModels) > 0 {
 		providers[opencodeProviderID] = map[string]interface{}{
 			"npm":     "@ai-sdk/openai-compatible",
 			"name":    "Prism",
 			"options": options,
-			"models":  nonCodexModels,
+			"models":  chatModels,
 		}
 	} else {
 		delete(providers, opencodeProviderID)
 	}
-
-	if len(codexModels) > 0 {
-		providers[opencodeProviderID+"-codex"] = map[string]interface{}{
+	if len(responsesModels) > 0 {
+		providers[opencodeProviderID+"-responses"] = map[string]interface{}{
 			"npm":     "@ai-sdk/openai",
-			"name":    "Prism Codex",
+			"name":    "Prism Responses",
 			"options": options,
-			"models":  codexModels,
+			"models":  responsesModels,
 		}
 	} else {
-		delete(providers, opencodeProviderID+"-codex")
+		delete(providers, opencodeProviderID+"-responses")
 	}
+	// Clean up legacy "prism-codex" (pre-API-split) if present
+	delete(providers, opencodeProviderID+"-codex")
 
 	m["provider"] = providers
 
@@ -186,10 +190,8 @@ func InstallOpencodeConfig(port int, remap *config.ModelRemapping) error {
 	return nil
 }
 
-// RestoreOpencodeConfig removes the "prism" and "prism-codex" provider blocks,
-// preserving all other providers and settings. The top-level "model"/
-// "small_model" keys are left untouched: Prism never wrote them, so it never
-// clears them.
+// RestoreOpencodeConfig removes the "prism", "prism-responses" and legacy "prism-codex"
+// provider blocks, preserving all other providers and settings.
 func RestoreOpencodeConfig() error {
 	p := opencodeConfigPath()
 	if p == "" {
@@ -201,7 +203,7 @@ func RestoreOpencodeConfig() error {
 	}
 	changed := false
 	if providers, ok := m["provider"].(map[string]interface{}); ok {
-		for _, provID := range []string{opencodeProviderID, opencodeProviderID + "-codex"} {
+		for _, provID := range []string{opencodeProviderID, opencodeProviderID + "-responses", opencodeProviderID + "-codex"} {
 			if _, exists := providers[provID]; exists {
 				delete(providers, provID)
 				changed = true

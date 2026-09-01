@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <img src="./icon.png" alt="Prism" width="120" />
 
@@ -233,7 +233,7 @@ Prism adds your models as `[Prism]` custom entries in `~/.factory/settings.json`
 <details>
 <summary><strong>Setting up with OpenCode</strong></summary>
 
-Prism registers two providers in `~/.config/opencode/opencode.json`: `prism` (for non-Codex models via `/v1/chat/completions`) and `prism-codex` (for Codex OAuth models via `/v1/responses`). The first available Prism model is set as the default.
+Prism registers `prism` (chat-completions models via `/v1/chat/completions`) and, when any Responses-API models exist, `prism-responses` (for them via `/v1/responses`) in `~/.config/opencode/opencode.json`. The first available Prism model is set as the default.
 
 **One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "OpenCode". Prism backs up your existing config and writes the provider blocks.
 
@@ -302,7 +302,7 @@ Prism includes built-in, one-click integrations for popular AI coding agents. Ea
 | **Claude Code** | Sets `ANTHROPIC_BASE_URL` + per-tier model mappings | `~/.claude/settings.json` |
 | **Codex Desktop & CLI** | Injects models into native model picker | `~/.codex/config.toml` + catalog JSON |
 | **Factory Droid** | Adds `[Prism]` custom models with smart routing | `~/.factory/settings.json` |
-| **OpenCode** | Registers `prism` + `prism-codex` providers | `~/.config/opencode/opencode.json` |
+| **OpenCode** | Registers `prism` (+ `prism-responses` when needed) providers | `~/.config/opencode/opencode.json` |
 | **ZCode** | Registers `prism` provider with model list | `~/.zcode/v2/config.json` |
 | **Grok Build** | Adds `[model.prism-*]` entries with smart routing | `~/.grok/config.toml` |
 

@@ -12,8 +12,9 @@ import (
 )
 
 // ompProviderID is the provider key used for the Prism provider in OMP's
-// models.yml. Codex OAuth models go under a separate "-codex" provider block
-// so they use the openai-responses transport.
+// models.yml. Models with API=="responses" (Zen muse-spark/gpt/grok or Codex
+// OAuth) go under a separate "-responses" provider block so they use the
+// openai-responses transport; chat models stay under the base provider.
 const ompProviderID = "prism"
 
 // ompConfigPath returns ~/.omp/agent/models.yml (cross-platform).
@@ -70,14 +71,21 @@ func writeYAMLConfig(path string, m map[string]interface{}) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// buildOmpModelEntries returns model entries for a single OMP provider block.
-// When codexOnly is true, only Codex OAuth models are included (routed via
-// openai-responses); otherwise only non-Codex models (openai-completions).
-func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, codexOnly bool) []interface{} {
+func usesOmpResponses(m config.ModelEntry, cfg *config.Config) bool {
+	if m.API == "responses" {
+		return true
+	}
+	if m.API == "chat_completions" {
+		return false
+	}
+	return cfg.IsCodexProviderID(m.Provider)
+}
+
+// buildOmpModelEntries returns model entries filtered by protocol.
+func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, wantResponses bool) []interface{} {
 	models := make([]interface{}, 0, len(remap.KnownModels))
 	for _, m := range remap.KnownModels {
-		isCodex := cfg.IsCodexProviderID(m.Provider)
-		if codexOnly != isCodex {
+		if usesOmpResponses(m, cfg) != wantResponses {
 			continue
 		}
 		ctx := m.ContextLength
@@ -108,10 +116,10 @@ func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, code
 	return models
 }
 
-// InstallOmpConfig writes provider blocks into ~/.omp/agent/models.yml:
-// - "prism" with api: openai-completions for non-Codex models (/v1/chat/completions)
-// - "prism-codex" with api: openai-responses for Codex OAuth models (/v1/responses)
-// All other providers and top-level keys are preserved. A one-time .prism-backup is kept.
+// InstallOmpConfig writes Prism provider blocks into ~/.omp/agent/models.yml:
+// - "prism" with api: openai-completions for chat_completions models
+// - "prism-responses" with api: openai-responses for responses models (Zen muse-spark/gpt/grok or Codex)
+// OMP's api is per-provider, so two providers are required when mixing protocols.
 func InstallOmpConfig(port int, remap *config.ModelRemapping) error {
 	p := ompConfigPath()
 	if p == "" {
@@ -135,33 +143,32 @@ func InstallOmpConfig(port int, remap *config.ModelRemapping) error {
 	}
 
 	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", port) + "/v1"
-	nonCodexModels := buildOmpModelEntries(remap, cfg, false)
-	codexModels := buildOmpModelEntries(remap, cfg, true)
+	chatModels := buildOmpModelEntries(remap, cfg, false)
+	responsesModels := buildOmpModelEntries(remap, cfg, true)
 
-	// Replace our provider blocks wholesale (clean slate)
-	if len(nonCodexModels) > 0 {
+	if len(chatModels) > 0 {
 		providers[ompProviderID] = map[string]interface{}{
 			"baseUrl": baseURL,
 			"apiKey":  "prism",
 			"api":     "openai-completions",
 			"auth":    "apiKey",
-			"models":  nonCodexModels,
+			"models":  chatModels,
 		}
 	} else {
 		delete(providers, ompProviderID)
 	}
-
-	if len(codexModels) > 0 {
-		providers[ompProviderID+"-codex"] = map[string]interface{}{
+	if len(responsesModels) > 0 {
+		providers[ompProviderID+"-responses"] = map[string]interface{}{
 			"baseUrl": baseURL,
 			"apiKey":  "prism",
 			"api":     "openai-responses",
 			"auth":    "apiKey",
-			"models":  codexModels,
+			"models":  responsesModels,
 		}
 	} else {
-		delete(providers, ompProviderID+"-codex")
+		delete(providers, ompProviderID+"-responses")
 	}
+	delete(providers, ompProviderID+"-codex")
 
 	m["providers"] = providers
 
@@ -171,7 +178,7 @@ func InstallOmpConfig(port int, remap *config.ModelRemapping) error {
 	return nil
 }
 
-// RestoreOmpConfig removes the "prism" and "prism-codex" provider blocks from
+// RestoreOmpConfig removes the "prism", "prism-responses" and legacy "prism-codex" provider blocks from
 // ~/.omp/agent/models.yml, preserving all other providers and settings.
 func RestoreOmpConfig() error {
 	p := ompConfigPath()
@@ -184,7 +191,7 @@ func RestoreOmpConfig() error {
 	}
 	changed := false
 	if providers, ok := m["providers"].(map[string]interface{}); ok {
-		for _, provID := range []string{ompProviderID, ompProviderID + "-codex"} {
+		for _, provID := range []string{ompProviderID, ompProviderID + "-responses", ompProviderID + "-codex"} {
 			if _, exists := providers[provID]; exists {
 				delete(providers, provID)
 				changed = true
