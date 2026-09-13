@@ -1,6 +1,6 @@
 // Package agents manages Prism's integrations with third-party coding
 // agents (Claude Code, Codex Desktop, OpenCode, ZCode, OMP, Grok Build,
-// Pi, and Kimi Code): config installation, restore, and status checks.
+// Pi, Kimi Code, and Prime Agent): config installation, restore, and status checks.
 package agents
 
 import (
@@ -50,7 +50,7 @@ func prismRouteForModelID(remap *config.ModelRemapping, id string) string {
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
 // separate endpoint and sync function, but shares the same auto-sync policy.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code", "prime-agent"}
 
 var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
@@ -80,6 +80,11 @@ func agentConfigPath(agentID string) string {
 		return filepath.Join(home, ".grok", "config.toml")
 	case "pi":
 		return filepath.Join(home, ".pi", "agent", "settings.json")
+	case "prime-agent":
+		// Env override ($PRIME_AGENT_CODING_AGENT_DIR / $PI_CODING_AGENT_DIR)
+		// is resolved by primeAgentModelsPath; agentConfigPath's home-based
+		// switch can't express it, same as zed's platform-specific path.
+		return primeAgentModelsPath()
 	case "kimi-code":
 		// Kimi Code reads its config from $KIMI_CODE_HOME/config.toml, defaulting
 		// to ~/.kimi-code/config.toml. The file name is always config.toml.
@@ -110,6 +115,8 @@ func AgentDisplayName(agentID string) string {
 		return "Grok Build"
 	case "pi":
 		return "Pi"
+	case "prime-agent":
+		return "Prime Agent"
 	case "kimi-code":
 		return "Kimi Code"
 	}
@@ -351,6 +358,8 @@ func IsAgentActive(agentID string) bool {
 		return false
 	case "pi":
 		return isPiActive()
+	case "prime-agent":
+		return isPrimeAgentActive()
 	}
 	return false
 }
@@ -546,6 +555,8 @@ func AgentInstalled(id string) bool {
 		return isGrokBuildInstalled()
 	case "pi":
 		return isPiInstalled()
+	case "prime-agent":
+		return isPrimeAgentInstalled()
 	case "kimi-code":
 		return isKimiCodeInstalled()
 	}
@@ -581,6 +592,8 @@ func SyncAgents(port int) {
 			syncGrokBuild(port)
 		case "pi":
 			syncPi(port)
+		case "prime-agent":
+			syncPrimeAgent(port)
 		case "kimi-code":
 			syncKimiCode(port)
 		}

@@ -19,6 +19,7 @@ const AGENTS = [
   { id: 'omp', name: 'Oh My Pi', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in ~/.omp/agent/models.yml so Oh My Pi can use your local models via Prism. Requires Oh My Pi (omp) to be installed.' },
   { id: 'grok-build', name: 'Grok Build', desc: 'Registers [model.prism-*] entries in ~/.grok/config.toml so Grok Build can use your local models via Prism. Requires Grok Build (grok) to be installed.' },
   { id: 'pi', name: 'Pi', desc: 'Registers a prism provider in ~/.pi/agent/models.json so Pi can use your local models via Prism. Also sets defaultProvider and defaultModel in ~/.pi/agent/settings.json. Requires Pi to be installed.' },
+  { id: 'prime-agent', name: 'Prime Agent', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in Prime Agent\u2019s models.json (~/.prime/agent, WSL-aware on Windows) so Prime Agent can use your local models via Prism. Your default model is left untouched. Requires Prime Agent (prime-agent) to be installed.' },
   { id: 'kimi-code', name: 'Kimi Code', desc: 'Registers a prism provider and model aliases in ~/.kimi-code/config.toml so Kimi Code CLI can use your local models via Prism. Requires Kimi Code (kimi) to be installed.' },
 ];
 

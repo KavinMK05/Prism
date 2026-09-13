@@ -96,8 +96,9 @@ func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, want
 		if out == 0 {
 			out = 16384
 		}
+		vision := m.Capabilities != nil && m.Capabilities.Vision
 		input := []string{"text"}
-		if m.Capabilities != nil && m.Capabilities.Vision {
+		if vision {
 			input = []string{"text", "image"}
 		}
 		routeKey := prismModelRouteKey(m)
@@ -107,6 +108,19 @@ func buildOmpModelEntries(remap *config.ModelRemapping, cfg *config.Config, want
 			"input":         input,
 			"contextWindow": ctx,
 			"maxTokens":     out,
+		}
+		// Prism is a proxy, but OMP's bundled catalog class rules (e.g. the
+		// DeepSeek class, `strip-image-input #true`) match on the bare model id
+		// and override the `input` declared above, silently dropping image parts
+		// on the openai-completions transport even though Prism forwards them to
+		// the upstream model. Opt out per vision model. The responses transport
+		// has no such guard, so `prism-responses` needs no compat block.
+		// OMP type-checks this key in models.yml as of 18.1.17 and passes
+		// unknown compat keys through untouched on older builds, so this is safe
+		// across versions. See can1357/oh-my-pi#11774 for the same carve-out
+		// applied to OpenCode Go's gateway-served DeepSeek Flash lanes.
+		if vision && !wantResponses {
+			entry["compat"] = map[string]interface{}{"stripImageInput": false}
 		}
 		if m.Reasoning {
 			entry["reasoning"] = true
