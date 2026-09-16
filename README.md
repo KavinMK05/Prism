@@ -59,6 +59,7 @@ Prism is the only thing standing between your agents and the messy reality of LL
 | **Factory Droid integration** | ✅ One-click | ❌ |
 | **OpenCode integration** | ✅ One-click | ❌ |
 | **ZCode integration** | ✅ One-click | ❌ |
+| **Prime Agent integration** | ✅ One-click | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Free unlimited web search** | ✅ Managed SearXNG | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |

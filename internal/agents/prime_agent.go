@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"ollama-proxy/internal/config"
 )
@@ -32,7 +33,8 @@ import (
 // exist, Prism falls back to the default WSL distro's ~/.prime/agent via the
 // \\wsl$ share: Prime Agent is frequently installed inside WSL rather than
 // natively on Windows, and the 127.0.0.1 proxy URL works from WSL through
-// WSL2's localhost forwarding.
+// WSL2's localhost forwarding. That fallback is only consulted while the distro
+// is already running: Prism never starts WSL itself.
 func primeAgentConfigDir() string {
 	if dir := os.Getenv("PRIME_AGENT_CODING_AGENT_DIR"); dir != "" {
 		return dir
@@ -61,16 +63,30 @@ func primeAgentConfigDir() string {
 	return ""
 }
 
+// wslRunningCheckTTL bounds how often the distro-running check runs while the
+// distro is stopped: each check spawns wsl.exe, and one status poll asks for
+// the config dir more than once.
+const wslRunningCheckTTL = 15 * time.Second
+
 var (
 	wslPrimeAgentDirOnce sync.Mutex
 	wslPrimeAgentDirDone bool
 	wslPrimeAgentDirVal  string
+	wslRunningCheckedAt  time.Time
+	wslRunningVal        bool
 )
 
 // wslPrimeAgentDir returns the Prime Agent config dir inside the default WSL
 // distro as a UNC path (\\wsl$\<distro>\...), or "" when unavailable.
-// Windows only; the result is cached for the process lifetime so status
-// polls and startup sync pay the wsl.exe spawn cost at most once.
+//
+// Windows only; a resolved directory is cached for the process lifetime so
+// status polls and startup sync pay the wsl.exe spawn cost at most once.
+//
+// Prism never starts WSL. Every way into a distro boots it when it is not
+// already running - the probe below reads env vars inside it, and even a bare
+// stat of the \\wsl$ share takes it Stopped -> Running. On a cold start that is
+// ~5s of extra startup and ~1.8GB of VM memory, so the lookup is gated on the
+// distro already running, using a metadata query that boots nothing.
 func wslPrimeAgentDir() string {
 	if runtime.GOOS != "windows" {
 		return ""
@@ -80,21 +96,82 @@ func wslPrimeAgentDir() string {
 	if wslPrimeAgentDirDone {
 		return wslPrimeAgentDirVal
 	}
+	if !wslDefaultDistroRunningLocked() {
+		// Deliberately not cached: the user may start WSL later in this session,
+		// and the dir only has to resolve when Prime Agent is actually usable.
+		// That is what lets a running distro be picked up without a restart.
+		return ""
+	}
 	wslPrimeAgentDirDone = true
 	wslPrimeAgentDirVal = resolveWSLPrimeAgentDir()
 	return wslPrimeAgentDirVal
 }
 
+// wslDefaultDistroRunningLocked reports whether the default WSL distro is
+// already running. Caller must hold wslPrimeAgentDirOnce. Answers are reused
+// for wslRunningCheckTTL because every check spawns wsl.exe.
+func wslDefaultDistroRunningLocked() bool {
+	if time.Since(wslRunningCheckedAt) < wslRunningCheckTTL {
+		return wslRunningVal
+	}
+	wslRunningVal = wslDefaultDistroRunning()
+	wslRunningCheckedAt = time.Now()
+	return wslRunningVal
+}
+
+// wslExe returns the wsl.exe path, or "" when WSL is not available.
+func wslExe() string {
+	if wsl, ok := lookupBinary("wsl"); ok && wsl != "" {
+		return wsl
+	}
+	if _, err := os.Stat(`C:\Windows\System32\wsl.exe`); err == nil {
+		return `C:\Windows\System32\wsl.exe`
+	}
+	return ""
+}
+
+// decodeUTF16LE decodes wsl.exe's own output, which is UTF-16LE on a pipe
+// (every ASCII byte arrives followed by a NUL) - unlike commands run *inside*
+// the distro, whose stdout reaches us as UTF-8.
+func decodeUTF16LE(b []byte) string {
+	units := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		units = append(units, uint16(b[i])|uint16(b[i+1])<<8)
+	}
+	return string(utf16.Decode(units))
+}
+
+// parseWSLDistroList extracts distro names from `wsl --list --quiet` /
+// `wsl --list --running --quiet` output. Empty output yields no names.
+func parseWSLDistroList(out []byte) []string {
+	var names []string
+	for _, line := range strings.Split(strings.ReplaceAll(decodeUTF16LE(out), "\r\n", "\n"), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// wslDistroInList reports whether name appears among distro names from wsl.exe.
+// Distro names are compared case-insensitively, as on the command line.
+func wslDistroInList(names []string, name string) bool {
+	for _, n := range names {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveWSLPrimeAgentDir queries the default WSL distro for its Prime Agent
 // config dir (honoring the in-WSL env overrides) and verifies it is reachable
-// through the \\wsl$ share.
+// through the \\wsl$ share. This boots the distro when it is not already
+// running, so callers must confirm that first (see wslPrimeAgentDir).
 func resolveWSLPrimeAgentDir() string {
-	wsl, ok := lookupBinary("wsl")
-	if !ok || wsl == "" {
-		if _, err := os.Stat(`C:\Windows\System32\wsl.exe`); err != nil {
-			return ""
-		}
-		wsl = `C:\Windows\System32\wsl.exe`
+	wsl := wslExe()
+	if wsl == "" {
+		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

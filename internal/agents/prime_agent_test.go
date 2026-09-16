@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"unicode/utf16"
 
 	"ollama-proxy/internal/config"
 )
@@ -103,5 +105,59 @@ func TestPrimeAgentInstallRestore(t *testing.T) {
 	}
 	if _, ok := m["providers"].(map[string]interface{})["other"]; !ok {
 		t.Error("pre-existing provider lost after restore")
+	}
+}
+
+// utf16le encodes s the way wsl.exe writes its own output to a pipe.
+func utf16le(s string) []byte {
+	units := utf16.Encode([]rune(s))
+	b := make([]byte, 0, len(units)*2)
+	for _, u := range units {
+		b = append(b, byte(u), byte(u>>8))
+	}
+	return b
+}
+
+// TestParseWSLDistroList covers decoding wsl.exe's UTF-16LE metadata output.
+// A wrong decode here is not cosmetic: losing the distro name stops Prime Agent
+// syncing silently, and inventing a name that is not running would let Prism
+// boot WSL, which it must never do.
+func TestParseWSLDistroList(t *testing.T) {
+	cases := []struct {
+		name string
+		out  []byte
+		want []string
+	}{
+		{"nothing running", nil, nil},
+		{"only newlines", utf16le("\r\n"), nil},
+		{"one distro", utf16le("Ubuntu\r\n"), []string{"Ubuntu"}},
+		{"two distros", utf16le("Ubuntu\r\nDebian\r\n"), []string{"Ubuntu", "Debian"}},
+		{"no trailing newline", utf16le("Ubuntu"), []string{"Ubuntu"}},
+		{"unix newlines", utf16le("Ubuntu\nDebian\n"), []string{"Ubuntu", "Debian"}},
+	}
+	for _, c := range cases {
+		if got := parseWSLDistroList(c.out); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: parseWSLDistroList = %#v, want %#v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDecodeUTF16LEKeepsNonASCII(t *testing.T) {
+	const want = "Ubuntu-日本語"
+	if got := decodeUTF16LE(utf16le(want)); got != want {
+		t.Errorf("decodeUTF16LE = %q, want %q", got, want)
+	}
+}
+
+func TestWSLDistroInList(t *testing.T) {
+	names := []string{"Ubuntu", "Debian"}
+	if !wslDistroInList(names, "ubuntu") {
+		t.Error("distro names must match case-insensitively; wsl.exe does not guarantee casing")
+	}
+	if wslDistroInList(names, "Arch") {
+		t.Error("wslDistroInList matched a distro that is not in the list")
+	}
+	if wslDistroInList(nil, "Ubuntu") {
+		t.Error("wslDistroInList matched against an empty list")
 	}
 }
