@@ -323,7 +323,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 	dbg.writeJSON("2_translated_request.json", firstTranslatedResponsesRequest(respReq, rp))
 
 	if respReq.Stream {
-		pr.handleResponsesWebSearchStreamLive(w, r, respReq, rp, allowed, blocked, maxSearches, numResults, client, reqStart)
+		pr.handleResponsesWebSearchStreamLive(w, r, respReq, rp, toolTypes, toolNamespaces, allowed, blocked, maxSearches, numResults, client, reqStart)
 		return true
 	}
 
@@ -430,7 +430,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		}
 	}
 
-	pr.emitResponsesWebSearchJSON(w, respReq, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens)
+	pr.emitResponsesWebSearchJSON(w, respReq, toolTypes, toolNamespaces, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens)
 	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
 	return true
 }
@@ -442,7 +442,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 // real-time flushes so Grok Build / Codex Desktop can render the "searching..."
 // indicator while the search is actually running. The final answer's text is
 // emitted as chunked deltas after the search phase completes.
-func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *config.ResolvedProvider, allowed, blocked []string, maxSearches, numResults int, client string, reqStart time.Time) {
+func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWriter, r *http.Request, respReq *ResponsesAPIRequest, rp *config.ResolvedProvider, toolTypes, toolNamespaces map[string]string, allowed, blocked []string, maxSearches, numResults int, client string, reqStart time.Time) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -576,32 +576,31 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	}
 
 	// emitFunctionCall forwards a non-search tool call (e.g. read_file,
-	// run_terminal_command) to the client as a function_call output item so the
-	// agent loop (Grok Build) can execute it and continue. The search intercept
-	// must not drop these — dropping them leaves the client with an empty
-	// response and the turn ends prematurely, causing the agent to spiral.
+	// run_terminal_command) to the client as a tool-call output item so the
+	// agent loop (Grok Build, Codex CLI) can execute it and continue. The search
+	// intercept must not drop these — dropping them leaves the client with an
+	// empty response and the turn ends prematurely, causing the agent to spiral.
+	//
+	// The item must also match what the client DECLARED, exactly like the normal
+	// Responses handlers (see buildToolCallItem): emitting function_call for a
+	// tool declared as {"type":"custom"} (apply_patch) makes Codex abort the
+	// call and retry, and an unsplit namespaced name (ns__child) is an unknown
+	// tool.
 	emitFunctionCall := func(tc normalizedToolCall) {
 		callID := tc.id
 		if callID == "" {
 			callID = fmt.Sprintf("call_%s_%d", tc.name, outputIndex+1)
 		}
 		itemID := "fc_" + callID
+		outputType := resolveToolOutputType(tc.name, toolTypes)
+		childName, namespace := splitToolNamespace(tc.name, toolNamespaces)
 		outputIndex++
 		e.emit("response.output_item.added", map[string]interface{}{
 			"type": "response.output_item.added", "output_index": outputIndex,
-			"item": map[string]interface{}{
-				"id": itemID, "type": "function_call", "status": "in_progress",
-				"call_id": callID, "name": tc.name, "arguments": "",
-			},
+			"item": buildToolCallAddedItem(itemID, outputType, callID, childName, namespace),
 		})
-		e.emit("response.function_call_arguments.done", map[string]interface{}{
-			"type": "response.function_call_arguments.done", "output_index": outputIndex,
-			"item_id": itemID, "arguments": tc.argsRaw,
-		})
-		fcItem := map[string]interface{}{
-			"id": itemID, "type": "function_call", "status": "completed",
-			"call_id": callID, "name": tc.name, "arguments": tc.argsRaw,
-		}
+		emitToolCallDoneEvent(e, outputType, itemID, tc.argsRaw, outputIndex)
+		fcItem := buildToolCallItem(itemID, outputType, callID, childName, namespace, tc.argsRaw, "completed")
 		e.emit("response.output_item.done", map[string]interface{}{
 			"type": "response.output_item.done", "output_index": outputIndex, "item": fcItem,
 		})
@@ -740,7 +739,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 }
 
 // emitResponsesWebSearchJSON writes a non-streaming Responses API response.
-func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens int) {
+func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, toolTypes, toolNamespaces map[string]string, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens int) {
 	output := []interface{}{}
 	addReasoning := func(text string) {
 		if text == "" {
@@ -774,14 +773,10 @@ func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, resp
 			if callID == "" {
 				callID = fmt.Sprintf("call_%s_%d", tc.name, len(output)+1)
 			}
-			output = append(output, map[string]interface{}{
-				"id":        "fc_" + callID,
-				"type":      "function_call",
-				"status":    "completed",
-				"call_id":   callID,
-				"name":      tc.name,
-				"arguments": tc.argsRaw,
-			})
+			// Same declared-type handling as the streaming emitter above.
+			outputType := resolveToolOutputType(tc.name, toolTypes)
+			childName, namespace := splitToolNamespace(tc.name, toolNamespaces)
+			output = append(output, buildToolCallItem("fc_"+callID, outputType, callID, childName, namespace, tc.argsRaw, "completed"))
 		}
 	} else {
 		output = append(output, map[string]interface{}{

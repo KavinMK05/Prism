@@ -1,0 +1,1020 @@
+{
+ "_source": "Trimmed from a real Codex CLI (codex-tui 0.147.0) request captured 2026-08-13 at %APPDATA%/Prism/debug/responses/000007_deepseek-v4-flash_cloud_stream/1_original_request.json. Tool descriptions and the grammar body are truncated; structure is verbatim.",
+ "tools": [
+  {
+   "name": "shell_command",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "command": {
+      "type": "string"
+     },
+     "justification": {
+      "type": "string"
+     },
+     "login": {
+      "type": "boolean"
+     },
+     "prefix_rule": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "sandbox_permissions": {
+      "enum": [
+       "use_default",
+       "require_escalated"
+      ],
+      "type": "string"
+     },
+     "timeout_ms": {
+      "type": "number"
+     },
+     "workdir": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "list_mcp_resources",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "cursor": {
+      "type": "string"
+     },
+     "server": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "list_mcp_resource_templates",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "cursor": {
+      "type": "string"
+     },
+     "server": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "read_mcp_resource",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "server": {
+      "type": "string"
+     },
+     "uri": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "server",
+     "uri"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "update_plan",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "explanation": {
+      "type": "string"
+     },
+     "plan": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "status": {
+         "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+         ],
+         "type": "string"
+        },
+        "step": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "step",
+        "status"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "plan"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "request_user_input",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "questions": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "header": {
+         "type": "string"
+        },
+        "id": {
+         "type": "string"
+        },
+        "options": {
+         "items": {
+          "additionalProperties": false,
+          "properties": {
+           "label": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "label",
+           "description"
+          ],
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "question": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "header",
+        "question",
+        "options"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "questions"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "format": {
+    "definition": "start: begin_patch hunk+ end_patch\r\nbegin_patch: \"*** Begin Patch\" LF\r\nend_patch: \"*** End Patch\" LF?\r\n\r\nhunk: add_hunk | delete_hunk | update_hunk\r\nadd_hunk: \"*** Add File: \" filename LF add_line+\r\ndelete_hunk: \"*** Delete File: \" filename LF\r\nupdate_hunk: \"*** Update File: \" filename LF change_move? change?\r\n\r\nfilename: /(.+)/\r\nadd_line: \"+\" /(.*)/ LF -> line\r\n\r\nchange_move: \"*** Move to: \" file\u2026",
+    "syntax": "lark",
+    "type": "grammar"
+   },
+   "name": "apply_patch",
+   "type": "custom"
+  },
+  {
+   "name": "view_image",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "multi_agent_v1",
+   "tools": [
+    {
+     "name": "close_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "target": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "target"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "resume_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "id"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "send_input",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "interrupt": {
+        "type": "boolean"
+       },
+       "items": {
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "audio_url": {
+           "type": "string"
+          },
+          "image_url": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "path": {
+           "type": "string"
+          },
+          "text": {
+           "type": "string"
+          },
+          "type": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "message": {
+        "type": "string"
+       },
+       "target": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "target"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "spawn_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "fork_context": {
+        "type": "boolean"
+       },
+       "items": {
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "audio_url": {
+           "type": "string"
+          },
+          "image_url": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "path": {
+           "type": "string"
+          },
+          "text": {
+           "type": "string"
+          },
+          "type": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "message": {
+        "type": "string"
+       },
+       "model": {
+        "type": "string"
+       },
+       "reasoning_effort": {
+        "type": "string"
+       },
+       "service_tier": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "wait_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "targets": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "timeout_ms": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "targets"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ],
+   "type": "namespace"
+  },
+  {
+   "name": "mcp__codex_apps__codex_document_control",
+   "tools": [
+    {
+     "name": "_execute_d_7437ad2e4ffa",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "args": {
+        "additionalProperties": {},
+        "properties": {},
+        "type": "object"
+       },
+       "executor_session_id": {
+        "type": "string"
+       },
+       "idempotency_key": {
+        "type": "string"
+       },
+       "tool_name": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "executor_session_id",
+       "idempotency_key",
+       "tool_name",
+       "args"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_get_docum_83c7f0565c0f",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "items": {
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "surface": {
+           "enum": [
+            "excel",
+            "powerpoint",
+            "sheets"
+           ],
+           "type": "string"
+          },
+          "tool_name": {
+           "type": "string"
+          },
+          "version": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "surface",
+          "tool_name",
+          "version"
+         ],
+         "type": "object"
+        },
+        "type": "array"
+       }
+      },
+      "required": [
+       "items"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_list_document_sessions",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "surface": {
+        "anyOf": [
+         {
+          "enum": [
+           "excel",
+           "powerpoint",
+           "sheets"
+          ],
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ],
+   "type": "namespace"
+  },
+  {
+   "name": "mcp__codex_apps__plugin_management",
+   "tools": [
+    {
+     "name": "_get_app_permissions",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "app_id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "app_id"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_get_plugin_dependencies",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "plugin_reference": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "plugin_reference"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_uninstall_app",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "app_ids": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "reason": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "app_ids"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_update_app_permissions",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "app_id": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "reason": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "updates": {
+        "additionalProperties": false,
+        "properties": {
+         "app_permissions": {
+          "anyOf": [
+           {
+            "items": {
+             "additionalProperties": false,
+             "properties": {
+              "setting": {
+               "enum": [
+                "permission_mode"
+               ],
+               "type": "string"
+              },
+              "value": {
+               "enum": [
+                "inherit",
+                "always_ask",
+                "ask_before_writes",
+                "review_important_actions",
+                "full_access"
+               ],
+               "type": "string"
+              }
+             },
+             "required": [
+              "value"
+             ],
+             "type": "object"
+            },
+            "type": "array"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "global_permissions": {
+          "anyOf": [
+           {
+            "items": {
+             "additionalProperties": false,
+             "properties": {
+              "setting": {
+               "enum": [
+                "permission_mode"
+               ],
+               "type": "string"
+              },
+              "value": {
+               "enum": [
+                "always_ask",
+                "ask_before_writes",
+                "review_important_actions",
+                "full_access"
+               ],
+               "type": "string"
+              }
+             },
+             "required": [
+              "value"
+             ],
+             "type": "object"
+            },
+            "type": "array"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         }
+        },
+        "type": "object"
+       }
+      },
+      "required": [
+       "updates"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ],
+   "type": "namespace"
+  },
+  {
+   "name": "mcp__codex_apps__safety_settings",
+   "tools": [
+    {
+     "name": "_get_family_info",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_get_parental_controls",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "user_id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "user_id"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_get_trusted_contact",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_prepare_parental_02db6ffaefc6",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "control_id": {
+        "type": "string"
+       },
+       "user_id": {
+        "type": "string"
+       },
+       "value": {
+        "anyOf": [
+         {
+          "type": "boolean"
+         },
+         {
+          "additionalProperties": false,
+          "properties": {
+           "enabled": {
+            "type": "boolean"
+           },
+           "end_time": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "start_time": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "enabled",
+           "start_time",
+           "end_time"
+          ],
+          "type": "object"
+         },
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         }
+        ]
+       }
+      },
+      "required": [
+       "user_id",
+       "control_id",
+       "value"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "name": "_update_parental_control",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "confirmation_summary": {
+        "type": "string"
+       },
+       "control_id": {
+        "type": "string"
+       },
+       "operation_id": {
+        "type": "string"
+       },
+       "user_id": {
+        "type": "string"
+       },
+       "value": {
+        "anyOf": [
+         {
+          "type": "boolean"
+         },
+         {
+          "additionalProperties": false,
+          "properties": {
+           "enabled": {
+            "type": "boolean"
+           },
+           "end_time": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "start_time": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "enabled",
+           "start_time",
+           "end_time"
+          ],
+          "type": "object"
+         },
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         }
+        ]
+       }
+      },
+      "required": [
+       "user_id",
+       "control_id",
+       "value",
+       "operation_id",
+       "confirmation_summary"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ],
+   "type": "namespace"
+  },
+  {
+   "name": "get_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "create_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "objective": {
+      "type": "string"
+     },
+     "token_budget": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "objective"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "name": "update_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "status": {
+      "enum": [
+       "complete",
+       "blocked"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "status"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "external_web_access": false,
+   "search_content_types": [
+    "text",
+    "image"
+   ],
+   "type": "web_search"
+  }
+ ],
+ "replay_input": [
+  {
+   "_comment": "real item: the shell call Codex replayed after Prism emitted it as a function_call",
+   "type": "function_call",
+   "name": "shell_command",
+   "call_id": "call_00_gscUHbggPS3MaK4Z2RZs5703",
+   "arguments": "{\"command\":\"Get-ChildItem -Recurse -Filter *.tsx\"}"
+  },
+  {
+   "_comment": "real item: output carries BOTH call_id and the fco_ item id (normal case)",
+   "type": "function_call_output",
+   "call_id": "call_00_gscUHbggPS3MaK4Z2RZs5703",
+   "id": "fco_019ffbfe-0ad3-70e1-8067-00fd337f7d44",
+   "output": "Exit code: 0\nWall time: 1.1 seconds\nOutput:\nStatsPanel.tsx\n"
+  },
+  {
+   "_comment": "Codex variant: output carries ONLY the fco_ output-item id (no call_id)",
+   "type": "function_call_output",
+   "id": "fco_019ffbfe-0ad3-70e1-8067-00fd337f7d44",
+   "output": "Exit code: 0\nWall time: 0.9 seconds\nOutput:\nok\n"
+  },
+  {
+   "_comment": "Codex variant: camelCase callId",
+   "type": "function_call_output",
+   "callId": "call_01abc",
+   "output": "ok"
+  },
+  {
+   "_comment": "Codex variant: tool_call_id instead of call_id",
+   "type": "function_call_output",
+   "tool_call_id": "call_02def",
+   "output": "ok"
+  },
+  {
+   "_comment": "namespaced replay: Codex splits the qualified name into name + namespace",
+   "type": "function_call",
+   "name": "spawn_agent",
+   "namespace": "multi_agent_v1",
+   "call_id": "call_03ghi",
+   "arguments": "{\"task\":\"count the files\"}"
+  },
+  {
+   "_comment": "namespaced freeform replay (Codex \"Responses Lite\" shape: apply_patch is a custom child of the functions namespace)",
+   "type": "custom_tool_call",
+   "name": "custom_apply_patch",
+   "namespace": "functions",
+   "call_id": "call_04jkl",
+   "input": "*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** End Patch"
+  },
+  {
+   "_comment": "orphan: no tool call with this id exists anywhere in the input",
+   "type": "function_call_output",
+   "call_id": "call_missing",
+   "output": "result from a truncated history"
+  },
+  {
+   "_comment": "view_image call (real Codex tool, declared as a function in the captured tool list)",
+   "type": "function_call",
+   "name": "view_image",
+   "call_id": "call_05mno",
+   "arguments": "{\"path\":\"src/StatsPanel.tsx.png\"}"
+  },
+  {
+   "_comment": "view_image result with text and image parts (Responses tool output is an array of content parts)",
+   "type": "function_call_output",
+   "call_id": "call_05mno",
+   "output": [
+    {
+     "type": "input_text",
+     "text": "Image loaded from src/StatsPanel.tsx.png"
+    },
+    {
+     "type": "input_image",
+     "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+    }
+   ]
+  },
+  {
+   "_comment": "view_image result with image only and the object form of image_url",
+   "type": "function_call_output",
+   "call_id": "call_06pqr",
+   "output": [
+    {
+     "type": "input_image",
+     "image_url": {
+      "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+     }
+    }
+   ]
+  },
+  {
+   "_comment": "view_image call for the image-only result",
+   "type": "function_call",
+   "name": "view_image",
+   "call_id": "call_06pqr",
+   "arguments": "{\"path\":\"logo.png\"}"
+  }
+ ]
+}

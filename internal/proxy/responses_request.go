@@ -130,6 +130,10 @@ func collectAllResponseTools(req *ResponsesAPIRequest) []interface{} {
 // Mirrors the buffering strategy used by the CLIProxyAPI reference
 // implementation.
 func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMessage {
+	// Pair tool outputs with their calls first: Codex does not always populate
+	// `call_id` on output items (see normalizeResponsesToolCallOutputs) and every
+	// branch below depends on it being present.
+	input = normalizeResponsesToolCallOutputs(input)
 	callIDToName := buildResponsesCallIDToNameMap(input)
 
 	// First pass: collect call_ids that have outputs in this input, so we can
@@ -145,7 +149,7 @@ func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMess
 		if t != "function_call_output" && t != "custom_tool_call_output" {
 			continue
 		}
-		callID := strings.TrimSpace(getMapString(m, "call_id"))
+		callID := extractResponsesCallID(m)
 		if callID != "" {
 			outputCallIDs[callID] = struct{}{}
 		}
@@ -262,8 +266,8 @@ func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMess
 			}
 
 		case "function_call":
-			callID, _ := m["call_id"].(string)
-			name, _ := m["name"].(string)
+			callID := extractResponsesCallID(m)
+			name := replayToolName(m)
 			arguments := getMapString(m, "arguments")
 			pendingToolCalls = append(pendingToolCalls, OpenAIToolCall{
 				ID:   callID,
@@ -281,8 +285,8 @@ func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMess
 			// Codex freeform tool call replay: wrap the raw input so it matches
 			// the {"input": string} function shape used when converting custom
 			// tool definitions for the chat-completions upstream.
-			callID, _ := m["call_id"].(string)
-			name, _ := m["name"].(string)
+			callID := extractResponsesCallID(m)
+			name := replayToolName(m)
 			inputVal := getMapString(m, "input")
 			wrapped, _ := json.Marshal(map[string]interface{}{"input": inputVal})
 			pendingToolCalls = append(pendingToolCalls, OpenAIToolCall{
@@ -298,33 +302,44 @@ func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMess
 			}
 
 		case "function_call_output":
-			callID, _ := m["call_id"].(string)
-			output := responsesToolOutputText(m["output"])
-			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: output}
+			callID := extractResponsesCallID(m)
+			// Tool outputs may carry image parts (Codex's view_image); keep them.
+			content := responsesToolOutputChatContent(m["output"])
+			if _, awaiting := awaitingToolOutputs[callID]; callID == "" || !awaiting {
+				// Orphan output: no tool call with this id was sent upstream (or the
+				// id is unusable). A role:"tool" message with an empty or unknown
+				// tool_call_id is rejected by OpenAI-compatible upstreams and makes
+				// the model repeat the same call, so surface the text as a user
+				// message instead — matching the CLIProxyAPI reference.
+				appendRegular(OpenAIChatMessage{Role: "user", Content: content})
+				continue
+			}
+			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: content}
 			if name, ok := callIDToName[callID]; ok {
 				msg.Name = name
 			}
 			// Tool outputs emit directly (never deferred) so they immediately
 			// follow the assistant(tool_calls) message.
 			messages = append(messages, msg)
-			if cid := strings.TrimSpace(callID); cid != "" {
-				delete(awaitingToolOutputs, cid)
-			}
+			delete(awaitingToolOutputs, callID)
 			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 				flushDeferred()
 			}
 
 		case "custom_tool_call_output":
-			callID, _ := m["call_id"].(string)
-			output := responsesToolOutputText(m["output"])
-			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: output}
+			callID := extractResponsesCallID(m)
+			content := responsesToolOutputChatContent(m["output"])
+			if _, awaiting := awaitingToolOutputs[callID]; callID == "" || !awaiting {
+				// Orphan output (see the function_call_output case above).
+				appendRegular(OpenAIChatMessage{Role: "user", Content: content})
+				continue
+			}
+			msg := OpenAIChatMessage{Role: "tool", ToolID: callID, Content: content}
 			if name, ok := callIDToName[callID]; ok {
 				msg.Name = name
 			}
 			messages = append(messages, msg)
-			if cid := strings.TrimSpace(callID); cid != "" {
-				delete(awaitingToolOutputs, cid)
-			}
+			delete(awaitingToolOutputs, callID)
 			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 				flushDeferred()
 			}
@@ -478,6 +493,112 @@ func responsesToolOutputText(output interface{}) string {
 	return string(b)
 }
 
+// responsesToolOutputParts splits a Responses tool-output payload into the text
+// the model can read and the images it should see.
+//
+// A tool output is either a plain string or an array of content parts. Codex's
+// view_image returns image parts (input_image / input_file), and those used to be
+// dropped entirely: only `text` fields were read, so the model received an empty
+// tool result and reported that the image "delivered nothing". Images are
+// returned as data URLs so each provider can take the shape it needs (Ollama
+// wants bare base64 in `images`, chat-completions wants the URL intact).
+func responsesToolOutputParts(output interface{}) (string, []string) {
+	arr, ok := output.([]interface{})
+	if !ok {
+		return responsesToolOutputText(output), nil
+	}
+
+	var sb strings.Builder
+	var images []string
+	for _, part := range arr {
+		if s, ok := part.(string); ok {
+			sb.WriteString(s)
+			continue
+		}
+		pm, ok := part.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch getMapString(pm, "type") {
+		case "text", "input_text", "output_text":
+			sb.WriteString(getMapString(pm, "text"))
+		case "input_image", "image_url":
+			if url := responsesImageURL(pm); url != "" {
+				images = append(images, url)
+			}
+		case "input_file":
+			if data := getMapString(pm, "file_data"); strings.HasPrefix(data, "data:") {
+				images = append(images, data)
+			}
+		default:
+			// Unknown part types may still carry readable text.
+			sb.WriteString(getMapString(pm, "text"))
+		}
+	}
+
+	text := sb.String()
+	if len(images) > 0 && strings.TrimSpace(text) == "" {
+		// Never hand the model an empty tool result: say what came back.
+		text = fmt.Sprintf("[tool output contained %d image(s); see the attached image data]", len(images))
+	}
+	return text, images
+}
+
+// responsesImageURL accepts both the string and the object form of an image part
+// ("image_url": "data:…" and "image_url": {"url": "data:…"}).
+func responsesImageURL(part map[string]interface{}) string {
+	if s, ok := part["image_url"].(string); ok {
+		return s
+	}
+	if m, ok := part["image_url"].(map[string]interface{}); ok {
+		return getMapString(m, "url")
+	}
+	return ""
+}
+
+// responsesToolOutputChatContent builds the chat-completions `content` value for
+// a tool output: a plain string when the output is text-only, or a multimodal
+// parts array when the tool returned images. Mirrors CLIProxyAPI's
+// setFunctionCallOutputContent, which switches to a content array only when an
+// image part is present so text-only outputs keep the plain-string shape.
+func responsesToolOutputChatContent(output interface{}) interface{} {
+	text, images := responsesToolOutputParts(output)
+	if len(images) == 0 {
+		return text
+	}
+	parts := []interface{}{}
+	if text != "" {
+		parts = append(parts, map[string]interface{}{"type": "text", "text": text})
+	}
+	for _, url := range images {
+		parts = append(parts, map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]interface{}{"url": url},
+		})
+	}
+	return parts
+}
+
+// ollamaToolOutputImages converts image data URLs into the bare base64 payloads
+// Ollama's `images` field expects. HTTP(S) URLs are skipped with a warning, the
+// same as user-message images on the Ollama path.
+func ollamaToolOutputImages(images []string) []string {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(images))
+	for _, url := range images {
+		if !strings.HasPrefix(url, "data:") {
+			log.Printf("[WARN] tool output image with HTTP URL not supported for Ollama provider, skipping: %s", url)
+			continue
+		}
+		if parts := strings.SplitN(url, ",", 2); len(parts) == 2 {
+			out = append(out, parts[1])
+		}
+	}
+	return out
+}
+
 // getMapString returns m[key] as a string, or "" when absent / non-string.
 func getMapString(m map[string]interface{}, key string) string {
 	if s, ok := m[key].(string); ok {
@@ -503,14 +624,223 @@ func buildResponsesCallIDToNameMap(items []interface{}) map[string]string {
 		switch itemType {
 		case "function_call", "custom_tool_call", "web_search_call",
 			"local_shell_call", "computer_call":
-			callID, _ := itemMap["call_id"].(string)
-			name, _ := itemMap["name"].(string)
+			callID := extractResponsesCallID(itemMap)
+			// The upstream tool list declares namespaced tools in their
+			// qualified form ("ns__child"), so the tool message has to carry the
+			// same name the assistant tool_call used.
+			name := replayToolName(itemMap)
 			if callID != "" && name != "" {
 				idToName[callID] = name
 			}
 		}
 	}
 	return idToName
+}
+
+// extractResponsesCallID resolves the call id of a Responses tool-call or
+// tool-output item. Codex does not reliably populate `call_id`: some builds send
+// only the output-item id ("fco_…", which is an item id rather than a call id),
+// a camelCase `callId`, or a `tool_call_id`. Mirrors CLIProxyAPI's
+// ExtractResponsesCallID, including ignoring fco_* output-item ids.
+func extractResponsesCallID(item map[string]interface{}) string {
+	for _, key := range []string{"call_id", "tool_call_id", "callId"} {
+		if v := strings.TrimSpace(getMapString(item, key)); v != "" {
+			return v
+		}
+	}
+	id := strings.TrimSpace(getMapString(item, "id"))
+	if strings.HasPrefix(id, "fco_") {
+		// An output-item id can never match a tool call.
+		return ""
+	}
+	return id
+}
+
+// replayToolName returns the upstream function name for a replayed tool-call
+// item. Codex splits a namespaced call into `name` + `namespace` on the response
+// item, but the upstream tool list only declares the qualified form
+// ("ns__child"), so the replayed assistant tool_call must be re-qualified or the
+// upstream rejects it as an unknown function. Mirrors the
+// qualifyResponsesNamespaceToolName call on CLIProxyAPI's request path.
+func replayToolName(item map[string]interface{}) string {
+	name := strings.TrimSpace(getMapString(item, "name"))
+	namespace := strings.TrimSpace(getMapString(item, "namespace"))
+	if name == "" || namespace == "" {
+		return name
+	}
+	return qualifyResponsesNamespaceToolName(namespace, name)
+}
+
+// isResponsesToolOutput reports whether an input item carries the result of a
+// tool call.
+func isResponsesToolOutput(item map[string]interface{}) bool {
+	switch getMapString(item, "type") {
+	case "function_call_output", "custom_tool_call_output":
+		return true
+	}
+	return false
+}
+
+// normalizeResponsesToolCallOutputs pairs each tool output with the tool call it
+// belongs to and fills in a `call_id` when the client omitted it.
+//
+// Codex does not always populate `call_id` on output items — newer builds and the
+// "Responses Lite" payloads may carry only the output-item id ("fco_…"), a
+// camelCase `callId`, or nothing at all. Unpaired outputs used to be replayed as
+// role:"tool" messages with an empty tool_call_id, which OpenAI-compatible
+// upstreams reject and which makes the model re-issue the same tool call
+// indefinitely.
+//
+// Matching is the three-pass strategy used by the CLIProxyAPI reference:
+//
+//  1. exact call id
+//  2. function name carried on the output item
+//  3. FIFO order
+//
+// Passes 2 and 3 skip a pending call while a later output still references it
+// explicitly, so an id-less output cannot steal a call that an explicit output
+// needs. Outputs that already carry a call id matching no pending call are left
+// untouched; the translators surface those as user text.
+//
+// The input slice and its item maps are never mutated, because the request is
+// echoed back to the client and dumped to the debug capture.
+func normalizeResponsesToolCallOutputs(input []interface{}) []interface{} {
+	if len(input) == 0 {
+		return input
+	}
+	items := make([]interface{}, len(input))
+	copy(items, input)
+
+	// Count explicit output references up front so a later explicit output can
+	// reserve its call against the id-less matching passes.
+	reserved := map[string]int{}
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok || !isResponsesToolOutput(m) {
+			continue
+		}
+		if id := extractResponsesCallID(m); id != "" {
+			reserved[id]++
+		}
+	}
+
+	var pendingIDs []string
+	pendingNames := map[string]string{}
+
+	for i := 0; i < len(items); i++ {
+		m, ok := items[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch getMapString(m, "type") {
+		case "function_call", "custom_tool_call":
+			id := extractResponsesCallID(m)
+			if id == "" {
+				break
+			}
+			pendingIDs = append(pendingIDs, id)
+			pendingNames[id] = replayToolName(m)
+
+		case "function_call_output", "custom_tool_call_output":
+			start := i
+			for i < len(items) {
+				out, ok := items[i].(map[string]interface{})
+				if !ok || !isResponsesToolOutput(out) {
+					break
+				}
+				i++
+			}
+			matched := matchResponsesToolOutputs(pendingIDs, pendingNames, items[start:i], reserved)
+			var unmatched []string
+			for idx, id := range pendingIDs {
+				if matched[idx] < 0 {
+					unmatched = append(unmatched, id)
+					continue
+				}
+				out := items[start+matched[idx]].(map[string]interface{})
+				if extractResponsesCallID(out) == id {
+					continue
+				}
+				withID := make(map[string]interface{}, len(out)+1)
+				for k, v := range out {
+					withID[k] = v
+				}
+				withID["call_id"] = id
+				items[start+matched[idx]] = withID
+			}
+			pendingIDs = unmatched
+			i-- // the run already advanced past the outputs
+		}
+	}
+	return items
+}
+
+// matchResponsesToolOutputs returns, for each pending call (same index), the
+// index of the output item it should be paired with, or -1 when unmatched.
+func matchResponsesToolOutputs(pendingIDs []string, pendingNames map[string]string, outputs []interface{}, reserved map[string]int) []int {
+	matched := make([]int, len(pendingIDs))
+	for i := range matched {
+		matched[i] = -1
+	}
+	used := make([]bool, len(outputs))
+
+	// Pass 1: exact call id.
+	for p, id := range pendingIDs {
+		for o, item := range outputs {
+			out, ok := item.(map[string]interface{})
+			if !ok || used[o] {
+				continue
+			}
+			if extractResponsesCallID(out) == id {
+				used[o] = true
+				matched[p] = o
+				reserved[id]--
+				break
+			}
+		}
+	}
+
+	// Pass 2: the output item names the function it belongs to.
+	for p, id := range pendingIDs {
+		if matched[p] >= 0 || reserved[id] > 0 {
+			continue
+		}
+		expected := pendingNames[id]
+		if expected == "" {
+			continue
+		}
+		for o, item := range outputs {
+			out, ok := item.(map[string]interface{})
+			if !ok || used[o] || extractResponsesCallID(out) != "" {
+				continue
+			}
+			if name := strings.TrimSpace(getMapString(out, "name")); name != "" && name == expected {
+				used[o] = true
+				matched[p] = o
+				break
+			}
+		}
+	}
+
+	// Pass 3: FIFO order.
+	for p, id := range pendingIDs {
+		if matched[p] >= 0 || reserved[id] > 0 {
+			continue
+		}
+		for o, item := range outputs {
+			out, ok := item.(map[string]interface{})
+			if !ok || used[o] || extractResponsesCallID(out) != "" {
+				continue
+			}
+			if name := strings.TrimSpace(getMapString(out, "name")); name != "" && pendingNames[id] != "" && name != pendingNames[id] {
+				continue
+			}
+			used[o] = true
+			matched[p] = o
+			break
+		}
+	}
+	return matched
 }
 
 // responsesReasoningSummaryText returns the concatenated summary_text from a
@@ -898,6 +1228,8 @@ func translateResponsesAPIToOllama(req *ResponsesAPIRequest) *OllamaChatRequest 
 // function_call / custom_tool_call items are buffered into a single assistant
 // message and tool-call -> tool adjacency is preserved.
 func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessage {
+	// Same output/call pairing as the chat-completions translator.
+	input = normalizeResponsesToolCallOutputs(input)
 	callIDToName := buildResponsesCallIDToNameMap(input)
 
 	outputCallIDs := map[string]struct{}{}
@@ -910,7 +1242,7 @@ func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessag
 		if t != "function_call_output" && t != "custom_tool_call_output" {
 			continue
 		}
-		callID := strings.TrimSpace(getMapString(m, "call_id"))
+		callID := extractResponsesCallID(m)
 		if callID != "" {
 			outputCallIDs[callID] = struct{}{}
 		}
@@ -1022,8 +1354,8 @@ func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessag
 			}
 
 		case "function_call":
-			callID, _ := m["call_id"].(string)
-			name, _ := m["name"].(string)
+			callID := extractResponsesCallID(m)
+			name := replayToolName(m)
 			arguments := getMapString(m, "arguments")
 			var args map[string]interface{}
 			if arguments != "" {
@@ -1044,8 +1376,8 @@ func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessag
 			}
 
 		case "custom_tool_call":
-			callID, _ := m["call_id"].(string)
-			name, _ := m["name"].(string)
+			callID := extractResponsesCallID(m)
+			name := replayToolName(m)
 			inputVal := getMapString(m, "input")
 			var args map[string]interface{}
 			if inputVal != "" {
@@ -1065,19 +1397,26 @@ func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessag
 			}
 
 		case "function_call_output", "custom_tool_call_output":
-			callID, _ := m["call_id"].(string)
-			output := responsesToolOutputText(m["output"])
-			msg := OllamaMessage{Role: "tool", Content: output}
-			if callID != "" {
-				msg.ToolCallID = callID
+			callID := extractResponsesCallID(m)
+			// Tool outputs may carry image parts (Codex's view_image): Ollama takes
+			// them as bare base64 in `images` on the same tool message.
+			output, imageURLs := responsesToolOutputParts(m["output"])
+			images := ollamaToolOutputImages(imageURLs)
+			if _, awaiting := awaitingToolOutputs[callID]; callID == "" || !awaiting {
+				// Orphan output: a role:"tool" message with no usable tool_call_id
+				// (or one no tool call declared) leaves the upstream unable to
+				// correlate the result, so the model repeats the same call. Emit the
+				// text as a user message instead — matching the CLIProxyAPI
+				// reference.
+				appendRegular(OllamaMessage{Role: "user", Content: output, Images: images})
+				continue
 			}
+			msg := OllamaMessage{Role: "tool", Content: output, Images: images, ToolCallID: callID}
 			if name, ok := callIDToName[callID]; ok {
 				msg.ToolName = name
 			}
 			messages = append(messages, msg)
-			if cid := strings.TrimSpace(callID); cid != "" {
-				delete(awaitingToolOutputs, cid)
-			}
+			delete(awaitingToolOutputs, callID)
 			if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 				flushDeferred()
 			}
