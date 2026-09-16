@@ -18,6 +18,7 @@ on:
       - 'Info.plist'
       - '.github/workflows/release.yml'
       - 'web/**'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -28,8 +29,6 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
 
       - uses: actions/setup-go@v5
         with:
@@ -64,7 +63,13 @@ jobs:
       - name: Write release notes from the tag annotation
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        run: git tag -l --format='%(contents)' "${{ github.ref_name }}" > release-notes.md
+        run: |
+          # Do not re-add fetch-tags to the checkout step: on a tag push the
+          # annotated tag object's SHA differs from the commit, and checkout's
+          # combined refspec then fails with "Cannot fetch both <sha> and
+          # refs/tags/<tag> to refs/tags/<tag>". Fetch the single tag here.
+          git fetch --force --no-recurse-submodules origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -81,8 +86,6 @@ jobs:
       HAS_NOTARIZATION: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
 
       - uses: actions/setup-go@v5
         with:
@@ -202,7 +205,13 @@ jobs:
       - name: Write release notes from the tag annotation
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        run: git tag -l --format='%(contents)' "${{ github.ref_name }}" > release-notes.md
+        run: |
+          # Do not re-add fetch-tags to the checkout step: on a tag push the
+          # annotated tag object's SHA differs from the commit, and checkout's
+          # combined refspec then fails with "Cannot fetch both <sha> and
+          # refs/tags/<tag> to refs/tags/<tag>". Fetch the single tag here.
+          git fetch --force --no-recurse-submodules origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
