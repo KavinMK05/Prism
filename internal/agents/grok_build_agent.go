@@ -52,19 +52,6 @@ func tomlQuote(s string) string {
 	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(s) + "\""
 }
 
-// hasModelsSection reports whether the content contains a top-level [models]
-// or [models.*] section header. Prevents emitting a second [models] section
-// (a TOML duplicate-section parse error) when the user already has one.
-func hasModelsSection(content string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		t := strings.TrimSpace(line)
-		if t == "[models]" || strings.HasPrefix(t, "[models.") {
-			return true
-		}
-	}
-	return false
-}
-
 // stripPrismModelSections removes all [model.prism-*] section blocks from the
 // content. Each section starts with a [model.prism-...] header and runs until
 // the next section header (or EOF). This catches sections that were written
@@ -145,6 +132,9 @@ func buildGrokBuildModelSections(remap *config.ModelRemapping, cfg *config.Confi
 // file (a new [section] header correctly closes any prior section). Any prior
 // Prism managed block is stripped first, making re-sync idempotent. A one-time
 // .prism-backup is kept of the original user content.
+//
+// Only model registrations are written: Prism does not set [models] default, so
+// which model Grok Build starts with stays the user's choice.
 func InstallGrokBuildConfig(port int, remap *config.ModelRemapping) error {
 	p := grokBuildConfigPath()
 	if p == "" {
@@ -167,11 +157,6 @@ func InstallGrokBuildConfig(port int, remap *config.ModelRemapping) error {
 
 	var block strings.Builder
 	block.WriteString("\n" + codexManagedBegin + "\n")
-	if !hasModelsSection(cleaned) {
-		block.WriteString("[models]\n")
-		block.WriteString("default = " + tomlQuote("prism-"+sanitizeGrokModelKey(prismModelRouteKey(remap.KnownModels[0]))) + "\n")
-		block.WriteString("\n")
-	}
 	block.WriteString(buildGrokBuildModelSections(remap, cfg, baseURL))
 	block.WriteString(codexManagedEnd + "\n")
 

@@ -139,7 +139,11 @@ func (pr *ProviderRouter) handleResponsesAPIToOpenAI(w http.ResponseWriter, r *h
 
 	responsesResp := translateChatCompletionsToResponsesAPI(&openAIResp, respReq, toolTypes, toolNamespaces)
 
-	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	var cachedPromptTokens int
+	if openAIResp.Usage.PromptTokensDetails != nil {
+		cachedPromptTokens = openAIResp.Usage.PromptTokensDetails.CachedTokens
+	}
+	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, cachedPromptTokens, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -203,7 +207,7 @@ func (pr *ProviderRouter) handleResponsesAPIToOllama(w http.ResponseWriter, r *h
 
 	responsesResp := translateOllamaToResponsesAPI(&ollamaResp, respReq, toolTypes, toolNamespaces)
 
-	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, ollamaResp.cachedPromptTokens(), time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

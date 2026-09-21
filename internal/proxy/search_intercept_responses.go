@@ -140,7 +140,7 @@ type respSearchSegment struct {
 }
 
 // normalizedToolCall is a provider-agnostic tool call: Ollama gives arguments
-// as a map, OpenAI as a JSON string — we parse both into a map for the loop.
+// as a map, OpenAI as a JSON string â€” we parse both into a map for the loop.
 type normalizedToolCall struct {
 	id        string
 	name      string
@@ -150,11 +150,14 @@ type normalizedToolCall struct {
 
 // normalizedTurn is a provider-agnostic non-streaming chat response.
 type normalizedTurn struct {
-	content      string
-	thinking     string
-	toolCalls    []normalizedToolCall
-	inputTokens  int
-	outputTokens int
+	content     string
+	thinking    string
+	toolCalls   []normalizedToolCall
+	inputTokens int
+	// cachedInputTokens is the portion of inputTokens served from the prompt
+	// cache, forwarded to clients as usage.input_tokens_details.cached_tokens.
+	cachedInputTokens int
+	outputTokens      int
 }
 
 // firstTranslatedResponsesRequest builds the translated upstream request for
@@ -217,10 +220,11 @@ func (pr *ProviderRouter) upstreamResponsesChat(respReq *ResponsesAPIRequest, rp
 
 func ollamaResponseToNormalized(o *OllamaChatResponse) *normalizedTurn {
 	t := &normalizedTurn{
-		content:      o.Message.Content,
-		thinking:     o.Message.Thinking,
-		inputTokens:  o.PromptEvalCount,
-		outputTokens: o.EvalCount,
+		content:           o.Message.Content,
+		thinking:          o.Message.Thinking,
+		inputTokens:       o.PromptEvalCount,
+		cachedInputTokens: o.cachedPromptTokens(),
+		outputTokens:      o.EvalCount,
 	}
 	for _, tc := range o.Message.ToolCalls {
 		args := tc.Function.Arguments
@@ -239,6 +243,9 @@ func openAIResponseToNormalized(o *OpenAIChatResponse) *normalizedTurn {
 	t := &normalizedTurn{
 		inputTokens:  o.Usage.PromptTokens,
 		outputTokens: o.Usage.CompletionTokens,
+	}
+	if o.Usage.PromptTokensDetails != nil && o.Usage.PromptTokensDetails.CachedTokens > 0 {
+		t.cachedInputTokens = o.Usage.PromptTokensDetails.CachedTokens
 	}
 	if len(o.Choices) > 0 {
 		ch := o.Choices[0]
@@ -330,7 +337,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 	// Non-streaming: collect all turns, then emit one composed JSON response.
 	var segments []respSearchSegment
 	var finalReasoning, finalText string
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cachedTokens int
 	var pendingNonSearchCalls []normalizedToolCall
 	searches := 0
 
@@ -343,6 +350,9 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		}
 		if turn.inputTokens > 0 {
 			inputTokens = turn.inputTokens
+		}
+		if turn.cachedInputTokens > 0 {
+			cachedTokens = turn.cachedInputTokens
 		}
 		outputTokens += turn.outputTokens
 
@@ -430,8 +440,8 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		}
 	}
 
-	pr.emitResponsesWebSearchJSON(w, respReq, toolTypes, toolNamespaces, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens)
-	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	pr.emitResponsesWebSearchJSON(w, respReq, toolTypes, toolNamespaces, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens, cachedTokens)
+	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	return true
 }
 
@@ -454,7 +464,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	completedOutput := []interface{}{}
 	outputIndex := -1
 	var segments []respSearchSegment
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cachedTokens int
 	searches := 0
 
 	emitCreated := func(status string) {
@@ -463,7 +473,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"response": map[string]interface{}{
 				"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 				"background": false, "error": nil, "status": status, "output": []interface{}{},
-				"usage": responsesUsageMap(0, 0),
+				"usage": responsesUsageMap(0, 0, 0),
 			},
 		})
 		e.emit("response.in_progress", map[string]interface{}{
@@ -471,7 +481,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"response": map[string]interface{}{
 				"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 				"background": false, "error": nil, "status": "in_progress", "output": []interface{}{},
-				"usage": responsesUsageMap(0, 0),
+				"usage": responsesUsageMap(0, 0, 0),
 			},
 		})
 	}
@@ -578,7 +588,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	// emitFunctionCall forwards a non-search tool call (e.g. read_file,
 	// run_terminal_command) to the client as a tool-call output item so the
 	// agent loop (Grok Build, Codex CLI) can execute it and continue. The search
-	// intercept must not drop these — dropping them leaves the client with an
+	// intercept must not drop these â€” dropping them leaves the client with an
 	// empty response and the turn ends prematurely, causing the agent to spiral.
 	//
 	// The item must also match what the client DECLARED, exactly like the normal
@@ -614,14 +624,14 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 			"background": false, "error": nil, "status": "completed",
 			"output": completedOutput, "output_text": outputText,
-			"usage": responsesUsageMap(inputTokens, outputTokens),
+			"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{"type": "response.completed", "response": completedResp})
 		if e.canFlush {
 			e.flusher.Flush()
 		}
-		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	}
 
 	var finalReasoning, finalText string
@@ -638,6 +648,9 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		}
 		if turn.inputTokens > 0 {
 			inputTokens = turn.inputTokens
+		}
+		if turn.cachedInputTokens > 0 {
+			cachedTokens = turn.cachedInputTokens
 		}
 		outputTokens += turn.outputTokens
 
@@ -713,7 +726,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	}
 
 	// The terminal turn called non-search tools (read_file, etc.). Forward them
-	// to the client and complete — the agent executes the tools and sends the
+	// to the client and complete â€” the agent executes the tools and sends the
 	// next request. Do not synthesize a final text message.
 	if len(pendingNonSearchCalls) > 0 {
 		emitReasoning(finalReasoning)
@@ -739,7 +752,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 }
 
 // emitResponsesWebSearchJSON writes a non-streaming Responses API response.
-func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, toolTypes, toolNamespaces map[string]string, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens int) {
+func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, toolTypes, toolNamespaces map[string]string, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens, cachedTokens int) {
 	output := []interface{}{}
 	addReasoning := func(text string) {
 		if text == "" {
@@ -766,7 +779,7 @@ func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, resp
 
 	// Forward non-search tool calls (read_file, etc.) so the agent loop
 	// continues. When tool calls are present, omit the synthesized final message
-	// — the model hasn't produced a final answer yet.
+	// â€” the model hasn't produced a final answer yet.
 	if len(pendingNonSearchCalls) > 0 {
 		for _, tc := range pendingNonSearchCalls {
 			callID := tc.id
@@ -798,7 +811,7 @@ func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, resp
 		"created_at": time.Now().Unix(), "model": respReq.Model,
 		"background": false, "error": nil, "status": "completed",
 		"output": output, "output_text": text,
-		"usage": responsesUsageMap(inputTokens, outputTokens),
+		"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens),
 	}
 	mergeResponsesEchoFields(resp, respReq)
 	w.Header().Set("Content-Type", "application/json")
@@ -835,7 +848,7 @@ func buildResponsesFinalTextWithCitations(finalText string, segments []respSearc
 	sourceLineStarts := make([]int, len(sources))
 	for i, s := range sources {
 		sourceLineStarts[i] = b.Len()
-		fmt.Fprintf(&b, "[%d] %s — %s\n", i+1, s.title, s.url)
+		fmt.Fprintf(&b, "[%d] %s â€” %s\n", i+1, s.title, s.url)
 	}
 	text := b.String()
 

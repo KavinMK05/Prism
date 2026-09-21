@@ -25,6 +25,11 @@ type streamState struct {
 	hasContentBlock   bool
 	thinkingBlockOpen bool
 	thinkingDone      bool // once text/tool has followed thinking, never re-open a thinking block (ollama/ollama#17101, PR #17102)
+	// thinkingSignature is an upstream provider reasoning signature (a Responses
+	// API reasoning item's encrypted_content). It is emitted as a signature_delta
+	// when the current thinking block closes, so Claude Code can carry the
+	// model's chain of thought back on the next turn. Cleared on close.
+	thinkingSignature string
 	textBlockOpen     bool
 	toolUseBlockOpen  bool
 	toolCallIndex     int
@@ -157,6 +162,20 @@ func (s *streamState) closeBlock(blockType string) {
 		return
 	}
 	wasThinking := s.thinkingBlockOpen
+	if s.thinkingBlockOpen {
+		if s.thinkingSignature != "" {
+			log.Printf("[STREAM] Emitting thinking signature at index %d", s.contentBlockIndex)
+			s.writeSSE("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": s.contentBlockIndex,
+				"delta": map[string]interface{}{
+					"type":      "signature_delta",
+					"signature": s.thinkingSignature,
+				},
+			})
+		}
+		s.thinkingSignature = ""
+	}
 	log.Printf("[STREAM] Closing %s block at index %d", blockType, s.contentBlockIndex)
 	s.writeSSE("content_block_stop", map[string]interface{}{
 		"type":  "content_block_stop",
@@ -410,7 +429,10 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 
 	client := detectClient(r)
 	defer func() {
-		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, state.totalPromptTokens, state.totalOutputTokens, time.Since(reqStart))
+		// state.totalPromptTokens excludes the cache-hit portion (Anthropic's
+		// input_tokens convention); stats record the logical total like OpenAI's
+		// prompt_tokens does, with the hits broken out separately.
+		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, state.totalPromptTokens+state.cacheReadTokens, state.totalOutputTokens, state.cacheReadTokens, time.Since(reqStart))
 	}()
 
 	state.writeSSE("message_start", map[string]interface{}{
@@ -458,6 +480,17 @@ func (pr *ProviderRouter) handleStreaming(w http.ResponseWriter, r *http.Request
 
 		if chunk.PromptEvalCount > 0 {
 			state.totalPromptTokens = chunk.PromptEvalCount
+		}
+		if cached := chunk.cachedPromptTokens(); cached > 0 {
+			state.cacheReadTokens = cached
+		}
+		// Ollama reports the cache-hit portion on the done chunk next to the
+		// logical total. Anthropic wants input_tokens without the hits
+		// (usagePayload emits cache_read_input_tokens separately), and recomputing
+		// from the raw total on each chunk keeps this idempotent when the counts
+		// arrive in separate chunks.
+		if chunk.PromptEvalCount > 0 && state.cacheReadTokens > 0 && state.totalPromptTokens >= state.cacheReadTokens {
+			state.totalPromptTokens -= state.cacheReadTokens
 		}
 		if chunk.EvalCount > state.totalOutputTokens {
 			state.totalOutputTokens = chunk.EvalCount

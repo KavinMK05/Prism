@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,22 +28,18 @@ func (pr *ProviderRouter) handleGenericResponsesForAnthropic(w http.ResponseWrit
 	defer stats.Global.EndRequest()
 	reqStart := time.Now()
 
-	openAIReq := translateToOpenAI(anthroReq)
+	openAIReq := translateToOpenAIForResponses(anthroReq)
 	// Mirror handleOpenAIStreaming/handleOpenAINonStreaming: strip the effort
 	// for non-reasoning models and clamp invalid values before the request is
 	// translated to the Responses body.
 	openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
 
-	bodyMap := translateChatCompletionsToCodexResponses(openAIReq)
+	codexTarget := rp.ProviderType == "codex"
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, true)
 	// Unlike the Codex backend (which rejects it), generic /v1/responses
 	// endpoints accept max_output_tokens; forward the client's limit.
-	if openAIReq.MaxTokens > 0 {
+	if openAIReq.MaxTokens > 0 && !codexTarget {
 		bodyMap["max_output_tokens"] = openAIReq.MaxTokens
-	}
-	bodyBytes, err := json.Marshal(bodyMap)
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to marshal request")
-		return
 	}
 
 	dbg := pr.dbgCapture("messages-responses", anthroReq.Stream, anthroReq.Model)
@@ -53,16 +48,7 @@ func (pr *ProviderRouter) handleGenericResponsesForAnthropic(w http.ResponseWrit
 	dbg.writeJSON("1_original_request.json", anthroReq)
 	dbg.writeJSON("2_translated_request.json", bodyMap)
 
-	upstreamURL := rp.ResponsesURL()
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to create upstream request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
-	log.Printf("-> %s %s (generic chat -> responses, anthropic inbound)", req.Method, upstreamURL)
-	resp, err := pr.client.Do(req)
+	resp, err := pr.postResponsesBody(r.Context(), rp.ResponsesURL(), bodyMap, rp, codexTarget, " (generic chat -> responses, anthropic inbound)")
 	if err != nil {
 		log.Printf("[ERR] Generic upstream request failed: %v", err)
 		WriteAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -89,8 +75,8 @@ func (pr *ProviderRouter) handleGenericResponsesForAnthropic(w http.ResponseWrit
 // handlers) and answers the Anthropic client with a complete /v1/messages
 // JSON response.
 func (pr *ProviderRouter) translateGenericResponsesToAnthropicJSON(w http.ResponseWriter, r *http.Request, resp *http.Response, anthroReq *AnthropicRequest, rp *config.ResolvedProvider, client string, reqStart time.Time) {
-	chatResp, inputTokens, outputTokens := collectCodexResponsesSSE(resp, anthroReq.Model)
-	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	chatResp, inputTokens, outputTokens, cachedTokens := collectCodexResponsesSSE(resp, anthroReq.Model)
+	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 
 	anthroResp := translateFromOpenAI(&chatResp, anthroReq)
 	if len(anthroResp.Content) == 0 {
@@ -122,7 +108,7 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 		if out == 0 {
 			out = liveOutputTokens
 		}
-		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, out, time.Since(reqStart))
+		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, out, state.cacheReadTokens, time.Since(reqStart))
 	}()
 
 	state.writeSSE("message_start", map[string]interface{}{
@@ -234,6 +220,31 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 			stats.Global.AddTokens(1)
 			state.emitToolArgsDelta(delta)
 
+		case "response.output_item.done":
+			// A reasoning item's final encrypted_content is only delivered on
+			// item.done (item.added carries a pre-content snapshot). Carry it as
+			// the thinking block's signature so Claude Code echoes it back and the
+			// model keeps its chain of thought across turns.
+			item, _ := event["item"].(map[string]interface{})
+			if item == nil {
+				continue
+			}
+			if itemType, _ := item["type"].(string); itemType == "reasoning" {
+				sig, _ := item["encrypted_content"].(string)
+				if strings.TrimSpace(sig) == "" {
+					continue
+				}
+				state.thinkingSignature = sig
+				if !state.thinkingBlockOpen && !state.hasContentBlock {
+					// No reasoning summary was streamed (Codex only emits one when
+					// reasoning.summary is requested), so emit a signature-only
+					// thinking block. Without it there is no carrier for the model's
+					// reasoning and it re-derives work it already did.
+					state.openThinkingBlock()
+					state.closeBlock("thinking")
+				}
+			}
+
 		case "response.completed":
 			responseObj, _ := event["response"].(map[string]interface{})
 			if responseObj != nil {
@@ -244,8 +255,37 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 					if ot, ok := usage["output_tokens"].(float64); ok && ot > 0 {
 						outputTokens = int(ot)
 					}
+					if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+						if ct, ok := details["cached_tokens"].(float64); ok && ct > 0 {
+							state.cacheReadTokens = int(ct)
+						}
+					}
+				}
+				// Fallback for providers that only surface reasoning items on the
+				// completed response rather than on output_item.done.
+				if state.thinkingSignature == "" && !state.hasContentBlock {
+					if output, ok := responseObj["output"].([]interface{}); ok {
+						for _, rawItem := range output {
+							itemMap, ok := rawItem.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							if t, _ := itemMap["type"].(string); t == "reasoning" {
+								if sig, _ := itemMap["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
+									state.thinkingSignature = sig
+									state.openThinkingBlock()
+								}
+							}
+						}
+					}
 				}
 				state.totalPromptTokens = inputTokens
+				// Responses input_tokens is the logical total and includes cache
+				// hits; Anthropic's input_tokens must not (usagePayload emits the
+				// hits as cache_read_input_tokens instead).
+				if state.cacheReadTokens > 0 && state.totalPromptTokens >= state.cacheReadTokens {
+					state.totalPromptTokens -= state.cacheReadTokens
+				}
 				status, _ := responseObj["status"].(string)
 				switch {
 				case status == "incomplete":

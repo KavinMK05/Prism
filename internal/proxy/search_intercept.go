@@ -148,7 +148,7 @@ func (pr *ProviderRouter) handleClaudeCodeWebSearch(w http.ResponseWriter, r *ht
 		pr.emitSyntheticWebSearchJSON(w, req, query, results, searchErr, tokenEstimate)
 	}
 
-	stats.Global.RecordRequest(req.Model, rp.ProviderID, client, 0, tokenEstimate, time.Since(reqStart))
+	stats.Global.RecordRequest(req.Model, rp.ProviderID, client, 0, tokenEstimate, 0, time.Since(reqStart))
 }
 
 // emitSyntheticWebSearchStream writes an Anthropic SSE stream emulating the

@@ -167,7 +167,7 @@ export default function StatsPanel() {
   const [filterClient, setFilterClient] = useState('');
   const [tpsBuffer, setTpsBuffer] = useState<number[]>([]);
   const [showClearModal, setShowClearModal] = useState(false);
-  const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; date: string; input: number; output: number; total: number } | null>(null);
+  const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; date: string; input: number; output: number; cached: number; total: number } | null>(null);
   const liveInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const historyInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const historyRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,9 +286,9 @@ export default function StatsPanel() {
   const rawStart = new Date(endDate); rawStart.setDate(rawStart.getDate() - 365);
   const startDate = new Date(rawStart); startDate.setDate(startDate.getDate() - startDate.getDay());
   const dayMap: Record<string, any> = {};
-  heatmapData.forEach((d: any) => { if (d.date) dayMap[d.date] = { input: Number(d.input) || 0, output: Number(d.output) || 0, total: Number(d.total) || (Number(d.input || 0) + Number(d.output || 0)) }; });
+  heatmapData.forEach((d: any) => { if (d.date) dayMap[d.date] = { input: Number(d.input) || 0, output: Number(d.output) || 0, cached: Number(d.cached) || 0, total: Number(d.total) || (Number(d.input || 0) + Number(d.output || 0)) }; });
   const allDays: any[] = [];
-  for (let d = new Date(startDate); d < endDate; d.setDate(d.getDate() + 1)) { const iso = fmtLocalDate(d); allDays.push({ date: iso, ...(dayMap[iso] || { input: 0, output: 0, total: 0 }) }); }
+  for (let d = new Date(startDate); d < endDate; d.setDate(d.getDate() + 1)) { const iso = fmtLocalDate(d); allDays.push({ date: iso, ...(dayMap[iso] || { input: 0, output: 0, cached: 0, total: 0 }) }); }
   const maxTotal = Math.max(...allDays.map(d => d.total), 1);
   const weeks: any[][] = [];
   for (let i = 0; i < allDays.length; i += 7) weeks.push(allDays.slice(i, i + 7));
@@ -315,7 +315,7 @@ export default function StatsPanel() {
   let clientArr: any[] = [];
   if (Array.isArray(byClient)) clientArr = byClient;
   else if (byClient && typeof byClient === 'object') {
-    clientArr = Object.entries(byClient).map(([client, stats]: [string, any]) => ({ client, requests: stats.requests || 0, total_input: stats.input_tokens || 0, total_output: stats.output_tokens || 0, total_tokens: (stats.input_tokens || 0) + (stats.output_tokens || 0) }));
+    clientArr = Object.entries(byClient).map(([client, stats]: [string, any]) => ({ client, requests: stats.requests || 0, total_input: stats.input_tokens || 0, total_output: stats.output_tokens || 0, total_cached: stats.cached_tokens || 0, total_tokens: (stats.input_tokens || 0) + (stats.output_tokens || 0) }));
     clientArr.sort((a, b) => b.total_tokens - a.total_tokens);
   }
   const grandTotalTokens = clientArr.reduce((s, c) => s + c.total_tokens, 0);
@@ -326,10 +326,18 @@ export default function StatsPanel() {
 
   const recentLines = (liveData?.recent_requests || []).slice().reverse().map((r: any) => {
     const t = new Date(r.timestamp).toLocaleTimeString();
-    return `${t}  ${r.client || 'Unknown'}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out  ${(r.tokens_per_sec ?? 0).toFixed(1)}tok/s  ${r.duration_ms}ms`;
+    const cached = r.cached_input_tokens || 0;
+    return `${t}  ${r.client || 'Unknown'}  ${r.model}  ${r.input_tokens}in/${r.output_tokens}out${cached > 0 ? ` (${cached} cached)` : ''}  ${(r.tokens_per_sec ?? 0).toFixed(1)}tok/s  ${r.duration_ms}ms`;
   }).join('\n');
 
   const byModelEntries = history?.by_model || [];
+
+  // Prompt-cache reporting: cached tokens are a subset of input tokens, so the
+  // hit rate is cached / input (never / total).
+  const liveCachedTokens = liveData?.total_cached_tokens || 0;
+  const liveInputTokens = liveData?.total_input_tokens || 0;
+  const liveCacheHitRate = liveInputTokens > 0 ? (liveCachedTokens / liveInputTokens) * 100 : 0;
+  const cacheRateText = (cached: number, input: number) => (input > 0 ? ((cached / input) * 100).toFixed(1) + '% cached' : '');
 
   return (
     <>
@@ -375,7 +383,7 @@ export default function StatsPanel() {
                       level === 4 ? 'bg-purple-500/75 border border-purple-500/60' :
                       'bg-purple-500/95 border border-purple-500/85'
                     }`}
-                    onMouseEnter={(e) => setHoveredCell({ x: e.clientX, y: e.clientY, date: day.date, input: day.input, output: day.output, total: day.total })}
+                    onMouseEnter={(e) => setHoveredCell({ x: e.clientX, y: e.clientY, date: day.date, input: day.input, output: day.output, cached: day.cached, total: day.total })}
                     onMouseMove={(e) => setHoveredCell((prev) => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
                     onMouseLeave={() => setHoveredCell(null)}
                   />
@@ -390,6 +398,7 @@ export default function StatsPanel() {
                 <div className="font-semibold mb-0.5">{formatHeatmapDate(hoveredCell.date)}</div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">Input</span><span className="font-semibold tabular-nums text-purple-500">{formatNumber(hoveredCell.input)}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">Output</span><span className="font-semibold tabular-nums text-purple-400">{formatNumber(hoveredCell.output)}</span></div>
+                {hoveredCell.cached > 0 && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Cached</span><span className="font-semibold tabular-nums text-green-500">{formatNumber(hoveredCell.cached)}</span></div>}
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">Total</span><span className="font-semibold tabular-nums">{formatNumber(hoveredCell.total)}</span></div>
               </div>
             )}
@@ -404,6 +413,7 @@ export default function StatsPanel() {
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
                 <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(hourlyData.reduce((s: number, d: any) => s + d.input, 0))}</span></div>
                 <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(hourlyData.reduce((s: number, d: any) => s + d.output, 0))}</span></div>
+                <div className="flex justify-between gap-4"><span className="text-muted-foreground">Cached</span><span className="font-semibold text-green-500">{formatNumber(hourlyData.reduce((s: number, d: any) => s + (d.cached || 0), 0))}</span></div>
               </div>
             </div>
             <div className="relative h-[180px] w-full"><Bar data={{ labels: hourlyData.map((d: any) => format(new Date(d.bucket * 1000), 'HH:mm')), datasets: [{ label: 'Input', data: hourlyData.map((d: any) => d.input), backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }, { label: 'Output', data: hourlyData.map((d: any) => d.output), backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 12 } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
@@ -418,6 +428,7 @@ export default function StatsPanel() {
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
               <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.input, 0))}</span></div>
               <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(dailyData.reduce((s: number, d: any) => s + d.output, 0))}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Cached</span><span className="font-semibold text-green-500">{formatNumber(dailyData.reduce((s: number, d: any) => s + (d.cached || 0), 0))}</span></div>
             </div>
           </div>
           <div className="relative h-[180px] w-full"><Bar data={{ labels: dailyData.map((d: any) => d.date.slice(5)), datasets: [{ label: 'Input', data: dailyData.map((d: any) => d.input), backgroundColor: 'rgba(139,92,246,0.35)', borderColor: '#8b5cf6', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }, { label: 'Output', data: dailyData.map((d: any) => d.output), backgroundColor: 'rgba(139,92,246,0.15)', borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1, borderRadius: 4, barPercentage: 0.6 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
@@ -431,6 +442,7 @@ export default function StatsPanel() {
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border-strong rounded-md px-3 py-2.5 text-xs leading-relaxed text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.12)] whitespace-nowrap opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
               <div className="flex justify-between gap-4"><span className="text-muted-foreground">Input</span><span className="font-semibold text-purple-500">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.input || 0), 0))}</span></div>
               <div className="flex justify-between gap-4"><span className="text-muted-foreground">Output</span><span className="font-semibold text-purple-400">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.output || 0), 0))}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">Cached</span><span className="font-semibold text-green-500">{formatNumber(monthlyData.reduce((s: number, d: any) => s + (d.cached || 0), 0))}</span></div>
             </div>
           </div>
           <div className="relative h-[180px] w-full"><Line data={{ labels: monthlyData.map((d: any) => d.month), datasets: [{ label: 'Tokens', data: monthlyData.map((d: any) => d.total), fill: true, backgroundColor: 'rgba(139,92,246,0.12)', borderColor: '#8b5cf6', borderWidth: 2, pointBackgroundColor: '#8b5cf6', pointRadius: 3, pointHoverRadius: 5, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } }, scales: { x: { grid: { display: false }, ticks: { color: chartTheme.text, font: { size: 11 } } }, y: { grid: { color: chartTheme.grid }, ticks: { color: chartTheme.text, font: { size: 11 }, maxTicksLimit: 6, callback: (v: any) => formatNumber(v) } } } }} /></div>
@@ -454,10 +466,11 @@ export default function StatsPanel() {
               <Line data={{ labels: tpsBuffer.map(() => ''), datasets: [{ data: tpsBuffer, borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.08)', borderWidth: 2, fill: true, pointRadius: 0, tension: 0.4 }] }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true, mode: 'index', intersect: false, callbacks: { title: () => '', label: (ctx: any) => ctx.parsed.y != null ? ctx.parsed.y.toFixed(1) + ' tok/s' : '' } } }, scales: { x: { display: false }, y: { display: false, min: 0 } }, animation: { duration: 0 } }} />
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-3 mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
             <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{liveData?.total_requests || 0}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Total Requests</div></div>
             <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{formatNumber(liveData?.total_input_tokens || 0)}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Input Tokens</div></div>
             <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{formatNumber(liveData?.total_output_tokens || 0)}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Output Tokens</div></div>
+            <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{liveInputTokens > 0 ? liveCacheHitRate.toFixed(1) + '%' : '--'}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Cache Hit Rate</div><div className="text-[10px] text-muted-foreground/70 mt-0.5 tabular-nums">{liveCachedTokens > 0 ? formatNumber(liveCachedTokens) + ' cached in' : 'no cache hits'}</div></div>
             <div className="text-center py-3 bg-muted border border-border rounded-md"><div className="text-xl font-bold text-foreground tracking-tight">{liveData?.avg_tokens_per_sec > 0 ? liveData.avg_tokens_per_sec.toFixed(1) : '--'}</div><div className="text-[11px] text-muted-foreground mt-1 font-medium">Avg tok/sec</div></div>
           </div>
         </div>
@@ -479,10 +492,11 @@ export default function StatsPanel() {
             const barColors = ['bg-purple-500', 'bg-blue-500', 'bg-green-500'];
             const barClass = barColors[i] || barColors[0];
             const tokenPct = grandTotalTokens > 0 ? ((c.total_tokens / grandTotalTokens) * 100).toFixed(1) : '0.0';
+            const cachedRate = cacheRateText(c.total_cached || 0, c.total_input || 0);
             return (
               <div className="grid grid-cols-4 gap-3 py-2.5 border-b border-border items-center" key={c.client}>
                 <div className="min-w-0 overflow-hidden"><div className="text-[13px] font-semibold text-foreground truncate" title={c.client}>{c.client}</div><div className="text-[11px] text-muted-foreground/60 mt-0.5 truncate" title={c.client}>{c.client.toLowerCase().replace(/\s+/g, '-' )}</div></div>
-                <div><div className="text-[13px] font-medium text-foreground">{formatNumber(c.total_tokens)}</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${(c.total_tokens / maxTokens) * 100}%` }} /></div></div>
+                <div><div className="text-[13px] font-medium text-foreground">{formatNumber(c.total_tokens)}</div>{cachedRate && <div className="text-[10px] text-muted-foreground/70 mt-0.5">{cachedRate}</div>}<div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${(c.total_tokens / maxTokens) * 100}%` }} /></div></div>
                 <div><div className="text-[13px] font-medium text-foreground">{formatNumber(c.requests)}</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${(c.requests / maxRequests) * 100}%` }} /></div></div>
                 <div><div className="text-[13px] font-medium text-foreground">{tokenPct}%</div><div className="w-full h-1 bg-muted rounded-sm overflow-hidden mt-1.5"><div className={`h-full rounded-sm ${barClass} transition-[width] duration-400`} style={{ width: `${tokenPct}%` }} /></div></div>
               </div>
@@ -522,12 +536,17 @@ export default function StatsPanel() {
         {/* By Model */}
         <div className="rounded-xl border border-border bg-card p-6">
           <h3 className="text-sm font-semibold tracking-tight mb-4">By Model</h3>
-          {byModelEntries.length > 0 ? byModelEntries.map((m: any) => (
+          {byModelEntries.length > 0 ? byModelEntries.map((m: any) => {
+            const inputTokens = m.total_input ?? m.input_tokens ?? 0;
+            const cachedTokens = m.total_cached ?? m.cached_tokens ?? 0;
+            const rate = cacheRateText(cachedTokens, inputTokens);
+            return (
             <div className="flex justify-between items-center py-2.5 border-b border-border last:border-b-0 text-[13px]" key={m.model}>
               <span className="font-medium text-foreground">{m.model}</span>
-              <span className="text-muted-foreground">{m.requests} req &middot; {formatNumber(m.total_input ?? m.input_tokens ?? 0)} in / {formatNumber(m.total_output ?? m.output_tokens ?? 0)} out &middot; {(m.avg_tps ?? m.avg_tokens_per_sec ?? 0).toFixed(1)} tok/s</span>
+              <span className="text-muted-foreground">{m.requests} req &middot; {formatNumber(inputTokens)} in / {formatNumber(m.total_output ?? m.output_tokens ?? 0)} out{rate ? ` \u00b7 ${rate}` : ''} &middot; {(m.avg_tps ?? m.avg_tokens_per_sec ?? 0).toFixed(1)} tok/s</span>
             </div>
-          )) : <div className="text-muted-foreground text-[13px] italic">No data yet.</div>}
+            );
+          }) : <div className="text-muted-foreground text-[13px] italic">No data yet.</div>}
         </div>
 
         {/* Recent Requests */}

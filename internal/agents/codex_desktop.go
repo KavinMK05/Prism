@@ -16,7 +16,18 @@ const (
 	codexManagedBegin = "# >>> prism managed >>>"
 	codexManagedEnd   = "# <<< prism managed <<<"
 	codexProviderKey  = "prism"
+
+	// codexPreviousTopLevelPrefix introduces the stash of top-level values that
+	// were present before Prism wrote its managed block, so they can be put back
+	// afterwards. It is a comment, so Codex ignores it.
+	codexPreviousTopLevelPrefix = "# prism previous-top-level = "
 )
+
+// codexManagedTopLevelKeys are the top-level keys Prism sets in config.toml and
+// therefore saves and restores. The user's `model` is deliberately not one of
+// them: Prism routes traffic through model_provider and lists its models in
+// model_catalog_json, but never picks which model Codex uses.
+var codexManagedTopLevelKeys = []string{"model_provider", "model_catalog_json"}
 
 // codexDesktopConfigPath returns the path to Codex Desktop's config.toml.
 // Works on both macOS (~/.codex/) and Windows (%USERPROFILE%/.codex/).
@@ -187,7 +198,10 @@ func WriteCodexCatalog(remap *config.ModelRemapping) error {
 	return os.WriteFile(codexCatalogPath(), data, 0644)
 }
 
-// InstallCodexConfig writes the managed blocks into ~/.codex/config.toml.
+// InstallCodexConfig writes the managed blocks into ~/.codex/config.toml. The
+// managed block sets model_provider and model_catalog_json so Codex can reach
+// Prism and list its models; it deliberately does not set the top-level `model`
+// key, so the model Codex runs stays the user's choice.
 func InstallCodexConfig(port int) error {
 	configPath := codexDesktopConfigPath()
 	if configPath == "" {
@@ -200,34 +214,46 @@ func InstallCodexConfig(port int) error {
 		existing = data
 	}
 
+	// Values an older Prism version stashed before it took over the top-level
+	// keys. Kept as a fallback, because a re-sync sees a body that no longer
+	// contains them (the old installer removed them from the body).
+	stashed := extractPreviousTopLevel(string(existing))
+
 	// Strip any existing Prism managed blocks
 	cleaned := stripManagedBlocks(string(existing))
 
-	// Extract previous top-level values from the existing config
+	// Previous top-level values: prefer what the body actually has, falling back
+	// to the stash for the keys Prism manages.
 	prevTopLevel := extractTopLevelOverrides(cleaned)
-	prevTopLevelJSON, _ := json.Marshal(prevTopLevel)
-
-	// Get the first model slug as the default
-	remap := config.LoadModelRemapping()
-	defaultSlug := ""
-	if len(remap.KnownModels) > 0 {
-		defaultSlug = prismModelRouteKey(remap.KnownModels[0])
+	prevManaged := map[string]string{}
+	for _, key := range codexManagedTopLevelKeys {
+		if v := prevTopLevel[key]; v != "" {
+			prevManaged[key] = v
+		} else if v := stashed[key]; v != "" {
+			prevManaged[key] = v
+		}
 	}
-	if defaultSlug == "" && remap.DefaultModel != "" {
-		defaultSlug = remap.DefaultModel
-	}
+	prevManagedJSON, _ := json.Marshal(prevManaged)
 
-	// Remove old top-level keys that we'll set
+	// Remove the top-level keys Prism manages; the user's `model` is left alone.
 	cleaned = removeTopLevelKeys(cleaned)
 
-	// Build the top-level managed block
+	// Prism no longer owns `model`. Configs written by an older version had it
+	// removed from the body and parked in the stash, so hand it back to the user
+	// in the body, where they can see and change it.
+	if _, present := prevTopLevel["model"]; !present {
+		if model := stashed["model"]; model != "" {
+			cleaned = prependTopLevelKey(cleaned, "model", model)
+		}
+	}
+
+	// Build the top-level managed block. Prism points Codex at its catalog and
+	// provider; which model is selected stays the user's choice, so no `model`
+	// line is written.
 	var topBlock strings.Builder
 	topBlock.WriteString("\n")
 	topBlock.WriteString(codexManagedBegin + "\n")
-	topBlock.WriteString("# prism previous-top-level = " + string(prevTopLevelJSON) + "\n")
-	if defaultSlug != "" {
-		topBlock.WriteString("model = \"" + defaultSlug + "\"\n")
-	}
+	topBlock.WriteString(codexPreviousTopLevelPrefix + string(prevManagedJSON) + "\n")
 	topBlock.WriteString("model_provider = \"" + codexProviderKey + "\"\n")
 	topBlock.WriteString("model_catalog_json = \"" + tomlEscapePath(codexCatalogPath()) + "\"\n")
 	topBlock.WriteString(codexManagedEnd + "\n")
@@ -259,7 +285,7 @@ func InstallCodexConfig(port int) error {
 }
 
 // RestoreCodexConfig removes Prism's managed blocks from ~/.codex/config.toml
-// and restores any previous top-level values.
+// and restores the top-level values that were present before Prism wrote them.
 func RestoreCodexConfig() error {
 	configPath := codexDesktopConfigPath()
 	if configPath == "" {
@@ -276,24 +302,28 @@ func RestoreCodexConfig() error {
 
 	content := string(data)
 
-	// Extract previous top-level values before stripping
-	prevTopLevel := extractTopLevelOverrides(content)
+	// What the user had before Prism wrote its block. Only the stash records the
+	// managed keys, and older Prism versions also stashed `model`, which they had
+	// removed from the body.
+	stashed := extractPreviousTopLevel(content)
 
 	// Strip managed blocks
 	cleaned := stripManagedBlocks(content)
 
-	// Remove any top-level keys we set
+	// Remove the top-level keys Prism set
 	cleaned = removeTopLevelKeys(cleaned)
 
-	// Restore previous top-level values
-	if model, ok := prevTopLevel["model"]; ok && model != "" {
-		cleaned = prependTopLevelKey(cleaned, "model", model)
-	}
-	if provider, ok := prevTopLevel["model_provider"]; ok && provider != "" {
-		cleaned = prependTopLevelKey(cleaned, "model_provider", provider)
-	}
-	if catalog, ok := prevTopLevel["model_catalog_json"]; ok && catalog != "" {
-		cleaned = prependTopLevelKey(cleaned, "model_catalog_json", catalog)
+	// Put back anything Prism moved aside that isn't already in the body. A sync
+	// by the current version leaves `model` in place, so it is only restored for
+	// configs written by an older version.
+	topLevel := extractTopLevelOverrides(cleaned)
+	for _, key := range append([]string{"model"}, codexManagedTopLevelKeys...) {
+		if _, present := topLevel[key]; present {
+			continue
+		}
+		if v := stashed[key]; v != "" {
+			cleaned = prependTopLevelKey(cleaned, key, v)
+		}
 	}
 
 	return os.WriteFile(configPath, []byte(cleaned), 0644)
@@ -379,12 +409,30 @@ func extractTopLevelOverrides(content string) map[string]string {
 	return result
 }
 
+// extractPreviousTopLevel reads the stash of pre-Prism top-level values that
+// Prism records inside its managed block. Returns nil when the stash is absent
+// (fresh install) or unreadable.
+func extractPreviousTopLevel(content string) map[string]string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, codexPreviousTopLevelPrefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, codexPreviousTopLevelPrefix))
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil
+		}
+		return m
+	}
+	return nil
+}
+
 // removeTopLevelKeys removes specific top-level keys (before any [section]) from a TOML config.
 func removeTopLevelKeys(content string) string {
-	removeKeys := map[string]bool{
-		"model":              true,
-		"model_provider":     true,
-		"model_catalog_json": true,
+	removeKeys := map[string]bool{}
+	for _, k := range codexManagedTopLevelKeys {
+		removeKeys[k] = true
 	}
 	lines := strings.Split(content, "\n")
 	var result []string

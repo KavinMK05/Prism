@@ -20,13 +20,16 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	outputTokens := 0
 	inputTokens := 0
 	liveOutputTokens := 0
+	cachedTokens := 0
 	client := detectClient(r)
 	defer func() {
 		out := outputTokens
 		if out == 0 {
 			out = liveOutputTokens
 		}
-		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, out, time.Since(reqStart))
+		// inputTokens had the cache-hit portion subtracted for the Anthropic
+		// message_delta; recombine for the stats' logical prompt total.
+		stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens+cachedTokens, out, cachedTokens, time.Since(reqStart))
 	}()
 
 	// Validate reasoning_effort for the model
@@ -159,6 +162,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 			}
 			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
 				state.cacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
 			// OpenAI's prompt_tokens already includes cached tokens; Anthropic
 			// splits them into input_tokens (non-cached) and

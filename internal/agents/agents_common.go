@@ -54,6 +54,14 @@ var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcod
 
 var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
+// AllAgentIDs returns every agent id Prism integrates with (Codex first), as a
+// copy the caller may keep.
+func AllAgentIDs() []string {
+	out := make([]string, len(allAgentIDs))
+	copy(out, allAgentIDs)
+	return out
+}
+
 // agentConfigPath returns the config file path for the given agent id.
 // Returns "" if the home directory cannot be determined or the id is unknown.
 func agentConfigPath(agentID string) string {

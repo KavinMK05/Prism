@@ -18,6 +18,7 @@ import (
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/db"
 	"ollama-proxy/internal/desktop"
+	"ollama-proxy/internal/mcp"
 	"ollama-proxy/internal/platform"
 	"ollama-proxy/internal/proxy"
 	"ollama-proxy/internal/search"
@@ -91,6 +92,14 @@ func runProxyServer() {
 	// Sync other agent integrations (Claude Code, Factory Droid, OpenCode) if installed
 	agents.SyncAgents(agents.ParseIntOr(port, 11434))
 
+	// Start the MCP gateway: upstream MCP servers (lazy-started, idle-reaped)
+	// re-exposed to agents behind one Prism-authenticated endpoint.
+	mcpManager := mcp.NewManager(config.Current)
+	mcpManager.Start()
+	defer mcpManager.Stop()
+	mcpGateway := mcp.NewGateway(mcpManager, config.Current)
+	agents.SyncAllAgentMCP(agents.ParseIntOr(port, 11434))
+
 	router := proxy.NewRouter(cfg, modelRemap)
 	search.Global.Reload(cfg.Search)
 
@@ -121,6 +130,8 @@ func runProxyServer() {
 	mux.HandleFunc("/v1/messages", loggingMiddleware(authMiddleware(proxyAPIKey, router.HandleMessages)))
 	mux.HandleFunc("/v1/messages/count_tokens", loggingMiddleware(authMiddleware(proxyAPIKey, handleCountTokens)))
 	mux.HandleFunc("/health", loggingMiddleware(handleHealth))
+	mux.HandleFunc("/mcp", loggingMiddleware(authMiddleware(proxyAPIKey, mcpGateway.ServeHTTP)))
+	mux.HandleFunc("/mcp/", loggingMiddleware(authMiddleware(proxyAPIKey, mcpGateway.ServeHTTP)))
 	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleOpenAIChatCompletions)))
 	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleResponsesAPI)))
 	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleModels)))

@@ -17,14 +17,15 @@ var db *sql.DB
 
 // RequestStats holds metrics for a single completed request
 type RequestStats struct {
-	Model        string    `json:"model"`
-	Provider     string    `json:"provider"`
-	Client       string    `json:"client"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	DurationMs   int64     `json:"duration_ms"`
-	TokensPerSec float64   `json:"tokens_per_sec"`
-	Timestamp    time.Time `json:"timestamp"`
+	Model             string    `json:"model"`
+	Provider          string    `json:"provider"`
+	Client            string    `json:"client"`
+	InputTokens       int       `json:"input_tokens"`
+	OutputTokens      int       `json:"output_tokens"`
+	CachedInputTokens int       `json:"cached_input_tokens"`
+	DurationMs        int64     `json:"duration_ms"`
+	TokensPerSec      float64   `json:"tokens_per_sec"`
+	Timestamp         time.Time `json:"timestamp"`
 }
 
 func getDBPath() string {
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS requests (
 	client TEXT,
 	input_tokens INTEGER NOT NULL,
 	output_tokens INTEGER NOT NULL,
+	cached_input_tokens INTEGER NOT NULL DEFAULT 0,
 	duration_ms INTEGER NOT NULL,
 	tokens_per_sec REAL NOT NULL
 );
@@ -89,6 +91,17 @@ CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
 	}
 	// Ensure client index exists (safe to run even if it already exists)
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client)")
+	// Migration: add cached_input_tokens column if it doesn't exist
+	var cachedColExists bool
+	row3 := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name = 'cached_input_tokens'")
+	if err := row3.Scan(&cachedColExists); err != nil {
+		log.Printf("[DB] warning: could not check schema: %v", err)
+	} else if !cachedColExists {
+		if _, err := db.Exec("ALTER TABLE requests ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migrate add cached_input_tokens column: %w", err)
+		}
+		log.Printf("[DB] migrated: added cached_input_tokens column to requests table")
+	}
 	// Migration: add client column to tps_snapshots if it doesn't exist
 	var tpsClientColExists bool
 	row2 := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tps_snapshots') WHERE name = 'client'")
@@ -117,9 +130,9 @@ func RecordRequest(req RequestStats) error {
 		return nil
 	}
 	_, err := db.Exec(
-		`INSERT INTO requests (timestamp, model, provider, client, input_tokens, output_tokens, duration_ms, tokens_per_sec)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.Timestamp.Unix(), req.Model, req.Provider, req.Client, req.InputTokens, req.OutputTokens, req.DurationMs, req.TokensPerSec,
+		`INSERT INTO requests (timestamp, model, provider, client, input_tokens, output_tokens, cached_input_tokens, duration_ms, tokens_per_sec)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Timestamp.Unix(), req.Model, req.Provider, req.Client, req.InputTokens, req.OutputTokens, req.CachedInputTokens, req.DurationMs, req.TokensPerSec,
 	)
 	if err != nil {
 		log.Printf("[DB] failed to record request: %v", err)
@@ -146,6 +159,7 @@ type DailyTokens struct {
 	Date   string `json:"date"`
 	Input  int64  `json:"input"`
 	Output int64  `json:"output"`
+	Cached int64  `json:"cached"`
 	Total  int64  `json:"total"`
 }
 
@@ -154,7 +168,7 @@ func GetDailyTokens(from, to int64, provider, model, client string) ([]DailyToke
 	if db == nil {
 		return nil, nil
 	}
-	q := `SELECT date(timestamp, 'unixepoch', 'localtime') as day, SUM(input_tokens), SUM(output_tokens)
+	q := `SELECT date(timestamp, 'unixepoch', 'localtime') as day, SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens)
 		  FROM requests
 		  WHERE timestamp >= ? AND timestamp <= ?`
 	args := []interface{}{from, to}
@@ -181,7 +195,7 @@ func GetDailyTokens(from, to int64, provider, model, client string) ([]DailyToke
 	var result []DailyTokens
 	for rows.Next() {
 		var d DailyTokens
-		if err := rows.Scan(&d.Date, &d.Input, &d.Output); err != nil {
+		if err := rows.Scan(&d.Date, &d.Input, &d.Output, &d.Cached); err != nil {
 			continue
 		}
 		d.Total = d.Input + d.Output
@@ -194,6 +208,7 @@ type HourlyTokens struct {
 	Bucket int64 `json:"bucket"` // unix seconds of bucket start
 	Input  int64 `json:"input"`
 	Output int64 `json:"output"`
+	Cached int64 `json:"cached"`
 	Total  int64 `json:"total"`
 }
 
@@ -203,7 +218,7 @@ func GetHourlyTokens(from, to int64, bucketMinutes int, provider, model, client 
 		return nil, nil
 	}
 	bucketSec := int64(bucketMinutes) * 60
-	q := fmt.Sprintf(`SELECT (timestamp / %d) * %d as bucket, SUM(input_tokens), SUM(output_tokens)
+	q := fmt.Sprintf(`SELECT (timestamp / %d) * %d as bucket, SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens)
 		  FROM requests
 		  WHERE timestamp >= ? AND timestamp <= ?`, bucketSec, bucketSec)
 	args := []interface{}{from, to}
@@ -230,7 +245,7 @@ func GetHourlyTokens(from, to int64, bucketMinutes int, provider, model, client 
 	var result []HourlyTokens
 	for rows.Next() {
 		var h HourlyTokens
-		if err := rows.Scan(&h.Bucket, &h.Input, &h.Output); err != nil {
+		if err := rows.Scan(&h.Bucket, &h.Input, &h.Output, &h.Cached); err != nil {
 			continue
 		}
 		h.Total = h.Input + h.Output
@@ -243,6 +258,7 @@ type MonthlyTokens struct {
 	Month  string `json:"month"`
 	Input  int64  `json:"input"`
 	Output int64  `json:"output"`
+	Cached int64  `json:"cached"`
 	Total  int64  `json:"total"`
 }
 
@@ -252,7 +268,7 @@ func GetMonthlyTokens(from, to int64, provider, model, client string) ([]Monthly
 		return nil, nil
 	}
 	q := `SELECT strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') as month,
-		       SUM(input_tokens), SUM(output_tokens)
+		       SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens)
 		FROM requests
 		WHERE timestamp >= ? AND timestamp <= ?`
 	args := []interface{}{from, to}
@@ -278,7 +294,7 @@ func GetMonthlyTokens(from, to int64, provider, model, client string) ([]Monthly
 	var result []MonthlyTokens
 	for rows.Next() {
 		var m MonthlyTokens
-		if err := rows.Scan(&m.Month, &m.Input, &m.Output); err != nil {
+		if err := rows.Scan(&m.Month, &m.Input, &m.Output, &m.Cached); err != nil {
 			continue
 		}
 		m.Total = m.Input + m.Output
@@ -341,6 +357,7 @@ type ModelHistory struct {
 	MaxTPS      float64 `json:"max_tps"`
 	TotalInput  int64   `json:"total_input"`
 	TotalOutput int64   `json:"total_output"`
+	TotalCached int64   `json:"total_cached"`
 }
 
 // GetModelHistory returns per-model aggregation, optionally filtered.
@@ -349,7 +366,7 @@ func GetModelHistory(from, to int64, provider, model, client string) ([]ModelHis
 		return nil, nil
 	}
 	q := `SELECT model, provider, COUNT(*), AVG(tokens_per_sec), MAX(tokens_per_sec),
-		       SUM(input_tokens), SUM(output_tokens)
+		       SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens)
 		  FROM requests
 		  WHERE timestamp >= ? AND timestamp <= ?`
 	args := []interface{}{from, to}
@@ -376,7 +393,7 @@ func GetModelHistory(from, to int64, provider, model, client string) ([]ModelHis
 	var result []ModelHistory
 	for rows.Next() {
 		var m ModelHistory
-		if err := rows.Scan(&m.Model, &m.Provider, &m.Requests, &m.AvgTPS, &m.MaxTPS, &m.TotalInput, &m.TotalOutput); err != nil {
+		if err := rows.Scan(&m.Model, &m.Provider, &m.Requests, &m.AvgTPS, &m.MaxTPS, &m.TotalInput, &m.TotalOutput, &m.TotalCached); err != nil {
 			continue
 		}
 		result = append(result, m)
@@ -453,6 +470,7 @@ type ClientHistory struct {
 	Requests    int    `json:"requests"`
 	TotalInput  int64  `json:"total_input"`
 	TotalOutput int64  `json:"total_output"`
+	TotalCached int64  `json:"total_cached"`
 	TotalTokens int64  `json:"total_tokens"`
 }
 
@@ -461,7 +479,7 @@ func GetClientHistory(from, to int64, provider, model, client string) ([]ClientH
 	if db == nil {
 		return nil, nil
 	}
-	q := `SELECT COALESCE(NULLIF(client, ''), 'Unknown'), COUNT(*), SUM(input_tokens), SUM(output_tokens)
+	q := `SELECT COALESCE(NULLIF(client, ''), 'Unknown'), COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens)
 		  FROM requests
 		  WHERE timestamp >= ? AND timestamp <= ?`
 	args := []interface{}{from, to}
@@ -488,7 +506,7 @@ func GetClientHistory(from, to int64, provider, model, client string) ([]ClientH
 	var result []ClientHistory
 	for rows.Next() {
 		var c ClientHistory
-		if err := rows.Scan(&c.Client, &c.Requests, &c.TotalInput, &c.TotalOutput); err != nil {
+		if err := rows.Scan(&c.Client, &c.Requests, &c.TotalInput, &c.TotalOutput, &c.TotalCached); err != nil {
 			continue
 		}
 		c.TotalTokens = c.TotalInput + c.TotalOutput

@@ -55,6 +55,12 @@ type AnthropicToolResultBlock struct {
 type AnthropicThinkingBlock struct {
 	Type     string `json:"type"`
 	Thinking string `json:"thinking"`
+	// Signature is the opaque provider reasoning signature carried back to the
+	// client. Claude Code echoes it verbatim on the next turn, which is how a
+	// non-Anthropic upstream's chain of thought (Codex reasoning.encrypted_content,
+	// Gemini thoughtSignature) survives a round trip through the Anthropic
+	// protocol. Empty when the upstream has no replayable reasoning state.
+	Signature string `json:"signature,omitempty"`
 }
 
 type AnthropicTool struct {
@@ -172,7 +178,36 @@ type OllamaChatResponse struct {
 	Done            bool          `json:"done"`
 	DoneReason      string        `json:"done_reason,omitempty"`
 	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
-	EvalCount       int           `json:"eval_count,omitempty"`
+	// PromptEvalCachedCount is the portion of PromptEvalCount that was served
+	// from the prompt cache (Ollama 0.33+ and Ollama Cloud). PromptEvalCount
+	// stays the logical input total, cache hits included — the same convention
+	// as OpenAI's prompt_tokens — so the OpenAI and Responses surfaces report
+	// both as-is while Anthropic subtracts the hits into
+	// cache_read_input_tokens. Servers that predate cache reporting omit the
+	// field entirely, which reads as zero.
+	PromptEvalCachedCount int `json:"prompt_eval_cached_count,omitempty"`
+	EvalCount             int `json:"eval_count,omitempty"`
+}
+
+// cachedPromptTokens returns the prompt-cache hit count, clamped to the logical
+// prompt total so callers can subtract it without going negative.
+func (o *OllamaChatResponse) cachedPromptTokens() int {
+	if o.PromptEvalCachedCount <= 0 || o.PromptEvalCount <= 0 {
+		return 0
+	}
+	if o.PromptEvalCachedCount > o.PromptEvalCount {
+		return o.PromptEvalCount
+	}
+	return o.PromptEvalCachedCount
+}
+
+// promptTokensDetails builds OpenAI's prompt_tokens_details block, or nil when
+// there is nothing to report so the field stays omitted.
+func promptTokensDetails(cachedTokens int) *OpenAIPromptTokensDetails {
+	if cachedTokens <= 0 {
+		return nil
+	}
+	return &OpenAIPromptTokensDetails{CachedTokens: cachedTokens}
 }
 
 type SSEEvent struct {
@@ -210,6 +245,13 @@ type OpenAIChatMessage struct {
 	// Reasoning is emitted by some OpenAI-compatible providers, including
 	// OpenRouter, instead of reasoning_content.
 	Reasoning *string `json:"reasoning,omitempty"`
+	// ReasoningSignature carries an upstream Responses-API reasoning item's
+	// encrypted_content through the Chat Completions intermediate shape. It is
+	// internal-only (`json:"-"`), so it is never serialized into a Chat
+	// Completions body: the Responses translator replays it as a reasoning
+	// input item, and the Anthropic translator re-emits it as a thinking-block
+	// signature so the client round-trips the model's reasoning.
+	ReasoningSignature string `json:"-"`
 }
 
 type OpenAIToolCall struct {

@@ -113,6 +113,22 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	// API: Logs
 	mux.HandleFunc("/admin/autostart", handleAutoStart)
 
+	// API: MCP gateway (upstream servers, credentials, per-agent wiring)
+	mux.HandleFunc("/admin/mcp/config", handleMCPConfig)
+	mux.HandleFunc("/admin/mcp/servers", handleMCPServerAdd)
+	mux.HandleFunc("/admin/mcp/servers/update", handleMCPServerUpdate)
+	mux.HandleFunc("/admin/mcp/servers/remove", handleMCPServerRemove)
+	mux.HandleFunc("/admin/mcp/servers/enable", handleMCPServerEnable)
+	mux.HandleFunc("/admin/mcp/servers/control", handleMCPServerControl)
+	mux.HandleFunc("/admin/mcp/settings", handleMCPSettings)
+	mux.HandleFunc("/admin/mcp/registry/search", handleMCPRegistrySearch)
+	mux.HandleFunc("/admin/mcp/import/git", handleMCPGitImport)
+	mux.HandleFunc("/admin/mcp/auth/discover", handleMCPAuthDiscover)
+	mux.HandleFunc("/admin/mcp/auth/login", handleMCPAuthLogin)
+	mux.HandleFunc("/admin/mcp/auth/logout", handleMCPAuthLogout)
+	mux.HandleFunc("/admin/mcp/agents/servers", handleMCPAgentServers)
+	mux.HandleFunc("/admin/mcp/agents/setup", handleMCPAgentSetup)
+
 	// OAuth API endpoints
 	mux.HandleFunc("/admin/oauth/login", handleOAuthLogin)
 	mux.HandleFunc("/admin/oauth/accounts", handleOAuthAccounts)
@@ -313,7 +329,9 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(cfg)
+		// MCP credentials (OAuth tokens, secret headers) are stored in
+		// config.json but must never leave the process.
+		json.NewEncoder(w).Encode(cfg.RedactMCPSecrets())
 	case http.MethodPut:
 		var newCfg config.Config
 		if err := json.NewDecoder(r.Body).Decode(&newCfg); err != nil {
@@ -377,6 +395,19 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 					newCfg.AgentIntegrations.AutoSyncMigrated = true
 				}
 			}
+		}
+		if cur != nil {
+			// Same reasoning for the MCP gateway state: a full-config PUT from
+			// an older client (or one that round-trips masked secrets) must not
+			// erase tokens, the OAuth client cache, or per-agent allowlists.
+			if newCfg.MCP == nil {
+				newCfg.MCP = cur.MCP
+			} else {
+				preserveMCPSecrets(cur, &newCfg)
+			}
+		}
+		if newCfg.MCP != nil {
+			newCfg.EnsureMCP()
 		}
 		if newCfg.OllamaCloud.APIKey == "" && cur.OllamaCloud.APIKey != "" {
 			newCfg.OllamaCloud.APIKey = cur.OllamaCloud.APIKey

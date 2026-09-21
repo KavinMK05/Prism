@@ -78,6 +78,16 @@ func normalizeCodexResponsesRequest(respReq *ResponsesAPIRequest) map[string]int
 		body["reasoning"] = respReq.Reasoning
 	}
 
+	// Forward include verbatim, defaulting to the encrypted reasoning so the
+	// model's chain of thought can be replayed on the next turn. Codex clients
+	// send this themselves; stripping it (as this normalizer used to) makes the
+	// model lose its plan between turns and repeat work it already did.
+	if respReq.Include != nil {
+		body["include"] = respReq.Include
+	} else {
+		body["include"] = []string{"reasoning.encrypted_content"}
+	}
+
 	// Text format
 	if respReq.Text != nil {
 		body["text"] = respReq.Text
@@ -158,8 +168,9 @@ func (pr *ProviderRouter) passthroughCodexResponsesSSE(w http.ResponseWriter, r 
 	flusher, canFlush := w.(http.Flusher)
 
 	var inputTokens, outputTokens int
+	var cachedTokens int
 	defer func() {
-		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	}()
 
 	ctx := r.Context()
@@ -190,7 +201,7 @@ func (pr *ProviderRouter) passthroughCodexResponsesSSE(w http.ResponseWriter, r 
 			data := strings.TrimPrefix(line, "data: ")
 			if data != "[DONE]" {
 				// Try to extract usage from response.completed events
-				pr.extractCodexUsage(data, &inputTokens, &outputTokens)
+				pr.extractCodexUsage(data, &inputTokens, &outputTokens, &cachedTokens)
 				// Count output tokens from text deltas for live stats
 				if strings.Contains(data, "output_text.delta") {
 					stats.Global.AddTokens(1)
@@ -295,6 +306,7 @@ func (pr *ProviderRouter) handleGenericResponsesAPI(w http.ResponseWriter, r *ht
 func (pr *ProviderRouter) reassembleCodexResponses(w http.ResponseWriter, r *http.Request, resp *http.Response, respReq *ResponsesAPIRequest, rp *config.ResolvedProvider, client string, reqStart time.Time) {
 	var completedResponse map[string]interface{}
 	var inputTokens, outputTokens int
+	var cachedTokens int
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -326,6 +338,11 @@ func (pr *ProviderRouter) reassembleCodexResponses(w http.ResponseWriter, r *htt
 					if ot, ok := usage["output_tokens"].(float64); ok {
 						outputTokens = int(ot)
 					}
+					if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+						if ct, ok := details["cached_tokens"].(float64); ok && ct > 0 {
+							cachedTokens = int(ct)
+						}
+					}
 				}
 			}
 		}
@@ -335,7 +352,7 @@ func (pr *ProviderRouter) reassembleCodexResponses(w http.ResponseWriter, r *htt
 		log.Printf("[ERR] Codex SSE read error: %v", err)
 	}
 
-	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 
 	if completedResponse == nil {
 		WriteOpenAIError(w, 502, "server_error", "Failed to reassemble response from Codex backend")
@@ -348,7 +365,7 @@ func (pr *ProviderRouter) reassembleCodexResponses(w http.ResponseWriter, r *htt
 }
 
 // extractCodexUsage parses a data line to find usage info in response.completed events
-func (pr *ProviderRouter) extractCodexUsage(data string, inputTokens, outputTokens *int) {
+func (pr *ProviderRouter) extractCodexUsage(data string, inputTokens, outputTokens, cachedTokens *int) {
 	if !strings.Contains(data, "response.completed") {
 		return
 	}
@@ -363,6 +380,11 @@ func (pr *ProviderRouter) extractCodexUsage(data string, inputTokens, outputToke
 			}
 			if ot, ok := usage["output_tokens"].(float64); ok {
 				*outputTokens = int(ot)
+			}
+			if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+				if ct, ok := details["cached_tokens"].(float64); ok && ct > 0 {
+					*cachedTokens = int(ct)
+				}
 			}
 		}
 	}

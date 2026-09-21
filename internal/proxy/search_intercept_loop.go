@@ -227,7 +227,7 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 		pr.emitServerToolWebSearchJSON(w, req, blocks, searchesPerformed, totalOutputTokens)
 	}
 
-	stats.Global.RecordRequest(req.Model, rp.ProviderID, client, 0, totalOutputTokens, time.Since(reqStart))
+	stats.Global.RecordRequest(req.Model, rp.ProviderID, client, 0, totalOutputTokens, 0, time.Since(reqStart))
 	return true
 }
 

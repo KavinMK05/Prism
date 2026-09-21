@@ -342,11 +342,14 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	if msg.Content != "first turn\n\nsecond turn" {
 		t.Errorf("text blocks were not separated: %q", msg.Content)
 	}
-	// Historical thinking blocks are preserved on the Ollama path (keep-last,
-	// matching Ollama's own anthropic.convertMessage). The model's template
-	// then decides whether to include or strip prior thinking.
+	// Keep-last is the default, matching Ollama's own anthropic.convertMessage.
+	// A thinking signature is emitted only for a Responses API upstream, so
+	// thinking echoed back from an Ollama/Ollama Cloud model is unsigned, but
+	// dropping it entirely also stripped the model's own scratchpad from history
+	// and made reasoning models re-derive the same plan every turn instead of
+	// concluding it once. Set preserveHistoryThinkingOnOllamaPath=false to drop.
 	if msg.Thinking != "continue" {
-		t.Errorf("expected last historical thinking to be preserved, got %q", msg.Thinking)
+		t.Errorf("expected keep-last thinking %q, got %q", "continue", msg.Thinking)
 	}
 	if len(msg.ToolCalls) != 1 {
 		t.Fatalf("expected one tool call, got %d", len(msg.ToolCalls))
@@ -363,29 +366,28 @@ func TestTranslateAnthropicToOllama_PreservesBlocksAndOllamaToolShape(t *testing
 	}
 }
 
-// TestTranslateAnthropicToOllama_PreservesUnsignedThinkingHistory verifies the
+// TestTranslateAnthropicToOllama_KeepsLastUnsignedThinkingHistory verifies the
 // default (keep-last) behaviour for the Ollama path: an assistant history turn
-// that contains ONLY unsigned thinking blocks still produces a message with the
-// thinking field preserved, matching Ollama's own anthropic.convertMessage.
-func TestTranslateAnthropicToOllama_PreservesUnsignedThinkingHistory(t *testing.T) {
+// that contains only an unsigned thinking block still emits that block, matching
+// Ollama's own anthropic.convertMessage. Dropping it stripped the model's
+// scratchpad and made reasoning models re-derive the same plan every turn.
+func TestTranslateAnthropicToOllama_KeepsLastUnsignedThinkingHistory(t *testing.T) {
 	msgs := translateContentBlocksWithToolLookup("assistant", []interface{}{
 		map[string]interface{}{"type": "thinking", "thinking": "stale plan", "signature": ""},
 	}, nil)
-	if len(msgs) != 1 {
-		t.Fatalf("expected unsigned thinking-only history to be preserved, got %#v", msgs)
-	}
-	if msgs[0].Thinking != "stale plan" {
-		t.Errorf("expected thinking content preserved, got %q", msgs[0].Thinking)
+	if len(msgs) != 1 || msgs[0].Thinking != "stale plan" {
+		t.Fatalf("expected unsigned thinking-only history to keep its last block, got %#v", msgs)
 	}
 }
 
-// TestTranslateAnthropicToOllama_DropFlagDropsThinking verifies the opt-out
-// preserveHistoryThinkingOnOllamaPath=false toggle drops thinking blocks
-// entirely (the old default), for users who want to suppress all historical
-// thinking regardless of Ollama's own behaviour.
-func TestTranslateAnthropicToOllama_DropFlagDropsThinking(t *testing.T) {
+// TestTranslateAnthropicToOllama_DropThinkingOptOut verifies the
+// preserveHistoryThinkingOnOllamaPath=false opt-out: models that loop on
+// replayed reasoning (GLM-5.1 re-seeing its own "Let me confirm" habit,
+// router-for-me/CLIProxyAPI#2172) can go back to dropping thinking entirely.
+func TestTranslateAnthropicToOllama_DropThinkingOptOut(t *testing.T) {
+	prev := preserveHistoryThinkingOnOllamaPath
 	preserveHistoryThinkingOnOllamaPath = false
-	defer func() { preserveHistoryThinkingOnOllamaPath = true }()
+	defer func() { preserveHistoryThinkingOnOllamaPath = prev }()
 	blocks := []interface{}{
 		map[string]interface{}{"type": "thinking", "thinking": "plan", "signature": ""},
 		map[string]interface{}{"type": "text", "text": "go"},
@@ -393,7 +395,7 @@ func TestTranslateAnthropicToOllama_DropFlagDropsThinking(t *testing.T) {
 	}
 	msgs := translateContentBlocksWithToolLookup("assistant", blocks, nil)
 	if len(msgs) != 1 || msgs[0].Thinking != "" {
-		t.Fatalf("expected thinking to be dropped when preserve flag is false, got %#v", msgs)
+		t.Fatalf("expected thinking dropped when the opt-out flag is false, got %#v", msgs)
 	}
 }
 

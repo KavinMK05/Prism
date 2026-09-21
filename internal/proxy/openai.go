@@ -16,6 +16,19 @@ import (
 )
 
 func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
+	return translateToOpenAIWithOptions(anthroReq, false)
+}
+
+// translateToOpenAIForResponses is translateToOpenAI for a Responses API
+// upstream. It additionally carries each assistant turn's opaque reasoning
+// signature (Codex reasoning.encrypted_content) so the Responses translator can
+// replay it as a reasoning input item — without it the model loses its own
+// chain of thought between turns and re-derives work it already did.
+func translateToOpenAIForResponses(anthroReq *AnthropicRequest) *OpenAIChatRequest {
+	return translateToOpenAIWithOptions(anthroReq, true)
+}
+
+func translateToOpenAIWithOptions(anthroReq *AnthropicRequest, preserveReasoningSignature bool) *OpenAIChatRequest {
 	messages := []OpenAIChatMessage{}
 	preserveReasoningContent := isReasoningVendorModel(anthroReq.Model)
 
@@ -30,7 +43,7 @@ func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
 	}
 
 	for _, msg := range anthroReq.Messages {
-		translated := translateMessageToOpenAIWithReasoning(msg, preserveReasoningContent)
+		translated := translateMessageToOpenAIWithReasoning(msg, preserveReasoningContent, preserveReasoningSignature)
 		messages = append(messages, translated...)
 	}
 	// OpenAI Chat implementations commonly support only one system message at
@@ -109,10 +122,10 @@ func translateToolChoiceToOpenAI(tc interface{}) interface{} {
 }
 
 func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
-	return translateMessageToOpenAIWithReasoning(msg, false)
+	return translateMessageToOpenAIWithReasoning(msg, false, false)
 }
 
-func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoningContent bool) []OpenAIChatMessage {
+func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoningContent, preserveReasoningSignature bool) []OpenAIChatMessage {
 	// Anthropic allows system messages inside the messages array (e.g. Claude
 	// Code's "The user sent a new message while you were working" reminders,
 	// or the "Available agent types" notice). Hoisting these to the front
@@ -145,7 +158,7 @@ func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoni
 			Content: content,
 		}}
 	case []interface{}:
-		return translateContentBlocksToOpenAIWithReasoning(msg.Role, content, preserveReasoningContent)
+		return translateContentBlocksToOpenAIWithReasoning(msg.Role, content, preserveReasoningContent, preserveReasoningSignature)
 	default:
 		return []OpenAIChatMessage{{
 			Role:    msg.Role,
@@ -155,14 +168,15 @@ func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoni
 }
 
 func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIChatMessage {
-	return translateContentBlocksToOpenAIWithReasoning(role, blocks, false)
+	return translateContentBlocksToOpenAIWithReasoning(role, blocks, false, false)
 }
 
-func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface{}, preserveReasoningContent bool) []OpenAIChatMessage {
+func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface{}, preserveReasoningContent, preserveReasoningSignature bool) []OpenAIChatMessage {
 	textParts := []string{}
 	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
 	var reasoningParts []string
+	var reasoningSignature string
 	type toolResult struct {
 		id      string
 		content string
@@ -185,10 +199,20 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 			// Most OpenAI-compatible APIs do not understand Anthropic thinking
 			// history. DeepSeek/Kimi/MiMo-style endpoints are the exception: they
 			// require non-empty reasoning_content on assistant tool-call history.
-			// Never forward the Anthropic signature; it is not valid for them.
-			if preserveReasoningContent && role == "assistant" {
-				if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
-					reasoningParts = append(reasoningParts, thinking)
+			// The opaque signature is never replayed to a Chat Completions
+			// upstream (it is internal-only), but a Responses API upstream needs
+			// it: reasoning.encrypted_content is replayed as a reasoning input
+			// item so the model keeps its chain of thought across turns.
+			if role == "assistant" {
+				if preserveReasoningSignature {
+					if sig, ok := blockMap["signature"].(string); ok && strings.TrimSpace(sig) != "" {
+						reasoningSignature = sig
+					}
+				}
+				if preserveReasoningContent {
+					if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
+						reasoningParts = append(reasoningParts, thinking)
+					}
 				}
 			}
 		case "redacted_thinking":
@@ -272,9 +296,10 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 			content = util.JoinStrings(textParts)
 		}
 		msg := OpenAIChatMessage{
-			Role:      "assistant",
-			Content:   content,
-			ToolCalls: toolCalls,
+			Role:               "assistant",
+			Content:            content,
+			ToolCalls:          toolCalls,
+			ReasoningSignature: reasoningSignature,
 		}
 		if preserveReasoningContent && role == "assistant" && len(toolCalls) > 0 {
 			reasoning := "tool call"
@@ -323,13 +348,27 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 	// Do not send an empty assistant turn after removing stale thinking. This
 	// matches CLIProxyAPI and avoids giving the upstream a fake continuation.
 	if role == "assistant" && len(textParts) == 0 && len(imageParts) == 0 {
-		return nil
+		if reasoningSignature == "" {
+			return nil
+		}
+		// A Responses API reasoning item stands on its own, so a signature-only
+		// assistant turn is still worth replaying (the Responses translator
+		// emits just the reasoning item and skips the empty message).
+		return []OpenAIChatMessage{{
+			Role:               role,
+			Content:            "",
+			ReasoningSignature: reasoningSignature,
+		}}
 	}
 
-	return []OpenAIChatMessage{{
+	final := OpenAIChatMessage{
 		Role:    role,
 		Content: openAITextContent(textParts),
-	}}
+	}
+	if role == "assistant" {
+		final.ReasoningSignature = reasoningSignature
+	}
+	return []OpenAIChatMessage{final}
 }
 
 func isReasoningVendorModel(model string) bool {
@@ -474,10 +513,11 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 	if reasoning == "" && choice.Message.Reasoning != nil {
 		reasoning = *choice.Message.Reasoning
 	}
-	if reasoning != "" {
+	if reasoning != "" || choice.Message.ReasoningSignature != "" {
 		content = append(content, AnthropicThinkingBlock{
-			Type:     "thinking",
-			Thinking: reasoning,
+			Type:      "thinking",
+			Thinking:  reasoning,
+			Signature: choice.Message.ReasoningSignature,
 		})
 	}
 
@@ -627,7 +667,11 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 
 	anthroResp := translateFromOpenAI(&openAIResp, anthroReq)
 
-	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, time.Since(reqStart))
+	var cachedPromptTokens int
+	if openAIResp.Usage.PromptTokensDetails != nil {
+		cachedPromptTokens = openAIResp.Usage.PromptTokensDetails.CachedTokens
+	}
+	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, detectClient(r), openAIResp.Usage.PromptTokens, openAIResp.Usage.CompletionTokens, cachedPromptTokens, time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}

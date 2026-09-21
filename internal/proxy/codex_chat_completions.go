@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,7 @@ import (
 
 // translateChatCompletionsToCodexResponses converts a Chat Completions request
 // to a Responses API request body suitable for chatgpt.com/backend-api/codex/responses.
-func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest) map[string]interface{} {
+func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest, includeReasoning bool) map[string]interface{} {
 	// Strip provider prefix from model name
 	modelName := req.Model
 	if idx := strings.LastIndex(modelName, "/"); idx >= 0 {
@@ -28,6 +29,14 @@ func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest) map[string
 		"model":  modelName,
 		"stream": true, // Always stream upstream
 		"store":  false,
+	}
+	if includeReasoning {
+		// Ask the upstream to return the encrypted chain of thought. It is
+		// carried to the client as a thinking-block signature and replayed as a
+		// reasoning input item on the next turn, so the model keeps its own plan
+		// across tool calls instead of re-deriving (and repeating) it. Mirrors
+		// CLIProxyAPI, which sets the same include for every Codex target.
+		body["include"] = []string{"reasoning.encrypted_content"}
 	}
 
 	// Extract system messages as instructions, rest as input
@@ -50,6 +59,15 @@ func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest) map[string
 				},
 			})
 		case "assistant":
+			// The Responses API expects a reasoning item immediately before the
+			// turn it produced, so replay the captured signature (if any) first.
+			if includeReasoning && msg.ReasoningSignature != "" {
+				inputItems = append(inputItems, map[string]interface{}{
+					"type":              "reasoning",
+					"summary":           []interface{}{},
+					"encrypted_content": msg.ReasoningSignature,
+				})
+			}
 			if len(msg.ToolCalls) > 0 {
 				// Assistant message with tool calls → function_call items
 				for _, tc := range msg.ToolCalls {
@@ -141,6 +159,62 @@ func translateChatCompletionsToCodexResponses(req *OpenAIChatRequest) map[string
 	return body
 }
 
+// postResponsesBody sends a Responses API request. When the upstream rejects
+// the reasoning.encrypted_content include — some OpenAI-compatible /v1/responses
+// implementations do not know the parameter — it retries once without it, so
+// reasoning replay can never turn an otherwise working provider into a 400.
+func (pr *ProviderRouter) postResponsesBody(ctx context.Context, upstreamURL string, bodyMap map[string]interface{}, rp *config.ResolvedProvider, codexHeaders bool, logTag string) (*http.Response, error) {
+	send := func(m map[string]interface{}) (*http.Response, error) {
+		bodyBytes, errMarshal := json.Marshal(m)
+		if errMarshal != nil {
+			return nil, errMarshal
+		}
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(bodyBytes))
+		if errReq != nil {
+			return nil, errReq
+		}
+		if codexHeaders {
+			addCodexHeaders(req, rp)
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+rp.APIKey)
+		}
+		log.Printf("-> %s %s%s", req.Method, upstreamURL, logTag)
+		return pr.client.Do(req)
+	}
+
+	resp, err := send(bodyMap)
+	if err != nil || resp.StatusCode != http.StatusBadRequest || bodyMap["include"] == nil {
+		return resp, err
+	}
+	rejection, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(strings.ToLower(string(rejection)), "include") {
+		resp.Body = io.NopCloser(bytes.NewReader(rejection))
+		return resp, nil
+	}
+	log.Printf("[WARN] upstream rejected include=reasoning.encrypted_content, retrying without reasoning replay: %s", string(rejection))
+	retryBody := make(map[string]interface{}, len(bodyMap))
+	for k, v := range bodyMap {
+		retryBody[k] = v
+	}
+	delete(retryBody, "include")
+	// A reasoning item is only meaningful alongside the encrypted_content
+	// include; drop it too so the retry is a plain Responses request.
+	if input, ok := retryBody["input"].([]interface{}); ok {
+		filtered := make([]interface{}, 0, len(input))
+		for _, raw := range input {
+			item, _ := raw.(map[string]interface{})
+			if item != nil && item["type"] == "reasoning" {
+				continue
+			}
+			filtered = append(filtered, raw)
+		}
+		retryBody["input"] = filtered
+	}
+	return send(retryBody)
+}
+
 // contentToString extracts a string from an OpenAI message content field
 // which can be either a string or an array of content parts.
 func contentToString(content interface{}) string {
@@ -170,27 +244,13 @@ func contentToString(content interface{}) string {
 func (pr *ProviderRouter) handleGenericChatToResponses(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider) {
 	reqStart := time.Now()
 	client := detectClient(r)
-	bodyMap := translateChatCompletionsToCodexResponses(openAIReq)
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, false)
 	// Unlike the Codex backend (which rejects it), generic /v1/responses
 	// endpoints accept max_output_tokens; forward the client's limit.
 	if openAIReq.MaxTokens > 0 {
 		bodyMap["max_output_tokens"] = openAIReq.MaxTokens
 	}
-	bodyBytes, err := json.Marshal(bodyMap)
-	if err != nil {
-		WriteOpenAIError(w, 500, "server_error", "Failed to marshal request: "+err.Error())
-		return
-	}
-	upstreamURL := rp.ResponsesURL()
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		WriteOpenAIError(w, 500, "server_error", "Failed to create upstream request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
-	log.Printf("-> %s %s (generic chat -> responses)", req.Method, upstreamURL)
-	resp, err := pr.client.Do(req)
+	resp, err := pr.postResponsesBody(r.Context(), rp.ResponsesURL(), bodyMap, rp, false, " (generic chat -> responses)")
 	if err != nil {
 		log.Printf("[ERR] Generic upstream request failed: %v", err)
 		WriteOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -219,24 +279,8 @@ func (pr *ProviderRouter) handleCodexChatCompletions(w http.ResponseWriter, r *h
 	client := detectClient(r)
 
 	// Translate to Responses API format
-	bodyMap := translateChatCompletionsToCodexResponses(openAIReq)
-	bodyBytes, err := json.Marshal(bodyMap)
-	if err != nil {
-		WriteOpenAIError(w, 500, "server_error", "Failed to marshal request: "+err.Error())
-		return
-	}
-
-	upstreamURL := rp.ResponsesURL()
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, strings.NewReader(string(bodyBytes)))
-	if err != nil {
-		WriteOpenAIError(w, 500, "server_error", "Failed to create upstream request")
-		return
-	}
-	addCodexHeaders(req, rp)
-
-	log.Printf("-> %s %s (codex chat completions translation)", req.Method, upstreamURL)
-
-	resp, err := pr.client.Do(req)
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, false)
+	resp, err := pr.postResponsesBody(r.Context(), rp.ResponsesURL(), bodyMap, rp, true, " (codex chat completions translation)")
 	if err != nil {
 		log.Printf("[ERR] Codex upstream request failed: %v", err)
 		WriteOpenAIError(w, 502, "server_error", "Upstream request failed: "+err.Error())
@@ -272,12 +316,13 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 	createdAt := time.Now().Unix()
 
 	var inputTokens, outputTokens int
+	var cachedTokens int
 	var roleSent bool
 	var toolCallIndex int
 	var finishReason string
 
 	defer func() {
-		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	}()
 
 	// Helper to write a Chat Completions SSE chunk
@@ -396,6 +441,11 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 					if ot, ok := usage["output_tokens"].(float64); ok {
 						outputTokens = int(ot)
 					}
+					if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+						if ct, ok := details["cached_tokens"].(float64); ok && ct > 0 {
+							cachedTokens = int(ct)
+						}
+					}
 				}
 				// Determine finish reason
 				status, _ := responseObj["status"].(string)
@@ -435,9 +485,9 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 // translateCodexResponsesToChatCompletions collects SSE events from the Codex
 // backend and builds a complete Chat Completions JSON response.
 func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.ResponseWriter, r *http.Request, resp *http.Response, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider, client string, reqStart time.Time) {
-	chatResp, inputTokens, outputTokens := collectCodexResponsesSSE(resp, openAIReq.Model)
+	chatResp, inputTokens, outputTokens, cachedTokens := collectCodexResponsesSSE(resp, openAIReq.Model)
 
-	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -448,10 +498,11 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.Respon
 // stream=true even for non-streaming clients) and accumulates it into a
 // complete Chat Completions response. Shared by the Codex Chat Completions
 // translator and the generic Anthropic-inbound responses translator.
-func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenAIChatResponse, inputTokens, outputTokens int) {
+func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenAIChatResponse, inputTokens, outputTokens, cachedTokens int) {
 	var contentText string
 	var toolCalls []OpenAIToolCall
 	var finishReason = "stop"
+	var reasoningSignature string
 	var completedResponse map[string]interface{}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -501,6 +552,19 @@ func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenA
 				toolCalls[len(toolCalls)-1].Function.Arguments += delta
 			}
 
+		case "response.output_item.done":
+			// The reasoning item's final encrypted_content is only delivered on
+			// item.done; item.added carries a pre-content snapshot.
+			item, _ := event["item"].(map[string]interface{})
+			if item == nil {
+				continue
+			}
+			if it, _ := item["type"].(string); it == "reasoning" {
+				if sig, _ := item["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
+					reasoningSignature = sig
+				}
+			}
+
 		case "response.completed":
 			responseObj, _ := event["response"].(map[string]interface{})
 			if responseObj != nil {
@@ -511,6 +575,26 @@ func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenA
 					}
 					if ot, ok := usage["output_tokens"].(float64); ok {
 						outputTokens = int(ot)
+					}
+					if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
+						if ct, ok := details["cached_tokens"].(float64); ok && ct > 0 {
+							cachedTokens = int(ct)
+						}
+					}
+				}
+				// Some providers only surface reasoning items on the completed
+				// response; take the last encrypted_content seen.
+				if output, ok := responseObj["output"].([]interface{}); ok {
+					for _, rawItem := range output {
+						itemMap, ok := rawItem.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if t, _ := itemMap["type"].(string); t == "reasoning" {
+							if sig, _ := itemMap["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
+								reasoningSignature = sig
+							}
+						}
 					}
 				}
 				status, _ := responseObj["status"].(string)
@@ -565,17 +649,19 @@ func collectCodexResponsesSSE(resp *http.Response, model string) (chatResp OpenA
 			{
 				Index: 0,
 				Message: OpenAIChatMessage{
-					Role:      "assistant",
-					Content:   contentText,
-					ToolCalls: toolCalls,
+					Role:               "assistant",
+					Content:            contentText,
+					ToolCalls:          toolCalls,
+					ReasoningSignature: reasoningSignature,
 				},
 				FinishReason: finishReason,
 			},
 		},
 		Usage: OpenAIUsage{
-			PromptTokens:     inputTokens,
-			CompletionTokens: outputTokens,
-			TotalTokens:      inputTokens + outputTokens,
+			PromptTokens:        inputTokens,
+			CompletionTokens:    outputTokens,
+			TotalTokens:         inputTokens + outputTokens,
+			PromptTokensDetails: promptTokensDetails(cachedTokens),
 		},
-	}, inputTokens, outputTokens
+	}, inputTokens, outputTokens, cachedTokens
 }

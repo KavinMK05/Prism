@@ -23,6 +23,7 @@ type ollamaStreamState struct {
 	model            string
 	outputTokens     int
 	inputTokens      int
+	cachedTokens     int
 	thinkingActive   bool
 	pendingContent   string
 	toolCallsActive  bool
@@ -217,7 +218,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 
 	client := detectClient(r)
 	defer func() {
-		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, state.inputTokens, state.outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, state.inputTokens, state.outputTokens, state.cachedTokens, time.Since(reqStart))
 	}()
 
 	state.writeOpenAISSE(OpenAIStreamChunk{
@@ -252,6 +253,9 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 
 		if chunk.PromptEvalCount > 0 {
 			state.inputTokens = chunk.PromptEvalCount
+		}
+		if cached := chunk.cachedPromptTokens(); cached > 0 {
+			state.cachedTokens = cached
 		}
 		if chunk.EvalCount > state.outputTokens {
 			state.outputTokens = chunk.EvalCount
@@ -382,9 +386,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 					},
 				},
 				Usage: &OpenAIStreamUsage{
-					PromptTokens:     state.inputTokens,
-					CompletionTokens: state.outputTokens,
-					TotalTokens:      state.inputTokens + state.outputTokens,
+					PromptTokens:        state.inputTokens,
+					CompletionTokens:    state.outputTokens,
+					TotalTokens:         state.inputTokens + state.outputTokens,
+					PromptTokensDetails: promptTokensDetails(state.cachedTokens),
 				},
 			})
 		}
@@ -407,9 +412,10 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 	reqStart := time.Now()
 	var liveTokens int
 	var inputTokens int
+	var cachedTokens int
 	client := detectClient(r)
 	defer func() {
-		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, liveTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, liveTokens, cachedTokens, time.Since(reqStart))
 	}()
 
 	// Validate reasoning_effort for the model
@@ -622,6 +628,9 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 					}
 					if chunk.Usage.CompletionTokens > 0 {
 						liveTokens = chunk.Usage.CompletionTokens
+					}
+					if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+						cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 					}
 				}
 			}

@@ -21,6 +21,7 @@ type LiveStats struct {
 	TotalRequests      int                    `json:"total_requests"`
 	TotalInputTokens   int64                  `json:"total_input_tokens"`
 	TotalOutputTokens  int64                  `json:"total_output_tokens"`
+	TotalCachedTokens  int64                  `json:"total_cached_tokens"`
 	AvgTokensPerSec    float64                `json:"avg_tokens_per_sec"`
 	RecentRequests     []db.RequestStats      `json:"recent_requests"`
 	ByModel            map[string]*ModelStats `json:"by_model"`
@@ -32,6 +33,7 @@ type ModelStats struct {
 	Requests        int     `json:"requests"`
 	InputTokens     int64   `json:"input_tokens"`
 	OutputTokens    int64   `json:"output_tokens"`
+	CachedTokens    int64   `json:"cached_tokens"`
 	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
 }
 
@@ -43,6 +45,7 @@ type StatsTracker struct {
 	totalRequests      int
 	totalInputTokens   int64
 	totalOutputTokens  int64
+	totalCachedTokens  int64
 	byModel            map[string]*ModelStats
 	byClient           map[string]*ModelStats
 	currentModel       string
@@ -66,8 +69,9 @@ func NewStatsTracker(maxRecent int) *StatsTracker {
 	}
 }
 
-// RecordRequest records a completed request's stats
-func (st *StatsTracker) RecordRequest(model, provider, client string, inputTokens, outputTokens int, duration time.Duration) {
+// RecordRequest records a completed request's stats. cachedTokens is the subset of
+// inputTokens that was served from the provider's prompt cache.
+func (st *StatsTracker) RecordRequest(model, provider, client string, inputTokens, outputTokens, cachedTokens int, duration time.Duration) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -76,16 +80,23 @@ func (st *StatsTracker) RecordRequest(model, provider, client string, inputToken
 	if duration.Seconds() > 0 && outputTokens > 0 {
 		tokensPerSec = float64(outputTokens) / duration.Seconds()
 	}
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > inputTokens {
+		cachedTokens = inputTokens
+	}
 
 	stats := db.RequestStats{
-		Model:        model,
-		Provider:     provider,
-		Client:       client,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		DurationMs:   durationMs,
-		TokensPerSec: tokensPerSec,
-		Timestamp:    time.Now(),
+		Model:             model,
+		Provider:          provider,
+		Client:            client,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		CachedInputTokens: cachedTokens,
+		DurationMs:        durationMs,
+		TokensPerSec:      tokensPerSec,
+		Timestamp:         time.Now(),
 	}
 
 	st.recentRequests = append(st.recentRequests, stats)
@@ -96,6 +107,7 @@ func (st *StatsTracker) RecordRequest(model, provider, client string, inputToken
 	st.totalRequests++
 	st.totalInputTokens += int64(inputTokens)
 	st.totalOutputTokens += int64(outputTokens)
+	st.totalCachedTokens += int64(cachedTokens)
 
 	// Persist to SQLite (non-blocking, log on error)
 	go db.RecordRequest(stats)
@@ -108,6 +120,7 @@ func (st *StatsTracker) RecordRequest(model, provider, client string, inputToken
 	ms.Requests++
 	ms.InputTokens += int64(inputTokens)
 	ms.OutputTokens += int64(outputTokens)
+	ms.CachedTokens += int64(cachedTokens)
 	ms.AvgTokensPerSec = (ms.AvgTokensPerSec*float64(ms.Requests-1) + tokensPerSec) / float64(ms.Requests)
 
 	cs, ok := st.byClient[client]
@@ -118,6 +131,7 @@ func (st *StatsTracker) RecordRequest(model, provider, client string, inputToken
 	cs.Requests++
 	cs.InputTokens += int64(inputTokens)
 	cs.OutputTokens += int64(outputTokens)
+	cs.CachedTokens += int64(cachedTokens)
 	cs.AvgTokensPerSec = (cs.AvgTokensPerSec*float64(cs.Requests-1) + tokensPerSec) / float64(cs.Requests)
 }
 
@@ -189,6 +203,7 @@ func (st *StatsTracker) GetSnapshot() LiveStats {
 		TotalRequests:      st.totalRequests,
 		TotalInputTokens:   st.totalInputTokens,
 		TotalOutputTokens:  st.totalOutputTokens,
+		TotalCachedTokens:  st.totalCachedTokens,
 		AvgTokensPerSec:    avgTps,
 		RecentRequests:     recent,
 		ByModel:            byModel,

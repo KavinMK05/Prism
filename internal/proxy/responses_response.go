@@ -307,10 +307,12 @@ func translateOpenAIUsageToResponses(usage OpenAIUsage) ResponsesAPIUsage {
 // responsesUsageMap builds a complete Responses API usage object (including
 // the input_tokens_details / output_tokens_details nested fields that Grok
 // Build's strict Rust client requires) for inline use in streaming events.
-func responsesUsageMap(inputTokens, outputTokens int) map[string]interface{} {
+// inputTokens is the logical total and includes the cache hits reported
+// separately in cachedTokens, matching OpenAI's prompt_tokens convention.
+func responsesUsageMap(inputTokens, outputTokens, cachedTokens int) map[string]interface{} {
 	return map[string]interface{}{
 		"input_tokens":          inputTokens,
-		"input_tokens_details":  map[string]interface{}{"cached_tokens": 0},
+		"input_tokens_details":  map[string]interface{}{"cached_tokens": cachedTokens},
 		"output_tokens":         outputTokens,
 		"output_tokens_details": map[string]interface{}{"reasoning_tokens": 0},
 		"total_tokens":          inputTokens + outputTokens,

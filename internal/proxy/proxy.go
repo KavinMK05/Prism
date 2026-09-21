@@ -385,7 +385,12 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 		// go to /v1/responses even though the provider is "openai". The result is converted back to
 		// Anthropic protocol for the client (handleGenericChatToResponses would answer in OpenAI
 		// Chat Completions protocol, which /v1/messages clients cannot parse).
-		if rp.ProviderType == "openai" && pr.getModelAPI(anthroReq.Model, rp.ProviderID) == "responses" {
+		//
+		// Codex OAuth accounts always use the Responses API: ChatGPT bearer tokens
+		// only work against chatgpt.com/backend-api/codex/responses, and the
+		// responses handler is what carries encrypted reasoning back to the client
+		// so the model does not repeat work it already planned.
+		if rp.ProviderType == "codex" || pr.getModelAPI(anthroReq.Model, rp.ProviderID) == "responses" {
 			pr.handleGenericResponsesForAnthropic(w, r, &anthroReq, rp)
 			return
 		}
@@ -471,7 +476,7 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 
 	anthroResp := translateResponse(&ollamaResp, &anthroReq)
 
-	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, ollamaResp.cachedPromptTokens(), time.Since(reqStart))
 
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}
@@ -897,6 +902,15 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 		stopReason = "tool_use"
 	}
 
+	// Ollama's prompt_eval_count is the logical input total and includes cache
+	// hits; Anthropic splits that into input_tokens (non-cached) and
+	// cache_read_input_tokens. Mirrors the OpenAI -> Anthropic split in openai.go.
+	inputTokens := ollama.PromptEvalCount
+	cacheRead := ollama.cachedPromptTokens()
+	if cacheRead > 0 {
+		inputTokens -= cacheRead
+	}
+
 	return AnthropicResponse{
 		ID:         fmt.Sprintf("msg_%s", ollama.Model),
 		Type:       "message",
@@ -905,8 +919,9 @@ func translateResponse(ollama *OllamaChatResponse, anthroReq *AnthropicRequest) 
 		Content:    content,
 		StopReason: stopReason,
 		Usage: AnthropicUsage{
-			InputTokens:  ollama.PromptEvalCount,
-			OutputTokens: ollama.EvalCount,
+			InputTokens:          inputTokens,
+			OutputTokens:         ollama.EvalCount,
+			CacheReadInputTokens: cacheRead,
 		},
 	}
 }

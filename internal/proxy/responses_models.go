@@ -45,9 +45,10 @@ type ResponsesAPIFunctionCallOutput struct {
 }
 
 type ResponsesAPIReasoningInput struct {
-	ID      string                         `json:"id"`
-	Type    string                         `json:"type"`
-	Summary []ResponsesAPIReasoningSummary `json:"summary,omitempty"`
+	ID               string                         `json:"id"`
+	Type             string                         `json:"type"`
+	Summary          []ResponsesAPIReasoningSummary `json:"summary,omitempty"`
+	EncryptedContent string                         `json:"encrypted_content,omitempty"`
 }
 
 type ResponsesAPIReasoningSummary struct {
@@ -129,9 +130,10 @@ type ResponsesAPIFunctionCallItem struct {
 }
 
 type ResponsesAPIReasoningItem struct {
-	ID      string                         `json:"id"`
-	Type    string                         `json:"type"`
-	Summary []ResponsesAPIReasoningSummary `json:"summary,omitempty"`
+	ID               string                         `json:"id"`
+	Type             string                         `json:"type"`
+	Summary          []ResponsesAPIReasoningSummary `json:"summary,omitempty"`
+	EncryptedContent string                         `json:"encrypted_content,omitempty"`
 }
 
 type ResponsesAPITextFormat struct {

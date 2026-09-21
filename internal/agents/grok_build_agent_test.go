@@ -61,24 +61,6 @@ func TestTomlQuote(t *testing.T) {
 	}
 }
 
-func TestHasModelsSection(t *testing.T) {
-	if hasModelsSection("[models]\ndefault = \"x\"") != true {
-		t.Error("[models] not detected")
-	}
-	if hasModelsSection("[models.foo]\ndefault = \"x\"") != true {
-		t.Error("[models.foo] not detected")
-	}
-	if hasModelsSection("  [models]\ndefault=\"x\"") != true {
-		t.Error("indented [models] not detected")
-	}
-	if hasModelsSection("[model.prism-x]\nmodel = \"x\"") != false {
-		t.Error("[model.*] falsely matched as [models]")
-	}
-	if hasModelsSection("# [models] comment") != false {
-		t.Error("commented [models] falsely matched")
-	}
-}
-
 func TestBuildGrokBuildModelSections(t *testing.T) {
 	cfg := &config.Config{DefaultProvider: "ollama_cloud"}
 	remap := &config.ModelRemapping{KnownModels: []config.ModelEntry{
@@ -235,7 +217,7 @@ model = "user-model"
 	}
 }
 
-func TestInstallGrokBuildConfigNoModelsSectionAddsDefault(t *testing.T) {
+func TestInstallGrokBuildConfigDoesNotSetDefaultModel(t *testing.T) {
 	tmp := setTestHomeAndConfigDir(t)
 	writePrismConfig(t, `{"default_provider":"ollama_cloud"}`)
 
@@ -252,11 +234,48 @@ func TestInstallGrokBuildConfigNoModelsSectionAddsDefault(t *testing.T) {
 	}
 	data, _ := os.ReadFile(cfgPath)
 	s := string(data)
-	if strings.Count(s, "[models]") != 1 {
-		t.Errorf("expected one [models] section added when none existed, got %d", strings.Count(s, "[models]"))
+	if strings.Contains(s, "[models]") {
+		t.Errorf("install must not add a [models] default section:\n%s", s)
 	}
-	if !strings.Contains(s, `default = "prism-ollama-cloud-glm-5-2-cloud"`) {
-		t.Errorf("expected default pointing at first prism model:\n%s", s)
+	if strings.Contains(s, "default =") {
+		t.Errorf("install must not pick a default model:\n%s", s)
+	}
+	if !strings.Contains(s, "[model.prism-ollama-cloud-glm-5-2-cloud]") {
+		t.Errorf("prism model section missing:\n%s", s)
+	}
+}
+
+// A config written by an older Prism version (which added [models] default when
+// the user had no [models] section) must lose that default on the next sync.
+func TestInstallGrokBuildConfigStripsLegacyDefault(t *testing.T) {
+	tmp := setTestHomeAndConfigDir(t)
+	writePrismConfig(t, `{"default_provider":"ollama_cloud"}`)
+
+	remap := &config.ModelRemapping{KnownModels: []config.ModelEntry{
+		{ID: "glm-5.2:cloud", Provider: "ollama_cloud", ContextLength: 200000},
+	}}
+	cfgPath := filepath.Join(tmp, ".grok", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "model = \"user-model\"\n\n" + codexManagedBegin +
+		"\n[models]\ndefault = \"prism-ollama-cloud-glm-5-2-cloud\"\n" +
+		"\n[model.prism-ollama-cloud-glm-5-2-cloud]\nmodel = \"ollama_cloud/glm-5.2:cloud\"\n" +
+		codexManagedEnd + "\n"
+	if err := os.WriteFile(cfgPath, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallGrokBuildConfig(11434, remap); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	s := string(data)
+	if strings.Contains(s, "[models]") || strings.Contains(s, "default =") {
+		t.Errorf("legacy default survived the re-sync:\n%s", s)
+	}
+	if !strings.Contains(s, "model = \"user-model\"") {
+		t.Errorf("user content lost:\n%s", s)
 	}
 }
 

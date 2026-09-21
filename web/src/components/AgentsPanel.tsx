@@ -10,15 +10,15 @@ import { Input } from '@/components/ui/input';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription, DrawerFooter, DrawerClose } from '@/components/ui/drawer';
 
 const AGENTS = [
-  { id: 'codex', name: 'Codex', desc: 'Makes your Prism models appear in Codex\u2019s native model picker. Requires Codex to be installed.', codex: true },
+  { id: 'codex', name: 'Codex', desc: 'Makes your Prism models appear in Codex\u2019s native model picker. The model Codex is set to use is left untouched. Requires Codex to be installed.', codex: true },
   { id: 'claude-code', name: 'Claude Code', desc: 'Routes Claude Code through Prism by setting ANTHROPIC_BASE_URL and per-tier model mappings in ~/.claude/settings.local.json. Requires Claude Code to be installed.', hasTiers: true },
   { id: 'factory-droid', name: 'Factory Droid', desc: 'Adds your Prism models as [Prism] custom models in ~/.factory/settings.local.json so they appear in Droid\u2019s /model picker. Requires Factory Droid to be installed.' },
   { id: 'opencode', name: 'OpenCode', desc: 'Registers a prism provider with your Prism base URL in ~/.config/opencode/opencode.json so OpenCode can use your local models. Requires OpenCode to be installed.' },
   { id: 'zcode', name: 'ZCode', desc: 'Registers a prism provider in ~/.zcode/v2/config.json so ZCode can use your local models via Prism. Requires ZCode to be installed.' },
   { id: 'zed', name: 'Zed', desc: 'Registers a prism provider under language_models.openai_compatible in Zed\u2019s settings.json so the Zed Agent can use your local models via Prism. Codex models automatically use the Responses API. Requires Zed to be installed.' },
   { id: 'omp', name: 'Oh My Pi', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in ~/.omp/agent/models.yml so Oh My Pi can use your local models via Prism. Requires Oh My Pi (omp) to be installed.' },
-  { id: 'grok-build', name: 'Grok Build', desc: 'Registers [model.prism-*] entries in ~/.grok/config.toml so Grok Build can use your local models via Prism. Requires Grok Build (grok) to be installed.' },
-  { id: 'pi', name: 'Pi', desc: 'Registers a prism provider in ~/.pi/agent/models.json so Pi can use your local models via Prism. Also sets defaultProvider and defaultModel in ~/.pi/agent/settings.json. Requires Pi to be installed.' },
+  { id: 'grok-build', name: 'Grok Build', desc: 'Registers [model.prism-*] entries in ~/.grok/config.toml so Grok Build can use your local models via Prism. Your default model is left untouched. Requires Grok Build (grok) to be installed.' },
+  { id: 'pi', name: 'Pi', desc: 'Registers a prism provider in ~/.pi/agent/models.json so Pi can use your local models via Prism. Your default provider and model are left untouched \u2014 pick a Prism model in Pi itself. Requires Pi to be installed.' },
   { id: 'prime-agent', name: 'Prime Agent', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in Prime Agent\u2019s models.json (~/.prime/agent, WSL-aware on Windows) so Prime Agent can use your local models via Prism. Your default model is left untouched. Requires Prime Agent (prime-agent) to be installed.' },
   { id: 'kimi-code', name: 'Kimi Code', desc: 'Registers a prism provider and model aliases in ~/.kimi-code/config.toml so Kimi Code CLI can use your local models via Prism. Requires Kimi Code (kimi) to be installed.' },
 ];

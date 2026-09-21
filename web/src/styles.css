@@ -55,6 +55,11 @@
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #22c55e;
+  /* Switch (toggle) colors — filled neutral track when off, primary when on */
+  --switch-track: var(--border-strong);
+  --switch-track-checked: var(--primary);
+  --switch-thumb: #ffffff;
+  --switch-thumb-checked: var(--primary-foreground);
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -110,6 +115,11 @@
   --danger: #f87171;
   --danger-hover: #ef4444;
   --success: #4ade80;
+  /* Switch (toggle) colors — filled neutral track when off, primary when on */
+  --switch-track: var(--border-strong);
+  --switch-track-checked: var(--primary);
+  --switch-thumb: var(--text);
+  --switch-thumb-checked: var(--primary-foreground);
   --shadow: 0 1px 2px rgba(0,0,0,0.2);
 
   /* shadcn/ui design tokens */

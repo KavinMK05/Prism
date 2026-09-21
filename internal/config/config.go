@@ -87,6 +87,7 @@ type Config struct {
 	SearXNGAutoStart  bool                     `json:"searxng_autostart,omitempty"`
 	DebugLogs         bool                     `json:"debug_logs,omitempty"`
 	Search            *search.Config           `json:"search,omitempty"`
+	MCP               *MCPConfig               `json:"mcp,omitempty"`
 
 	// AnalyticsOptIn records whether the user has opted in to anonymous usage
 	// telemetry (a single daily heartbeat to PostHog EU). Defaults to false.
@@ -155,6 +156,7 @@ func (c *Config) Clone() *Config {
 		}
 		cp.AgentIntegrations = &ai
 	}
+	cp.MCP = cloneMCP(c.MCP)
 	return &cp
 }
 
@@ -383,6 +385,7 @@ func Load() *Config {
 		cfg.OAuthAccounts = []*OAuthAccount{}
 	}
 	cfg.EnsureAgentIntegrations()
+	cfg.EnsureMCP()
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "ollama_cloud"
 	}

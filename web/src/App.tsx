@@ -4,6 +4,7 @@ import ProxyPanel from './components/ProxyPanel';
 import AgentsPanel from './components/AgentsPanel';
 import SearXNGPanel from './components/SearXNGPanel';
 import SearchProvidersPanel from './components/SearchProvidersPanel';
+import MCPPanel from './components/MCPPanel';
 import OAuthPanel from './components/OAuthPanel';
 import ProviderPanel from './components/ProviderPanel';
 import ModelsPanel from './components/ModelsPanel';
@@ -12,7 +13,7 @@ import StarPrompt from './components/StarPrompt';
 import AnalyticsBanner from './components/AnalyticsBanner';
 import { api } from './api';
 
-type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search';
+type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search' | 'mcp';
 
 interface Tab {
   id: TabId;
@@ -98,6 +99,19 @@ const TABS: Tab[] = [
     ),
   },
   {
+    id: 'mcp',
+    label: 'MCP',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        <path d="M10 6.5h4M6.5 10v4M17.5 10v4M10 17.5h4" />
+      </svg>
+    ),
+  },
+  {
     id: 'stats',
     label: 'Stats',
     icon: (
@@ -112,7 +126,7 @@ const TABS: Tab[] = [
 
 const SECTIONS: { label: string; tabs: TabId[] }[] = [
   { label: 'Configuration', tabs: ['provider', 'models', 'agents'] },
-  { label: 'Integrations', tabs: ['oauth', 'proxy', 'searxng', 'search'] },
+  { label: 'Integrations', tabs: ['oauth', 'mcp', 'proxy', 'searxng', 'search'] },
   { label: 'Analytics', tabs: ['stats'] },
 ];
 
@@ -148,6 +162,7 @@ export default function App() {
       case 'proxy': return <ProxyPanel />;
       case 'searxng': return <SearXNGPanel />;
       case 'search': return <SearchProvidersPanel />;
+      case 'mcp': return <MCPPanel />;
       default: return null;
     }
   };

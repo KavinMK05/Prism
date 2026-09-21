@@ -168,7 +168,7 @@ func emitToolCallDoneEvent(e *responsesEmitter, outputType, itemID string, argum
 // For function_call, emits response.function_call_arguments.delta as normal.
 func emitToolCallDeltaEvent(e *responsesEmitter, outputType, itemID string, delta string, outputIndex int) {
 	if outputType == "custom_tool_call" {
-		// Skip delta events for custom_tool_call — the done event carries
+		// Skip delta events for custom_tool_call â€” the done event carries
 		// the correct extracted input.
 		return
 	}
@@ -319,9 +319,10 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	var outputTokens int
 	var inputTokens int
 	var liveOutputTokens int
+	var cachedTokens int
 	client := detectClient(r)
 	defer func() {
-		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	}()
 	var completedEmitted bool
 	var completionStatus = "completed"
@@ -345,7 +346,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0),
+			"usage":      responsesUsageMap(0, 0, 0),
 		},
 	})
 
@@ -363,7 +364,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0),
+			"usage":      responsesUsageMap(0, 0, 0),
 		},
 	})
 
@@ -406,6 +407,9 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			}
 			if chunk.Usage.CompletionTokens > 0 {
 				outputTokens = chunk.Usage.CompletionTokens
+			}
+			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+				cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
 		}
 
@@ -733,7 +737,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"status":      completionStatus,
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage":       responsesUsageMap(inputTokens, outputTokens),
+			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{
@@ -812,9 +816,10 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	var funcCallOutputType string
 	var outputTokens int
 	var inputTokens int
+	var cachedTokens int
 	client := detectClient(r)
 	defer func() {
-		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, time.Since(reqStart))
+		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	}()
 	var accumulatedText string
 	var thinkingActive bool
@@ -839,7 +844,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0),
+			"usage":      responsesUsageMap(0, 0, 0),
 		},
 	})
 
@@ -857,7 +862,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0),
+			"usage":      responsesUsageMap(0, 0, 0),
 		},
 	})
 
@@ -894,6 +899,9 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 
 		if chunk.PromptEvalCount > 0 {
 			inputTokens = chunk.PromptEvalCount
+		}
+		if cached := chunk.cachedPromptTokens(); cached > 0 {
+			cachedTokens = cached
 		}
 		if chunk.EvalCount > outputTokens {
 			outputTokens = chunk.EvalCount
@@ -1167,7 +1175,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"status":      status,
 				"output":      completedOutput,
 				"output_text": completedOutputText,
-				"usage":       responsesUsageMap(inputTokens, outputTokens),
+				"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
 			}
 			mergeResponsesEchoFields(completedResp, respReq)
 			e.emit("response.completed", map[string]interface{}{
@@ -1247,7 +1255,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"status":      "completed",
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage":       responsesUsageMap(inputTokens, outputTokens),
+			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{

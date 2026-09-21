@@ -128,7 +128,7 @@ func (pr *ProviderRouter) handleOpenAIInboundToOllama(w http.ResponseWriter, r *
 
 	openAIResp := translateOllamaToOpenAI(&ollamaResp, openAIReq)
 
-	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, time.Since(reqStart))
+	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), ollamaResp.PromptEvalCount, ollamaResp.EvalCount, ollamaResp.cachedPromptTokens(), time.Since(reqStart))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -187,12 +187,16 @@ func (pr *ProviderRouter) handleOpenAIInboundToOpenAI(w http.ResponseWriter, r *
 		inputTokens = parsedResp.Usage.PromptTokens
 		outputTokens = parsedResp.Usage.CompletionTokens
 	}
+	var cachedTokens int
+	if parsedResp.Usage.PromptTokensDetails != nil {
+		cachedTokens = parsedResp.Usage.PromptTokensDetails.CachedTokens
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
 
-	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), inputTokens, outputTokens, time.Since(reqStart))
+	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, detectClient(r), inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 }
 
 // buildOpenAIToolIDToNameMap builds a mapping from tool_call_id to function name
@@ -467,9 +471,10 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 			},
 		},
 		Usage: OpenAIUsage{
-			PromptTokens:     ollama.PromptEvalCount,
-			CompletionTokens: ollama.EvalCount,
-			TotalTokens:      ollama.PromptEvalCount + ollama.EvalCount,
+			PromptTokens:        ollama.PromptEvalCount,
+			CompletionTokens:    ollama.EvalCount,
+			TotalTokens:         ollama.PromptEvalCount + ollama.EvalCount,
+			PromptTokensDetails: promptTokensDetails(ollama.cachedPromptTokens()),
 		},
 	}
 }
