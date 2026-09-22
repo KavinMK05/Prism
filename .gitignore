@@ -6,10 +6,21 @@
 .opencode/
 .superpowers/
 .phase-by-phase-planner/
+.antigravitycli/
+.scratch/
+
 # Build artifacts
 *.syso
 docs/
 droid-wiki/
+tray-rs/
+
+# Dev scratch images
+=ro
+extracted_new.png
+web/*-screenshot.png
+web/models-panel.png
+web/select-clicked.png
 
 # Frontend (web/)
 web/node_modules/
