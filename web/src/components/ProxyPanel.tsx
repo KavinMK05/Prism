@@ -8,7 +8,8 @@ export default function ProxyPanel() {
   const [running, setRunning] = useState<boolean | null>(null);
   const [autoStart, setAutoStart] = useState(false);
   const [debugLogs, setDebugLogs] = useState(false);
-  const [analyticsOptIn, setAnalyticsOptIn] = useState(false);
+  const [analyticsEnabled, setAnalyticsEnabled] = useState(true);
+  const [analyticsForcedOff, setAnalyticsForcedOff] = useState(false);
   const [autoStartLabel, setAutoStartLabel] = useState('Auto-start at Login');
   const [logs, setLogs] = useState('Loading...');
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -55,7 +56,8 @@ export default function ProxyPanel() {
   const loadAnalytics = useCallback(async () => {
     try {
       const data = await api('/analytics/settings');
-      setAnalyticsOptIn(data.opt_in);
+      setAnalyticsEnabled(data.enabled);
+      setAnalyticsForcedOff(data.forced_off);
     } catch {
       // ignore
     }
@@ -138,11 +140,11 @@ export default function ProxyPanel() {
 
   const handleToggleAnalytics = async (enabled: boolean) => {
     try {
-      await apiPut('/analytics/settings', { opt_in: enabled, prompted: true });
-      setAnalyticsOptIn(enabled);
+      await apiPut('/analytics/settings', { opt_out: !enabled, notice_seen: true });
+      setAnalyticsEnabled(enabled);
       toast.add({ title: enabled ? 'Anonymous analytics enabled' : 'Anonymous analytics disabled', type: 'success' });
     } catch (e) {
-      setAnalyticsOptIn(!enabled);
+      setAnalyticsEnabled(!enabled);
       toast.add({ title: 'Failed to update analytics: ' + (e as Error).message, type: 'error' });
     }
   };
@@ -183,8 +185,9 @@ export default function ProxyPanel() {
           <div>
             <div className="text-sm font-medium text-foreground">Send anonymous usage data</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              Sends an anonymous daily ping (app version + OS) to count active installs. No prompts,
-              models, or requests are ever sent.{' '}
+              On by default. One anonymous event per day (app version, OS, whether Prism proxied
+              anything in the last 24 hours, and a rough request-count bucket) to count active
+              installs. No prompts, models, or requests are ever sent.{' '}
               <a
                 href="https://github.com/KavinMK05/Prism/blob/main/TELEMETRY.md"
                 target="_blank"
@@ -194,9 +197,15 @@ export default function ProxyPanel() {
                 Learn what&apos;s sent
               </a>
             </div>
+            {analyticsForcedOff && (
+              <div className="text-xs text-muted-foreground mt-1">
+                Disabled by the PRISM_ANALYTICS_DISABLED environment variable.
+              </div>
+            )}
           </div>
           <Switch
-            checked={analyticsOptIn}
+            checked={analyticsEnabled}
+            disabled={analyticsForcedOff}
             onCheckedChange={(checked) => handleToggleAnalytics(checked)}
           />
         </div>

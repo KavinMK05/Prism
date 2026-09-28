@@ -9,15 +9,22 @@ Admin UI: React app in `web/`, embedded via `go:embed` in root `assets.go` (serv
 Repository layout:
 - Root (package main): `main.go` (entrypoint, proxy server, HTTP middleware), `assets.go` (go:embed of `admin.html`, `icon.png`, `web/dist`). Everything else lives in `internal/`.
 - `internal/config`: config load/save, live config API (`Current`/`SetCurrent`/`SetChangeHook`), model remapping, OAuth account types.
-- `internal/db`: SQLite stats persistence (requests, TPS snapshots) + `RequestStats`.
+- `internal/db`: SQLite persistence (requests, TPS snapshots, MCP marketplace catalog) + `RequestStats`.
 - `internal/stats`: in-memory stats tracker (`stats.Global`), `StatsToJSON`.
 - `internal/oauth`: Codex PKCE/device OAuth flows, token refresh, ChatGPT usage tracking.
-- `internal/agents`: third-party agent integrations (Claude Code, Codex Desktop, OpenCode, ZCode, OMP, Grok Build, Pi, Kimi Code).
+- `internal/agents`: third-party agent integrations (Claude Code, Codex Desktop, OpenCode, ZCode, OMP, Grok Build, Pi, Kimi Code, Empryo).
+- `internal/mcp`: the MCP gateway (`gateway.go`), connection lifecycle (`runtime.go`), brokered OAuth (`oauth.go`), and the automatic first-use sign-in (`autoconnect.go`, gated by the `auto_connect` MCP setting).
 - `internal/proxy`: `proxy.NewRouter` — Anthropic/OpenAI/Responses API translation, streaming, search interception. Owns `detectClient`.
 - `internal/desktop`: tray app — process management, updates, SearXNG, UI helpers. Admin server is injected via `desktop.SetAdminServerStarter` (avoids a desktop→admin import); version via `desktop.SetVersion`.
 - `internal/admin`: admin UI server (`admin.StartAdminServer(embed.FS, cfg, port)`), split by domain (oauth/search/searxng/agents/stats/modelsdev).
 - `internal/search`: search provider registry/runner; `internal/platform`: OS-specific paths, single-instance lock, autostart, icons; `internal/util`: shared helpers.
 - Darwin-only files (cgo, e.g. `trayicon_darwin.go`) can only be verified by building on macOS with `./build.sh`; keep `_darwin.go`/`_windows.go` pair function signatures symmetric.
+
+Committing, pushing, and releasing — explicit permission required:
+Do NOT commit, push, or create any release tag unless the user explicitly asks for it in the
+current request (e.g. "commit this", "push", "cut a release"). Making file edits, staging, and
+showing diffs is fine; writing to git history or the remote is not. When in doubt, stop and ask.
+This applies even after a task is finished — finishing the work is not permission to commit it.
 
 Committing and pushing:
 1. Stage and commit changes: `git add -A; git commit -m "message"`

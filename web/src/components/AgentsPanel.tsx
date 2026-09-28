@@ -21,11 +21,13 @@ const AGENTS = [
   { id: 'pi', name: 'Pi', desc: 'Registers a prism provider in ~/.pi/agent/models.json so Pi can use your local models via Prism. Your default provider and model are left untouched \u2014 pick a Prism model in Pi itself. Requires Pi to be installed.' },
   { id: 'prime-agent', name: 'Prime Agent', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in Prime Agent\u2019s models.json (~/.prime/agent, WSL-aware on Windows) so Prime Agent can use your local models via Prism. Your default model is left untouched. Requires Prime Agent (prime-agent) to be installed.' },
   { id: 'kimi-code', name: 'Kimi Code', desc: 'Registers a prism provider and model aliases in ~/.kimi-code/config.toml so Kimi Code CLI can use your local models via Prism. Requires Kimi Code (kimi) to be installed.' },
+  { id: 'empryo', name: 'Empryo', desc: 'Registers a prism custom provider in Empryo\u2019s global config.json. Empryo keeps keys in your system keychain, so run \u201Cempryo --set-key prism prism\u201D once after setup. Requires Empryo to be installed.' },
 ];
 
 const TIER_LABELS: Record<string, string> = { opus: 'Opus tier model', sonnet: 'Sonnet tier model', haiku: 'Haiku tier model', subagent: 'Subagent model' };
 
 type AgentStatus = { installed: boolean; active?: boolean; displayName?: string; tiers?: Record<string, string>; model_options?: string[] };
+type SetupResult = { error?: string; displayName?: string; key_command?: string };
 
 export default function AgentsPanel() {
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
@@ -66,9 +68,19 @@ export default function AgentsPanel() {
           opts.body = JSON.stringify({ tiers: claudeCodeTiers });
         }
         const res = await fetch('/admin/agent/setup?id=' + encodeURIComponent(id), opts);
-        const data = await res.json().catch(() => ({}));
+        const data: SetupResult = await res.json().catch(() => ({}));
         if (!res.ok) { toast.add({ title: data.error || 'Setup failed', type: 'error' }); return; }
-        toast.add({ title: (data.displayName || id) + ' configured successfully', type: 'success' });
+        if (data.key_command) {
+          // Empryo stores keys in the system keychain, so Prism cannot write
+          // the proxy token for it — tell the user the one command that does.
+          toast.add({
+            title: (data.displayName || id) + ' configured successfully',
+            description: 'Run this once to store Prism\u2019s key: ' + data.key_command,
+            type: 'success',
+          });
+        } else {
+          toast.add({ title: (data.displayName || id) + ' configured successfully', type: 'success' });
+        }
       }
       checkStatus(id);
     } catch (e) { toast.add({ title: 'Setup failed: ' + (e as Error).message, type: 'error' }); }

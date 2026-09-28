@@ -2,7 +2,7 @@ package desktop
 
 import (
 	"fmt"
-	"github.com/getlantern/systray"
+	"fyne.io/systray"
 	"log"
 	"os"
 	"os/exec"
@@ -119,7 +119,7 @@ func RunTray(iconData []byte, cleanup func()) {
 		// Start background update checker
 		startUpdateCheckLoop()
 
-		// Start background anonymous analytics heartbeat (opt-in only)
+		// Start background anonymous analytics heartbeat (on by default, opt-out)
 		analytics.StartLoop(Version())
 
 		go func() {
@@ -316,12 +316,11 @@ func doUpdateCheck() {
 
 	checkUpdateItem.SetTitle("Checking for updates...")
 	checkUpdateItem.Disable()
+	notifyUpdateStatus()
 
 	info, err := checkForUpdate()
 
 	updateMu.Lock()
-	defer updateMu.Unlock()
-
 	if err != nil {
 		updateState = UpdateIdle
 		updateInfo = nil
@@ -329,6 +328,8 @@ func doUpdateCheck() {
 		checkUpdateItem.SetTitle("Check for Updates")
 		checkUpdateItem.Enable()
 		log.Printf("[Update] Check failed: %v", err)
+		updateMu.Unlock()
+		notifyUpdateStatus()
 		return
 	}
 
@@ -338,6 +339,8 @@ func doUpdateCheck() {
 		updateAvailItem.Hide()
 		checkUpdateItem.SetTitle("Up to date (" + version + ")")
 		checkUpdateItem.Enable()
+		updateMu.Unlock()
+		notifyUpdateStatus()
 		return
 	}
 
@@ -348,7 +351,9 @@ func doUpdateCheck() {
 	updateAvailItem.Show()
 	checkUpdateItem.SetTitle("Check for Updates")
 	checkUpdateItem.Enable()
+	updateMu.Unlock()
 
+	notifyUpdateStatus()
 	showUpdateNotification(info.Version)
 }
 
@@ -377,6 +382,7 @@ func installUpdate() {
 	}
 	updateState = UpdateDownloading
 	updateMu.Unlock()
+	notifyUpdateStatus()
 
 	updateAvailItem.SetTitle("Downloading update... 0%")
 	updateAvailItem.Disable()
@@ -392,6 +398,7 @@ func installUpdate() {
 		updateMu.Lock()
 		updateState = UpdateFailed
 		updateMu.Unlock()
+		notifyUpdateStatus()
 		updateAvailItem.SetTitle("Update failed - click to retry")
 		updateAvailItem.Enable()
 		checkUpdateItem.Enable()

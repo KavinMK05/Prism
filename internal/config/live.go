@@ -52,3 +52,17 @@ func SetChangeHook(fn func(*Config)) {
 	hook = fn
 	currentMu.Unlock()
 }
+
+// Publish installs c as the live config without firing the change hook.
+//
+// The tray process owns config.json and is the only process that reacts to a
+// swap (by restarting the proxy). The proxy process ("prism --serve") is a
+// separate process that loads its own copy at startup and must publish it too,
+// or every reader of Current() in that process (the MCP gateway, usage
+// polling) sees nil. It must not fire the hook: the hook restarts the proxy,
+// and this is the proxy.
+func Publish(c *Config) {
+	currentMu.Lock()
+	current = c
+	currentMu.Unlock()
+}

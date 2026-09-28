@@ -122,6 +122,13 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	mux.HandleFunc("/admin/mcp/servers/control", handleMCPServerControl)
 	mux.HandleFunc("/admin/mcp/settings", handleMCPSettings)
 	mux.HandleFunc("/admin/mcp/registry/search", handleMCPRegistrySearch)
+	mux.HandleFunc("/admin/mcp/registry/sync", handleMCPRegistrySync)
+	mux.HandleFunc("/admin/mcp/registry/catalog", handleMCPRegistryCatalog)
+	mux.HandleFunc("/admin/mcp/registry/sources", handleMCPRegistrySources)
+	mux.HandleFunc("/admin/mcp/registry/sources/remove", handleMCPRegistrySourceRemove)
+	mux.HandleFunc("/admin/mcp/registry/versions", handleMCPRegistryVersions)
+	mux.HandleFunc("/admin/mcp/registry/resolve", handleMCPRegistryResolve)
+	mux.HandleFunc("/admin/mcp/import/mcpb", handleMCPBInstall)
 	mux.HandleFunc("/admin/mcp/import/git", handleMCPGitImport)
 	mux.HandleFunc("/admin/mcp/auth/discover", handleMCPAuthDiscover)
 	mux.HandleFunc("/admin/mcp/auth/login", handleMCPAuthLogin)
@@ -129,7 +136,11 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	mux.HandleFunc("/admin/mcp/agents/servers", handleMCPAgentServers)
 	mux.HandleFunc("/admin/mcp/agents/setup", handleMCPAgentSetup)
 
-	// OAuth API endpoints
+	// API: App update state + trigger install (mirrors tray update item)
+	mux.HandleFunc("/admin/update/status", handleUpdateStatus)
+	mux.HandleFunc("/admin/update/events", handleUpdateEvents)
+
+	// API: OAuth API endpoints
 	mux.HandleFunc("/admin/oauth/login", handleOAuthLogin)
 	mux.HandleFunc("/admin/oauth/accounts", handleOAuthAccounts)
 	mux.HandleFunc("/admin/oauth/accounts/remove", handleOAuthAccountRemove)

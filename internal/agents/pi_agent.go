@@ -43,6 +43,19 @@ func piModelsPath() string {
 	return filepath.Join(dir, "models.json")
 }
 
+// piMCPConfigPath returns ~/.pi/agent/mcp.json, the Pi-owned MCP override file.
+//
+// Pi itself has no built-in MCP support: this file is read by the
+// npm:pi-mcp-adapter extension, so the entry Prism writes only takes effect once
+// that extension is installed. Writing it is harmless otherwise.
+func piMCPConfigPath() string {
+	dir := piConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "mcp.json")
+}
+
 // isPiInstalled reports whether Pi is installed: the ~/.pi/agent directory
 // exists OR the `pi` binary is on PATH.
 func isPiInstalled() bool {

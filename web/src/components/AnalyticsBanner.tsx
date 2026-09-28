@@ -5,14 +5,16 @@ import { Button } from '@/components/ui/button';
 const TELEMETRY_URL = 'https://github.com/KavinMK05/Prism/blob/main/TELEMETRY.md';
 
 interface AnalyticsState {
-  opt_in: boolean;
-  prompted: boolean;
+  opt_out: boolean;
+  notice_seen: boolean;
+  forced_off: boolean;
 }
 
 /**
- * One-time first-run consent banner for anonymous analytics. Shown at the top
- * of the admin shell on every tab until the user has been asked (prompted).
- * [Enable] opts in; [Not now] / [x] permanently decline. Never re-prompted.
+ * One-time first-run notice for anonymous analytics. Telemetry is on by
+ * default, so this banner tells the user exactly what is sent and lets them
+ * turn it off in one click. Shown until the notice is acknowledged, then never
+ * again. Hidden entirely when the PRISM_ANALYTICS_DISABLED kill switch is set.
  */
 export default function AnalyticsBanner() {
   const [state, setState] = useState<AnalyticsState | null>(null);
@@ -20,29 +22,30 @@ export default function AnalyticsBanner() {
   useEffect(() => {
     api('/analytics/settings')
       .then((s) => setState(s))
-      .catch(() => setState({ opt_in: false, prompted: true }));
+      .catch(() => setState({ opt_out: false, notice_seen: true, forced_off: true }));
   }, []);
 
-  if (!state || state.prompted) return null;
+  if (!state || state.notice_seen || state.forced_off) return null;
 
-  const decide = async (optIn: boolean) => {
+  const decide = async (optOut: boolean) => {
     // Optimistically hide; the choice is persisted server-side.
-    setState({ opt_in: optIn, prompted: true });
+    setState({ opt_out: optOut, notice_seen: true, forced_off: false });
     try {
-      await apiPut('/analytics/settings', { opt_in: optIn, prompted: true });
+      await apiPut('/analytics/settings', { opt_out: optOut, notice_seen: true });
     } catch {
       // If the save failed, show the banner again next load.
-      setState({ opt_in: false, prompted: false });
+      setState({ opt_out: false, notice_seen: false, forced_off: false });
     }
   };
 
   return (
     <div className="rounded-xl border border-border bg-card p-4 mb-4 flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <div className="text-sm font-semibold tracking-tight">Help count Prism installs?</div>
+        <div className="text-sm font-semibold tracking-tight">Anonymous analytics is on</div>
         <p className="text-xs text-muted-foreground mt-1">
-          Prism is open source. Send an anonymous daily ping (app version + OS) so we can count active
-          installs. No prompts, models, or requests are ever sent.{' '}
+          Prism sends one anonymous event per day &mdash; app version, OS, whether Prism proxied
+          anything in the last 24 hours, and a rough request-count bucket &mdash; so we can count
+          active installs. No prompts, models, or requests are ever sent.{' '}
           <a
             href={TELEMETRY_URL}
             target="_blank"
@@ -54,8 +57,8 @@ export default function AnalyticsBanner() {
         </p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <Button size="sm" onClick={() => decide(true)}>Enable</Button>
-        <Button size="sm" variant="outline" onClick={() => decide(false)}>Not now</Button>
+        <Button size="sm" onClick={() => decide(false)}>Got it</Button>
+        <Button size="sm" variant="outline" onClick={() => decide(true)}>Turn off analytics</Button>
         <button
           className="w-7 h-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center transition-colors"
           onClick={() => decide(false)}

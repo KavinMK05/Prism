@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ollama-proxy/internal/config"
@@ -129,10 +132,121 @@ func TestLooksMaskedSecret(t *testing.T) {
 			t.Errorf("looksMaskedSecret(%q) = false, want true", v)
 		}
 	}
-	real := []string{"", "Bearer abcdefghijklmnop", "sk-proj-abcdefghijklmnopqrstuvwxyz", "a...b-but-way-longer-than-fourteen"}
+	real := []string{"", "Bearer abcdefghijklmnop", "**********************************", "a...b-but-way-longer-than-fourteen"}
 	for _, v := range real {
 		if looksMaskedSecret(v) {
 			t.Errorf("looksMaskedSecret(%q) = true, want false", v)
 		}
+	}
+}
+
+// A registry auth header carries its name, which makes the whole string longer
+// than the mask shape allows, so only the value after the colon is inspected.
+func TestLooksMaskedAuthHeader(t *testing.T) {
+	masked := []string{"Authorization: ****", "Authorization: Bear...oken", "X-Api-Key: sk-a...b123"}
+	for _, v := range masked {
+		if !looksMaskedAuthHeader(v) {
+			t.Errorf("looksMaskedAuthHeader(%q) = false, want true", v)
+		}
+	}
+	real := []string{
+		"",
+		"Authorization: Bearer a-real-long-token-value",
+		"X-Key: value",
+		"Authorization:",
+	}
+	for _, v := range real {
+		if looksMaskedAuthHeader(v) {
+			t.Errorf("looksMaskedAuthHeader(%q) = true, want false", v)
+		}
+	}
+}
+
+// The admin UI reads a redacted config and PUTs it back, so a masked registry
+// auth header must not overwrite the stored credential.
+func TestPreserveMCPRegistryAuthHeader(t *testing.T) {
+	cur := &config.Config{}
+	m := cur.EnsureMCP()
+	m.Registries = config.EnsureOfficialRegistry([]*config.MCPRegistrySource{{
+		ID:         "internal",
+		Name:       "Internal",
+		BaseURL:    "https://registry.example.com",
+		Enabled:    true,
+		AuthHeader: "Authorization: Bearer real-registry-token",
+	}})
+
+	next := cur.RedactMCPSecrets()
+	preserveMCPSecrets(cur, next)
+
+	src := next.FindMCPRegistry("internal")
+	if src == nil {
+		t.Fatal("registry source lost")
+	}
+	if src.AuthHeader != "Authorization: Bearer real-registry-token" {
+		t.Errorf("the masked echo overwrote the stored credential: %q", src.AuthHeader)
+	}
+	if !src.Enabled || src.BaseURL != "https://registry.example.com" {
+		t.Errorf("other source fields lost: %+v", src)
+	}
+	if !src.Builtin && src.ID == config.MCPRegistryOfficialID {
+		t.Error("the official registry lost its builtin mark")
+	}
+	// The official registry seeded by EnsureOfficialRegistry must survive too.
+	if next.FindMCPRegistry(config.MCPRegistryOfficialID) == nil {
+		t.Error("the official registry disappeared")
+	}
+}
+
+func TestPreserveMCPRegistryAcceptsNewAuthHeader(t *testing.T) {
+	cur := &config.Config{}
+	m := cur.EnsureMCP()
+	m.Registries = config.EnsureOfficialRegistry([]*config.MCPRegistrySource{{
+		ID: "internal", Name: "Internal", BaseURL: "https://registry.example.com",
+		AuthHeader: "Authorization: Bearer old-token",
+	}})
+
+	next := cur.RedactMCPSecrets()
+	next.FindMCPRegistry("internal").AuthHeader = "Authorization: Bearer new-token-value"
+	preserveMCPSecrets(cur, next)
+
+	if got := next.FindMCPRegistry("internal").AuthHeader; got != "Authorization: Bearer new-token-value" {
+		t.Errorf("a real new header must win, got %q", got)
+	}
+}
+
+// The panel toggle round-trips through handleMCPSettings, and a later
+// full-config PUT that omits the field must not silently re-enable it.
+func TestAutoConnectSettingRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("APPDATA", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Cleanup(func() { config.SetCurrent(nil) })
+
+	on := true
+	cur := mcpFixture()
+	cur.MCP.AutoConnect = &on
+	if err := config.Save(cur); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	config.SetCurrent(cur)
+
+	body := strings.NewReader(`{"auto_connect":false}`)
+	req := httptest.NewRequest(http.MethodPut, "/admin/mcp/settings", body)
+	rec := httptest.NewRecorder()
+	handleMCPSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings PUT status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if stored := config.Load().MCP; stored.AutoConnectEnabled() {
+		t.Error("auto_connect=false was not persisted")
+	}
+
+	// A redacted round-trip from the panel omits the field; it must survive.
+	next := config.Load().RedactMCPSecrets()
+	next.MCP.AutoConnect = nil
+	preserveMCPSecrets(config.Load(), next)
+	if next.MCP.AutoConnectEnabled() {
+		t.Error("preserveMCPSecrets dropped the stored auto_connect=false")
 	}
 }

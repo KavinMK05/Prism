@@ -23,17 +23,22 @@ type transport interface {
 // expired OAuth token is refreshed without rebuilding the transport.
 type dynamicHeaders func(ctx context.Context) (map[string]string, error)
 
+// toolParamsFunc supplies the x-mcp-header mapping (parameter path -> header
+// name) of one tool, learned from its tools/list schema, so a tools/call can
+// mirror those arguments into Mcp-Param-* headers.
+type toolParamsFunc func(tool string) map[string]string
+
 const mcpClientVersion = "1.0.0"
 
 // newTransport builds the transport for a server config.
-func newTransport(s *config.MCPServerConfig, headers dynamicHeaders) (transport, error) {
+func newTransport(s *config.MCPServerConfig, headers dynamicHeaders, params toolParamsFunc) (transport, error) {
 	switch s.Transport {
 	case config.MCPTransportStdio, "":
 		return newStdioTransport(s)
 	case config.MCPTransportHTTP:
-		return newHTTPTransport(s.URL, s.Headers, headers, false), nil
+		return newHTTPTransport(s.URL, s.Headers, headers, params, false), nil
 	case config.MCPTransportSSE:
-		return newHTTPTransport(s.URL, s.Headers, headers, true), nil
+		return newHTTPTransport(s.URL, s.Headers, headers, params, true), nil
 	default:
 		return nil, rpcErrorf(CodeInvalidParams, "unsupported transport %q", s.Transport)
 	}

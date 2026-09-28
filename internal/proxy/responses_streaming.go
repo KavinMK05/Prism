@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/stats"
@@ -228,6 +229,14 @@ func emitReasoningClose(e *responsesEmitter, itemID string, outputIndex, summary
 			"type":    "reasoning",
 			"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": text}},
 		}
+		// Carry the reasoning on encrypted_content as well. This mirrors Ollama's
+		// own Responses converter, which sets it to the plain thinking text
+		// ("Plain text for now") and reads it back on replay. Clients treat the
+		// field as opaque and echo it verbatim, so it round-trips the reasoning
+		// exactly, whereas summary is a display digest.
+		if text != "" {
+			reasoningItem["encrypted_content"] = text
+		}
 		e.emit("response.output_item.done", map[string]interface{}{
 			"type":         "response.output_item.done",
 			"output_index": outputIndex,
@@ -320,6 +329,12 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 	var inputTokens int
 	var liveOutputTokens int
 	var cachedTokens int
+	// reportedReasoningTokens is the upstream completion_tokens_details value
+	// (0 when the provider, e.g. Ollama Cloud, reports no split);
+	// liveReasoningRunes accumulates the reasoning text so the fallback
+	// estimate is computed once over the whole stream rather than per delta.
+	var reportedReasoningTokens int
+	var liveReasoningRunes int
 	client := detectClient(r)
 	defer func() {
 		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
@@ -346,7 +361,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0, 0),
+			"usage":      responsesUsageMap(0, 0, 0, 0),
 		},
 	})
 
@@ -364,7 +379,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0, 0),
+			"usage":      responsesUsageMap(0, 0, 0, 0),
 		},
 	})
 
@@ -411,6 +426,9 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
 				cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
+			if chunk.Usage.CompletionTokensDetails != nil {
+				reportedReasoningTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
+			}
 		}
 
 		if len(chunk.Choices) == 0 {
@@ -420,7 +438,17 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 		choice := chunk.Choices[0]
 		delta := choice.Delta
 
-		currentChunkHasThinking := choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != ""
+		// Reasoning text can arrive in either the OpenAI-standard
+		// "reasoning_content" field or the "reasoning" field used by some
+		// OpenAI-compatible providers (e.g. Ollama Cloud Chat Completions).
+		reasoningText := ""
+		if delta.ReasoningContent != nil {
+			reasoningText = *delta.ReasoningContent
+		}
+		if reasoningText == "" && delta.Reasoning != nil {
+			reasoningText = *delta.Reasoning
+		}
+		currentChunkHasThinking := reasoningText != ""
 
 		// Handle reasoning content
 		if currentChunkHasThinking {
@@ -459,14 +487,18 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 
 			// Stream the reasoning text as a summary delta
 			liveOutputTokens++
+			// Ollama Cloud reports no split, so accumulate the char-based
+			// estimate; a later usage chunk with a real
+			// completion_tokens_details.reasoning_tokens overwrites it.
+			liveReasoningRunes += utf8.RuneCountInString(reasoningText)
 			stats.Global.AddTokens(1)
-			accumulatedReasoning += *choice.Delta.ReasoningContent
+			accumulatedReasoning += reasoningText
 			e.emit("response.reasoning_summary_text.delta", map[string]interface{}{
 				"type":          "response.reasoning_summary_text.delta",
 				"item_id":       reasoningItemID,
 				"output_index":  outputIndex,
 				"summary_index": reasoningSummaryIndex,
-				"delta":         *choice.Delta.ReasoningContent,
+				"delta":         reasoningText,
 			})
 		}
 
@@ -557,6 +589,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 				if tc.Function.Arguments != "" {
 					fc.argsBuilder.WriteString(tc.Function.Arguments)
 					liveOutputTokens++
+					// Tool-argument deltas count toward output_tokens, not the
+					// reasoning breakdown (OpenAI puts them in output only).
 					stats.Global.AddTokens(1)
 					if fc.itemAdded && tc.Function.Arguments != "{}" {
 						emitToolCallDeltaEvent(e, fc.outputType, fc.itemID, tc.Function.Arguments, fc.outputIndex)
@@ -597,6 +631,8 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			accumulatedText += *delta.Content
 			completedOutputText += *delta.Content
 			liveOutputTokens++
+			// Visible text is reported under output_tokens, not reasoning_tokens
+			// (matching OpenAI's breakdown convention).
 			stats.Global.AddTokens(1)
 			e.emit("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
@@ -737,7 +773,7 @@ func (pr *ProviderRouter) handleResponsesAPIOpenAIStreaming(w http.ResponseWrite
 			"status":      completionStatus,
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
+			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens, resolveReasoningTokens(reportedReasoningTokens, liveReasoningRunes, outputTokens)),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{
@@ -817,6 +853,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 	var outputTokens int
 	var inputTokens int
 	var cachedTokens int
+	var reasoningRunes int
 	client := detectClient(r)
 	defer func() {
 		stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
@@ -844,7 +881,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0, 0),
+			"usage":      responsesUsageMap(0, 0, 0, 0),
 		},
 	})
 
@@ -862,7 +899,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"error":      nil,
 			"status":     "in_progress",
 			"output":     []interface{}{},
-			"usage":      responsesUsageMap(0, 0, 0),
+			"usage":      responsesUsageMap(0, 0, 0, 0),
 		},
 	})
 
@@ -906,6 +943,11 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 		if chunk.EvalCount > outputTokens {
 			outputTokens = chunk.EvalCount
 		}
+		// Ollama's usage fields carry no reasoning/output split, so the
+		// breakdown is derived from the streamed thinking text once the stream
+		// ends (see resolveReasoningTokens); accumulate the rune count here so
+		// per-chunk rounding cannot inflate the estimate.
+		reasoningRunes += utf8.RuneCountInString(chunk.Message.Thinking)
 
 		// Handle thinking content
 		if chunk.Message.Thinking != "" {
@@ -1175,7 +1217,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 				"status":      status,
 				"output":      completedOutput,
 				"output_text": completedOutputText,
-				"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
+				"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens, resolveReasoningTokens(0, reasoningRunes, outputTokens)),
 			}
 			mergeResponsesEchoFields(completedResp, respReq)
 			e.emit("response.completed", map[string]interface{}{
@@ -1255,7 +1297,7 @@ func (pr *ProviderRouter) handleResponsesAPIOllamaStreaming(w http.ResponseWrite
 			"status":      "completed",
 			"output":      completedOutput,
 			"output_text": completedOutputText,
-			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens),
+			"usage":       responsesUsageMap(inputTokens, outputTokens, cachedTokens, resolveReasoningTokens(0, reasoningRunes, outputTokens)),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{

@@ -18,6 +18,21 @@ const kimiCodeProviderID = "prism"
 // honoring the KIMI_CODE_HOME override and defaulting to ~/.kimi-code.
 func kimiCodeConfigPath() string { return agentConfigPath("kimi-code") }
 
+// kimiCodeMCPConfigPath returns the path to Kimi Code CLI's mcp.json, honoring
+// the KIMI_CODE_HOME override and defaulting to ~/.kimi-code. Kimi keeps its
+// MCP servers in mcp.json, separate from the config.toml that holds providers,
+// model aliases and permissions.
+func kimiCodeMCPConfigPath() string {
+	if root := os.Getenv("KIMI_CODE_HOME"); root != "" {
+		return filepath.Join(root, "mcp.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code", "mcp.json")
+}
+
 // isKimiCodeInstalled reports whether Kimi Code CLI is installed: the
 // config.toml file exists OR the `kimi` binary is on PATH. (Kimi Code may not
 // create its config file until first run, so the binary check avoids a false

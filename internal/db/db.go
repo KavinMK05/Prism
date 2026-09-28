@@ -74,6 +74,35 @@ CREATE TABLE IF NOT EXISTS tps_snapshots (
 	tps REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tps_time ON tps_snapshots(timestamp);
+
+CREATE TABLE IF NOT EXISTS mcp_catalog (
+	source_id TEXT NOT NULL,
+	name TEXT NOT NULL,
+	version TEXT NOT NULL,
+	title TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL DEFAULT '',
+	repository TEXT NOT NULL DEFAULT '',
+	transport TEXT NOT NULL DEFAULT '',
+	publisher TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT '',
+	namespace_match INTEGER NOT NULL DEFAULT 0,
+	trusted INTEGER NOT NULL DEFAULT 0,
+	is_deleted INTEGER NOT NULL DEFAULT 0,
+	is_latest INTEGER NOT NULL DEFAULT 0,
+	payload TEXT NOT NULL,
+	synced_at INTEGER NOT NULL,
+	PRIMARY KEY (source_id, name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_catalog_source ON mcp_catalog(source_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_catalog_name ON mcp_catalog(name);
+CREATE INDEX IF NOT EXISTS idx_mcp_catalog_latest ON mcp_catalog(is_latest);
+
+CREATE TABLE IF NOT EXISTS mcp_catalog_sync (
+	source_id TEXT PRIMARY KEY,
+	last_synced_at INTEGER NOT NULL DEFAULT 0,
+	server_count INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT ''
+);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
@@ -153,6 +182,21 @@ func RecordTPS(model, provider, client string, tps float64) error {
 		log.Printf("[DB] failed to record TPS snapshot: %v", err)
 	}
 	return err
+}
+
+// RequestCountSince returns how many proxied requests were recorded at or after
+// sinceUnix. ok is false when the stats database is unavailable, so callers can
+// tell "no traffic" apart from "could not tell".
+func RequestCountSince(sinceUnix int64) (count int, ok bool) {
+	if db == nil {
+		return 0, false
+	}
+	row := db.QueryRow("SELECT COUNT(*) FROM requests WHERE timestamp >= ?", sinceUnix)
+	if err := row.Scan(&count); err != nil {
+		log.Printf("[DB] failed to count requests since %d: %v", sinceUnix, err)
+		return 0, false
+	}
+	return count, true
 }
 
 type DailyTokens struct {

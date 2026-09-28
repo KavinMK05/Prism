@@ -89,20 +89,27 @@ type ResponsesAPIResponse struct {
 }
 
 type ResponsesAPIUsage struct {
-	InputTokens         int                        `json:"input_tokens"`
-	InputTokensDetails  *ResponsesAPITokensDetails `json:"input_tokens_details"`
-	OutputTokens        int                        `json:"output_tokens"`
-	OutputTokensDetails *ResponsesAPITokensDetails `json:"output_tokens_details"`
-	TotalTokens         int                        `json:"total_tokens"`
+	InputTokens         int                              `json:"input_tokens"`
+	InputTokensDetails  *ResponsesAPIInputTokensDetails  `json:"input_tokens_details"`
+	OutputTokens        int                              `json:"output_tokens"`
+	OutputTokensDetails *ResponsesAPIOutputTokensDetails `json:"output_tokens_details"`
+	TotalTokens         int                              `json:"total_tokens"`
 }
 
-// ResponsesAPITokensDetails carries the per-category token breakdown the
-// Responses API nests under input_tokens_details (cached_tokens) and
-// output_tokens_details (reasoning_tokens). Grok Build's Rust client strictly
-// requires these fields to be present on every usage object.
-type ResponsesAPITokensDetails struct {
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+// ResponsesAPIInputTokensDetails is the breakdown nested under
+// input_tokens_details. cached_tokens is omitted when zero, matching the
+// upstream Responses API (which never reports reasoning_tokens here).
+type ResponsesAPIInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+// ResponsesAPIOutputTokensDetails is the breakdown nested under
+// output_tokens_details. ReasoningTokens is always serialized, even when
+// zero: strict Responses clients (e.g. Grok Build) require the key to be
+// present on every usage object, while the upstream may report no
+// reasoning/output split at all (Ollama Cloud omits it entirely).
+type ResponsesAPIOutputTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 type ResponsesAPIOutputMessage struct {

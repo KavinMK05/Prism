@@ -34,6 +34,13 @@ func marshalParams(params interface{}) (json.RawMessage, error) {
 // defines (protocol version, client identity, client capabilities) to a params
 // object. Non-object params are returned untouched.
 func injectMeta(params json.RawMessage) json.RawMessage {
+	return injectMetaVersion(params, ProtocolVersion)
+}
+
+// injectMetaVersion is injectMeta with an explicit protocol version, so the
+// `_meta` block always advertises the same version as the request's
+// MCP-Protocol-Version header.
+func injectMetaVersion(params json.RawMessage, version string) json.RawMessage {
 	if len(params) == 0 {
 		return params
 	}
@@ -48,8 +55,11 @@ func injectMeta(params json.RawMessage) json.RawMessage {
 	if meta == nil {
 		meta = map[string]interface{}{}
 	}
+	if version == "" {
+		version = ProtocolVersion
+	}
 	if _, ok := meta[metaProtocolVersionKey]; !ok {
-		meta[metaProtocolVersionKey] = ProtocolVersion
+		meta[metaProtocolVersionKey] = version
 	}
 	if _, ok := meta[metaClientInfoKey]; !ok {
 		meta[metaClientInfoKey] = map[string]string{"name": ServerName, "version": mcpClientVersion}

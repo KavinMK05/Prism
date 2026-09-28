@@ -34,12 +34,26 @@ const (
 type Manager struct {
 	cfg func() *config.Config
 
+	// autoAuthorize is the callback the Gateway uses to sign in when an agent
+	// asks for a server that is not authorized yet. Nil unless the proxy
+	// process wired it, so nothing else opens a browser.
+	autoAuthorize func(ctx context.Context, serverID string, wait bool) error
+
 	mu      sync.Mutex
 	servers map[string]*serverRuntime
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+}
+
+// SetAutoAuthorize installs the callback the Gateway uses to sign in when an
+// agent asks for a server that is not authorized yet. Nil (the default) leaves
+// today's behavior: the error reaches the agent and the user connects the
+// server in Prism by hand. Only the proxy process wires this, because only it
+// may open a browser.
+func (m *Manager) SetAutoAuthorize(fn func(ctx context.Context, serverID string, wait bool) error) {
+	m.autoAuthorize = fn
 }
 
 // serverRuntime is the per-server connection state.
@@ -243,7 +257,7 @@ func (m *Manager) connect(ctx context.Context, s *config.MCPServerConfig) (trans
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
-	tr, err := newTransport(s, m.dynamicHeadersFor(s))
+	tr, err := newTransport(s, m.dynamicHeadersFor(s), m.toolParamsFor(s.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -254,27 +268,53 @@ func (m *Manager) connect(ctx context.Context, s *config.MCPServerConfig) (trans
 	return tr, nil
 }
 
-// handshake performs the MCP initialize exchange. Servers that only speak the
-// stateless revision answer -32601 (or the modern server/discover method), in
-// which case the connection is still usable.
+// handshake negotiates the protocol era with a server. The stateless revision
+// (2026-07-28) removed the initialize exchange in favour of server/discover, so
+// Prism probes for that first: a server speaking the stateless revision answers
+// it, while a server that only knows the legacy handshake answers method-not-
+// found and is retried with initialize.
 func handshake(ctx context.Context, tr transport) error {
+	_, discoverErr := tr.RoundTrip(ctx, "server/discover", serverDiscoverParams())
+	if discoverErr == nil {
+		return nil
+	}
+	// An authorization or startup failure is not an era problem: retrying with
+	// initialize would only produce a second, less useful error.
+	if isAuthError(discoverErr) || isRuntimeMissing(discoverErr) {
+		return discoverErr
+	}
+
 	params := map[string]interface{}{
 		"protocolVersion": LegacyProtocolVersion,
 		"capabilities":    map[string]interface{}{},
 		"clientInfo":      map[string]string{"name": ServerName, "version": mcpClientVersion},
 	}
 	if _, err := tr.RoundTrip(ctx, "initialize", params); err != nil {
+		// A stateless server rejects initialize outright: report what the
+		// discovery probe said, because that describes the real problem.
 		if isMethodNotFound(err) {
-			// Stateless revision: probe discovery instead of failing.
-			if _, derr := tr.RoundTrip(ctx, "server/discover", serverDiscoverParams()); derr != nil && !isMethodNotFound(derr) {
-				return derr
-			}
-			return nil
+			return discoverErr
 		}
 		return err
 	}
 	_ = tr.Notify(ctx, "notifications/initialized", nil)
 	return nil
+}
+
+// toolParamsFor returns the callback a transport uses to mirror x-mcp-header
+// parameters, reading the schemas cached by the last tools/list.
+func (m *Manager) toolParamsFor(id string) toolParamsFunc {
+	return func(tool string) map[string]string {
+		rt := m.runtimeFor(id)
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		for _, cached := range rt.tools {
+			if cached.Name == tool {
+				return xMCPHeaderParams(cached.InputSchema)
+			}
+		}
+		return nil
+	}
 }
 
 // serverDiscoverParams is the params object the stateless revision defines for
@@ -448,6 +488,13 @@ func (m *Manager) CallTool(ctx context.Context, s *config.MCPServerConfig, tool 
 		}
 	}
 
+	// Warm the schema cache once so the transport can mirror x-mcp-header
+	// parameters into Mcp-Param-* headers. Failures are ignored: the call
+	// itself reports the real problem.
+	if m.toolSchemasMissing(s.ID) {
+		_, _ = m.listTools(cctx, s)
+	}
+
 	tr, err := m.ensureConn(cctx, s)
 	if err != nil {
 		return nil, err
@@ -471,6 +518,15 @@ func (m *Manager) CallTool(ctx context.Context, s *config.MCPServerConfig, tool 
 	rt.lastErr = ""
 	rt.mu.Unlock()
 	return raw, nil
+}
+
+// toolSchemasMissing reports whether a server has never listed its tools in
+// this process, which is what x-mcp-header mirroring reads.
+func (m *Manager) toolSchemasMissing(id string) bool {
+	rt := m.runtimeFor(id)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.tools == nil
 }
 
 // ServerStatus is the health snapshot the admin UI renders.
@@ -586,6 +642,25 @@ func (m *Manager) Probe(ctx context.Context, id string) (ServerStatus, error) {
 	defer cancel()
 	_, err := m.listTools(ctx, s)
 	return m.StatusFor(s, err), err
+}
+
+// ProbeAll warms every enabled server concurrently and returns their statuses.
+// The admin UI calls it when the MCP panel opens, so tool names are already
+// listed instead of the user refreshing each server by hand. Unlike Probe it
+// keeps any cached tool list, which makes a repeat call within the cache window
+// nearly free. A failing server is reported through its status rather than
+// failing the whole call.
+func (m *Manager) ProbeAll(ctx context.Context) []ServerStatus {
+	cfg := m.cfg()
+	if cfg == nil || cfg.MCP == nil {
+		return nil
+	}
+	servers := cfg.EnabledMCPServers()
+	if len(servers) == 0 {
+		return []ServerStatus{}
+	}
+	_, statuses := m.ToolsForServers(ctx, servers)
+	return statuses
 }
 
 // authModeOf normalizes the stored auth mode for display.

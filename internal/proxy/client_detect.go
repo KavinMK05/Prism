@@ -21,6 +21,10 @@ func detectClient(r *http.Request) string {
 		return "Claude Code"
 	case strings.Contains(ua, "opencode") || strings.Contains(ua, "open-code"):
 		return "OpenCode"
+	case strings.Contains(ua, "empryo"):
+		// Empryo's custom-provider config has no header field, so its User-Agent
+		// is the only client signal Prism gets.
+		return "Empryo"
 	case strings.Contains(ua, "cursor"):
 		return "Cursor"
 	case strings.Contains(ua, "copilot") || strings.Contains(ua, "github-copilot"):

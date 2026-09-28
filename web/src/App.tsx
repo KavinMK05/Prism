@@ -11,6 +11,8 @@ import ModelsPanel from './components/ModelsPanel';
 import StatsPanel from './components/StatsPanel';
 import StarPrompt from './components/StarPrompt';
 import AnalyticsBanner from './components/AnalyticsBanner';
+import UpdateToast from './components/UpdateToast';
+import { useUpdateStatus, DownloadIcon } from './lib/useUpdateStatus.tsx';
 import { api } from './api';
 
 type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search' | 'mcp';
@@ -135,6 +137,24 @@ export default function App() {
   const [running, setRunning] = useState<boolean | null>(null);
   const [version, setVersion] = useState<string>('');
   const { theme, toggleTheme } = useTheme();
+  const { status: appUpdate, install: installAppUpdate } = useUpdateStatus();
+  const [updating, setUpdating] = useState(false);
+
+  const updateAvailable = appUpdate?.state === 'available' && appUpdate.version !== appUpdate.current;
+
+  const startUpdate = async () => {
+    if (updateAvailable) {
+      setUpdating(true);
+      try {
+        await installAppUpdate();
+        // The app relaunches during install; reset in case it doesn't.
+      } catch {
+        // ignore
+      } finally {
+        setUpdating(false);
+      }
+    }
+  };
 
   const updateStatus = useCallback(async () => {
     try {
@@ -206,23 +226,39 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="mt-auto pt-4 flex items-center justify-between">
-          <span className="inline-flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
-            <span className={`w-2 h-2 rounded-full inline-block ${running ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-destructive'}`} />
-            <span>{running === null ? '\u2014' : running ? 'Running' : 'Stopped'}</span>
-          </span>
-          <button className="w-9 h-9 rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-accent hover:border-border-strong flex items-center justify-center transition-colors" onClick={toggleTheme} title="Toggle theme">
-            {theme === 'dark' ? (
-              <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            ) : (
-              <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="5" />
-                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-              </svg>
-            )}
-          </button>
+        <div className="mt-auto pt-4 flex flex-col gap-2">
+          {updateAvailable && (
+            <button
+              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md border border-border bg-accent text-sm font-medium text-accent-foreground hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors disabled:opacity-60"
+              onClick={startUpdate}
+              disabled={updating}
+              title={`Download and install v${appUpdate!.version.replace(/^v/, '')}`}
+            >
+              <DownloadIcon className="w-[16px] h-[16px]" />
+              <span className="truncate">Update available</span>
+              <span className="ml-auto text-[11px] font-semibold text-muted-foreground">
+                {updating ? '\u2026' : appUpdate!.version.replace(/^v/, '')}
+              </span>
+            </button>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
+              <span className={`w-2 h-2 rounded-full inline-block ${running ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-destructive'}`} />
+              <span>{running === null ? '\u2014' : running ? 'Running' : 'Stopped'}</span>
+            </span>
+            <button className="w-9 h-9 rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-accent hover:border-border-strong flex items-center justify-center transition-colors" onClick={toggleTheme} title="Toggle theme">
+              {theme === 'dark' ? (
+                <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              ) : (
+                <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="5" />
+                  <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -236,6 +272,7 @@ export default function App() {
         )}
         {renderPanel()}
       </main>
+      <UpdateToast status={appUpdate} install={installAppUpdate} />
     </div>
   );
 }

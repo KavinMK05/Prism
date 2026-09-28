@@ -1,14 +1,13 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/search"
@@ -146,6 +145,14 @@ type normalizedToolCall struct {
 	name      string
 	arguments map[string]interface{}
 	argsRaw   string
+	// kind and index carry Ollama's tool-call "type" and per-call index so a
+	// turn intercepted from a native Ollama upstream can be rebuilt into
+	// history with the exact identity the upstream sent (parallel calls to the
+	// same tool must not collapse). Both are zero for OpenAI-compatible
+	// upstreams, whose calls are replayed through the Anthropic conversation
+	// instead of Ollama messages.
+	kind  string
+	index *int
 }
 
 // normalizedTurn is a provider-agnostic non-streaming chat response.
@@ -158,6 +165,10 @@ type normalizedTurn struct {
 	// cache, forwarded to clients as usage.input_tokens_details.cached_tokens.
 	cachedInputTokens int
 	outputTokens      int
+	// reportedReasoningTokens is the upstream completion_tokens_details value
+	// when the provider sends one; 0 means the caller must fall back to
+	// estimating from thinking text.
+	reportedReasoningTokens int
 }
 
 // firstTranslatedResponsesRequest builds the translated upstream request for
@@ -181,33 +192,7 @@ func firstTranslatedResponsesRequest(respReq *ResponsesAPIRequest, rp *config.Re
 // function_call_output input items are picked up on re-request.
 func (pr *ProviderRouter) upstreamResponsesChat(respReq *ResponsesAPIRequest, rp *config.ResolvedProvider) (*normalizedTurn, error) {
 	if rp.ProviderType == "openai" {
-		chatReq := translateResponsesAPIToChatCompletions(respReq)
-		chatReq.Stream = false
-		chatReq.StreamOptions = nil
-		body, err := json.Marshal(chatReq)
-		if err != nil {
-			return nil, fmt.Errorf("marshal: %w", err)
-		}
-		httpReq, err := http.NewRequest(http.MethodPost, rp.ChatCompletionsURL(), bytes.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+rp.APIKey)
-		resp, err := pr.client.Do(httpReq)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
-			return nil, parseUpstreamResponseError(resp.StatusCode, b)
-		}
-		var oai OpenAIChatResponse
-		if err := json.NewDecoder(resp.Body).Decode(&oai); err != nil {
-			return nil, fmt.Errorf("decode: %w", err)
-		}
-		return openAIResponseToNormalized(&oai), nil
+		return pr.upstreamOpenAIChat(translateResponsesAPIToChatCompletions(respReq), rp)
 	}
 	ollamaReq := translateResponsesAPIToOllama(respReq)
 	ollamaReq.Stream = false
@@ -234,6 +219,8 @@ func ollamaResponseToNormalized(o *OllamaChatResponse) *normalizedTurn {
 			name:      tc.Function.Name,
 			arguments: args,
 			argsRaw:   string(argsRaw),
+			kind:      tc.Type,
+			index:     tc.Function.Index,
 		})
 	}
 	return t
@@ -247,11 +234,17 @@ func openAIResponseToNormalized(o *OpenAIChatResponse) *normalizedTurn {
 	if o.Usage.PromptTokensDetails != nil && o.Usage.PromptTokensDetails.CachedTokens > 0 {
 		t.cachedInputTokens = o.Usage.PromptTokensDetails.CachedTokens
 	}
+	if o.Usage.CompletionTokensDetails != nil {
+		t.reportedReasoningTokens = o.Usage.CompletionTokensDetails.ReasoningTokens
+	}
 	if len(o.Choices) > 0 {
 		ch := o.Choices[0]
 		t.content = openAIContentToString(ch.Message.Content)
 		if ch.Message.ReasoningContent != nil {
 			t.thinking = *ch.Message.ReasoningContent
+		}
+		if t.thinking == "" && ch.Message.Reasoning != nil {
+			t.thinking = *ch.Message.Reasoning
 		}
 		for _, tc := range ch.Message.ToolCalls {
 			args := map[string]interface{}{}
@@ -337,7 +330,12 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 	// Non-streaming: collect all turns, then emit one composed JSON response.
 	var segments []respSearchSegment
 	var finalReasoning, finalText string
-	var inputTokens, outputTokens, cachedTokens int
+	var inputTokens, outputTokens, cachedTokens, reasoningTokens int
+	// reasoningRunes accumulates thinking text from every turn so the fallback
+	// estimate is computed once over the whole response (avoids per-turn
+	// rounding inflation). reportedReasoning carries any upstream
+	// completion_tokens_details.reasoning_tokens, which wins over the estimate.
+	var reasoningRunes, reportedReasoning int
 	var pendingNonSearchCalls []normalizedToolCall
 	searches := 0
 
@@ -355,6 +353,9 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 			cachedTokens = turn.cachedInputTokens
 		}
 		outputTokens += turn.outputTokens
+		reasoningRunes += utf8.RuneCountInString(turn.thinking)
+		reportedReasoning += turn.reportedReasoningTokens
+		reasoningTokens = resolveReasoningTokens(reportedReasoning, reasoningRunes, outputTokens)
 
 		var wsCall *normalizedToolCall
 		var nonSearchCalls []normalizedToolCall
@@ -406,10 +407,15 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		// passed back in thinking mode) don't reject the request or lose context
 		// between search turns.
 		if turn.thinking != "" {
+			// encrypted_content is the round-trip carrier (see
+			// responsesReasoningReplayText); summary is the display digest. Set
+			// both so the re-request carries the thinking through the same
+			// channel regardless of which field the next hop reads back.
 			appendResponsesInputItem(respReq, map[string]interface{}{
-				"type":    "reasoning",
-				"id":      generateID("rs_"),
-				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+				"type":              "reasoning",
+				"id":                generateID("rs_"),
+				"summary":           []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+				"encrypted_content": turn.thinking,
 			})
 		}
 		argsJSON, _ := json.Marshal(wsCall.arguments)
@@ -440,7 +446,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchLoop(w http.ResponseWriter, r 
 		}
 	}
 
-	pr.emitResponsesWebSearchJSON(w, respReq, toolTypes, toolNamespaces, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens, cachedTokens)
+	pr.emitResponsesWebSearchJSON(w, respReq, toolTypes, toolNamespaces, segments, finalReasoning, finalText, pendingNonSearchCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens)
 	stats.Global.RecordRequest(respReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 	return true
 }
@@ -465,6 +471,10 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 	outputIndex := -1
 	var segments []respSearchSegment
 	var inputTokens, outputTokens, cachedTokens int
+	var reasoningTokens int
+	// See the non-streaming loop above: thinking is accumulated as runes and
+	// converted once, and upstream-reported reasoning tokens take precedence.
+	var reasoningRunes, reportedReasoning int
 	searches := 0
 
 	emitCreated := func(status string) {
@@ -473,7 +483,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"response": map[string]interface{}{
 				"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 				"background": false, "error": nil, "status": status, "output": []interface{}{},
-				"usage": responsesUsageMap(0, 0, 0),
+				"usage": responsesUsageMap(0, 0, 0, 0),
 			},
 		})
 		e.emit("response.in_progress", map[string]interface{}{
@@ -481,7 +491,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"response": map[string]interface{}{
 				"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 				"background": false, "error": nil, "status": "in_progress", "output": []interface{}{},
-				"usage": responsesUsageMap(0, 0, 0),
+				"usage": responsesUsageMap(0, 0, 0, 0),
 			},
 		})
 	}
@@ -624,7 +634,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			"id": respID, "object": "response", "created_at": createdAt, "model": respReq.Model,
 			"background": false, "error": nil, "status": "completed",
 			"output": completedOutput, "output_text": outputText,
-			"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens),
+			"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens, reasoningTokens),
 		}
 		mergeResponsesEchoFields(completedResp, respReq)
 		e.emit("response.completed", map[string]interface{}{"type": "response.completed", "response": completedResp})
@@ -653,6 +663,9 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 			cachedTokens = turn.cachedInputTokens
 		}
 		outputTokens += turn.outputTokens
+		reasoningRunes += utf8.RuneCountInString(turn.thinking)
+		reportedReasoning += turn.reportedReasoningTokens
+		reasoningTokens = resolveReasoningTokens(reportedReasoning, reasoningRunes, outputTokens)
 
 		var wsCall *normalizedToolCall
 		var nonSearchCalls []normalizedToolCall
@@ -704,10 +717,15 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 		// passed back in thinking mode) don't reject the request or lose context
 		// between search turns.
 		if turn.thinking != "" {
+			// encrypted_content is the round-trip carrier (see
+			// responsesReasoningReplayText); summary is the display digest. Set
+			// both so the re-request carries the thinking through the same
+			// channel regardless of which field the next hop reads back.
 			appendResponsesInputItem(respReq, map[string]interface{}{
-				"type":    "reasoning",
-				"id":      generateID("rs_"),
-				"summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+				"type":              "reasoning",
+				"id":                generateID("rs_"),
+				"summary":           []interface{}{map[string]interface{}{"type": "summary_text", "text": turn.thinking}},
+				"encrypted_content": turn.thinking,
 			})
 		}
 		argsJSON, _ := json.Marshal(wsCall.arguments)
@@ -752,7 +770,7 @@ func (pr *ProviderRouter) handleResponsesWebSearchStreamLive(w http.ResponseWrit
 }
 
 // emitResponsesWebSearchJSON writes a non-streaming Responses API response.
-func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, toolTypes, toolNamespaces map[string]string, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens, cachedTokens int) {
+func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, respReq *ResponsesAPIRequest, toolTypes, toolNamespaces map[string]string, segments []respSearchSegment, finalReasoning, finalText string, pendingNonSearchCalls []normalizedToolCall, inputTokens, outputTokens, cachedTokens, reasoningTokens int) {
 	output := []interface{}{}
 	addReasoning := func(text string) {
 		if text == "" {
@@ -811,7 +829,7 @@ func (pr *ProviderRouter) emitResponsesWebSearchJSON(w http.ResponseWriter, resp
 		"created_at": time.Now().Unix(), "model": respReq.Model,
 		"background": false, "error": nil, "status": "completed",
 		"output": output, "output_text": text,
-		"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens),
+		"usage": responsesUsageMap(inputTokens, outputTokens, cachedTokens, reasoningTokens),
 	}
 	mergeResponsesEchoFields(resp, respReq)
 	w.Header().Set("Content-Type", "application/json")

@@ -192,3 +192,85 @@ func TestExtractPreviousTopLevel(t *testing.T) {
 		t.Errorf("stash = %v, want model_provider=openai", got)
 	}
 }
+
+// Codex appends the tables it persists to the end of config.toml, which lands
+// them inside Prism's markers because that block is written last. Syncing and
+// restoring Prism's provider block must keep them: they hold the user's answers
+// (a trusted hook here), and Codex re-asks for anything it cannot find.
+func TestInstallCodexConfigKeepsTablesInsideManagedBlock(t *testing.T) {
+	setTestHomeAndConfigDir(t)
+	path := codexTestConfigPath(t)
+
+	codexWritten := "[hooks.state.\"C:\\\\Users\\\\Kavin\\\\.codex\\\\hooks.json:pre_tool_use:0:0\"]\n" +
+		"enabled = true\n" +
+		"trusted_hash = \"sha256:abc\"\n"
+	writeCodexTestFile(t, path, "model = \"gpt-5.1-codex\"\n\n"+
+		codexManagedBegin+"\n"+
+		"[model_providers."+codexProviderKey+"]\nname = \"Prism\"\n"+
+		"\n"+codexWritten+
+		codexManagedEnd+"\n")
+
+	if err := InstallCodexConfig(11434); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	s := readCodexTestFile(t, path)
+	if !strings.Contains(s, "[hooks.state.") || !strings.Contains(s, `trusted_hash = "sha256:abc"`) {
+		t.Errorf("install dropped the hook trust Codex wrote:\n%s", s)
+	}
+	if n := strings.Count(s, "[model_providers."+codexProviderKey+"]"); n != 1 {
+		t.Errorf("expected one Prism provider table, got %d:\n%s", n, s)
+	}
+
+	if err := RestoreCodexConfig(); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	s = readCodexTestFile(t, path)
+	if strings.Contains(s, "model_providers."+codexProviderKey) {
+		t.Errorf("Prism's provider table survived restore:\n%s", s)
+	}
+	if !strings.Contains(s, `trusted_hash = "sha256:abc"`) {
+		t.Errorf("restore dropped the hook trust Codex wrote:\n%s", s)
+	}
+}
+
+// TestIsManagedTableHeader pins the prefix handling: a table Prism owns is
+// matched exactly (or as a parent of a sub-table), never as a prefix of a
+// longer, different key.
+func TestIsManagedTableHeader(t *testing.T) {
+	cases := []struct {
+		path string
+		line string
+		want bool
+	}{
+		{"mcp_servers.prism", "[mcp_servers.prism]", true},
+		{"mcp_servers.prism", "[mcp_servers.prism.http_headers]", true},
+		{"mcp_servers.prism", `[mcp_servers."prism"]`, true},
+		{"mcp_servers.prism", `[mcp_servers."prism".http_headers]`, true},
+		{"mcp_servers.prism", "[mcp_servers.prism] # mine", true},
+		{"mcp_servers.prism", "[mcp_servers.prismatic]", false},
+		{"mcp_servers.prism", "[mcp_servers.prism_extra]", false},
+		{"mcp_servers.prism", "[mcp_servers]", false},
+		{"model_providers.prism", "[model_providers.prism]", true},
+		{"model_providers.prism", "[model_providers.prism.retries]", true},
+		{"model_providers.prism", "[model_providers.prismatic]", false},
+	}
+	for _, tc := range cases {
+		if got := isManagedTableHeader(tc.line, tc.path); got != tc.want {
+			t.Errorf("isManagedTableHeader(%q, %q) = %v, want %v", tc.line, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestCodexOwnedTopLevelKeysCoverManagedKeys keeps the two lists in step: a key
+// Prism stashes and restores must also be stripped from inside the block.
+func TestCodexOwnedTopLevelKeysCoverManagedKeys(t *testing.T) {
+	owned := map[string]bool{}
+	for _, k := range codexOwnedTopLevelKeys {
+		owned[k] = true
+	}
+	for _, k := range codexManagedTopLevelKeys {
+		if !owned[k] {
+			t.Errorf("%q is managed but not stripped from Prism's managed block", k)
+		}
+	}
+}

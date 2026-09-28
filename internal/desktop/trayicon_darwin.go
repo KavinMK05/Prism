@@ -36,7 +36,7 @@ void markTrayIconAsTemplate() {
 */
 import "C"
 
-import "github.com/getlantern/systray"
+import "fyne.io/systray"
 
 func setPlatformIcon(iconData []byte) {
 	systray.SetIcon(iconData)

@@ -1531,7 +1531,7 @@
             <option value="ollama_cloud">Ollama Cloud</option>
             <option value="opencode_go">OpenCode Go</option>
           </select>
-          <button class="btn btn-ghost" onclick="fetchModelInfo()" title="Fetch info from models.dev">Fetch</button>
+          <button class="btn btn-ghost" onclick="fetchModelInfo()" title="Fetch model info (Ollama Cloud from /api/show, other providers from models.dev)">Fetch</button>
         </div>
         <div id="modelInfoFields" style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
           <div>
@@ -2697,12 +2697,13 @@ async function fetchModelInfo() {
   const id = input.value.trim();
   if (!id) return;
   const provider = providerSelect ? providerSelect.value : '';
+  const infoSource = provider === 'ollama_cloud' ? 'Ollama Cloud' : 'models.dev';
   status.textContent = 'Fetching...';
   try {
     const res = await fetch('/admin/model-info?id=' + encodeURIComponent(id) + (provider ? '&provider=' + encodeURIComponent(provider) : ''));
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    if (!data.found) { status.textContent = 'Model not found on models.dev'; return; }
+    if (!data.found) { status.textContent = 'Model not found on ' + infoSource; return; }
     document.getElementById('addKnownModelContextLength').value = data.context_length || '';
     document.getElementById('addKnownModelMaxOutput').value = data.max_output_tokens || '';
     document.getElementById('addKnownModelReasoningEffort').value = Array.isArray(data.reasoning_effort) ? data.reasoning_effort.join(',') : (data.reasoning_effort || '');

@@ -13,7 +13,6 @@
 *.syso
 docs/
 droid-wiki/
-tray-rs/
 
 # Dev scratch images
 =ro
@@ -26,3 +25,4 @@ web/select-clicked.png
 web/node_modules/
 web/dist/*
 !web/dist/.gitkeep
+.empryo

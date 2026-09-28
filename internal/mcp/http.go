@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,11 +27,15 @@ type httpTransport struct {
 	url       string
 	static    map[string]string
 	dyn       dynamicHeaders
+	params    toolParamsFunc
 	legacySSE bool
 	client    *http.Client
 
 	idMu   sync.Mutex
 	nextID int64
+
+	protoMu      sync.Mutex
+	protoVersion string
 
 	sessMu    sync.Mutex
 	sessionID string
@@ -45,11 +50,12 @@ type httpTransport struct {
 	streamStop  context.CancelFunc
 }
 
-func newHTTPTransport(url string, static map[string]string, dyn dynamicHeaders, legacySSE bool) *httpTransport {
+func newHTTPTransport(url string, static map[string]string, dyn dynamicHeaders, params toolParamsFunc, legacySSE bool) *httpTransport {
 	t := &httpTransport{
 		url:       url,
 		static:    static,
 		dyn:       dyn,
+		params:    params,
 		legacySSE: legacySSE,
 		client: &http.Client{
 			// No global timeout: tool calls can legitimately run for minutes.
@@ -86,7 +92,7 @@ func (t *httpTransport) RoundTrip(ctx context.Context, method string, params int
 		return nil, err
 	}
 	id := t.nextRequestID()
-	req := rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: injectMeta(paramsJSON)}
+	req := rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: t.metaParams(method, paramsJSON)}
 	raw, err := t.do(ctx, req)
 	if err != nil {
 		return nil, err
@@ -101,6 +107,7 @@ func (t *httpTransport) RoundTrip(ctx context.Context, method string, params int
 	if perr := responseError(&resp); perr != nil {
 		return nil, perr
 	}
+	t.rememberProtocolVersion(method, resp.Result)
 	return resp.Result, nil
 }
 
@@ -118,8 +125,65 @@ func (t *httpTransport) Notify(ctx context.Context, method string, params interf
 	if err != nil {
 		return err
 	}
-	_, err = t.do(ctx, rpcRequest{JSONRPC: "2.0", Method: method, Params: injectMeta(paramsJSON)})
+	_, err = t.do(ctx, rpcRequest{JSONRPC: "2.0", Method: method, Params: t.metaParams(method, paramsJSON)})
 	return err
+}
+
+// metaParams adds the stateless revision's `_meta` block to a request's params.
+// The legacy initialize exchange carries its protocol version and client
+// identity at the top level of params instead, and the stateless revision does
+// not define `_meta` at all, so that one request is left alone.
+func (t *httpTransport) metaParams(method string, params json.RawMessage) json.RawMessage {
+	if method == "initialize" {
+		return params
+	}
+	return injectMetaVersion(params, t.protocolVersionFor(method))
+}
+
+// protocolVersionFor returns the protocol version header value for a request.
+// The header has to agree with the version the body advertises: the legacy
+// handshake negotiates it in the initialize params, the stateless revision in
+// `_meta`.
+func (t *httpTransport) protocolVersionFor(method string) string {
+	if method == "initialize" {
+		return LegacyProtocolVersion
+	}
+	t.protoMu.Lock()
+	defer t.protoMu.Unlock()
+	if t.protoVersion != "" {
+		return t.protoVersion
+	}
+	return ProtocolVersion
+}
+
+// rememberProtocolVersion records the revision the server settled on, so later
+// requests advertise the version both sides agreed to.
+func (t *httpTransport) rememberProtocolVersion(method string, result json.RawMessage) {
+	if len(result) == 0 {
+		return
+	}
+	var r struct {
+		ProtocolVersion   string   `json:"protocolVersion"`
+		SupportedVersions []string `json:"supportedVersions"`
+	}
+	if json.Unmarshal(result, &r) != nil {
+		return
+	}
+	version := r.ProtocolVersion
+	if version == "" && method == "server/discover" {
+		for _, candidate := range r.SupportedVersions {
+			if candidate == ProtocolVersion {
+				version = candidate
+				break
+			}
+		}
+	}
+	if version == "" {
+		return
+	}
+	t.protoMu.Lock()
+	t.protoVersion = version
+	t.protoMu.Unlock()
 }
 
 // do sends one JSON-RPC message and returns the raw reply payload.
@@ -135,6 +199,7 @@ func (t *httpTransport) do(ctx context.Context, msg rpcRequest) (json.RawMessage
 	if err := t.applyHeaders(ctx, req); err != nil {
 		return nil, err
 	}
+	t.applyRequestMetadata(req, msg)
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -153,8 +218,7 @@ func (t *httpTransport) do(ctx context.Context, msg rpcRequest) (json.RawMessage
 		return nil, nil
 	}
 	if resp.StatusCode >= 400 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("%s returned HTTP %d: %s", t.url, resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return nil, upstreamHTTPError(t.url, resp)
 	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		return readSSEForResponse(ctx, resp.Body, string(msg.ID))
@@ -166,12 +230,38 @@ func (t *httpTransport) do(ctx context.Context, msg rpcRequest) (json.RawMessage
 	return data, nil
 }
 
+// applyRequestMetadata mirrors the JSON-RPC message into the HTTP headers the
+// stateless revision defines, so servers and intermediaries can route and
+// validate a request without parsing its body: MCP-Protocol-Version always,
+// Mcp-Method for every request, Mcp-Name for the methods that address one
+// named item, and Mcp-Param-* for tool parameters the tool's schema annotates
+// with x-mcp-header. Servers that predate the revision ignore all of them.
+func (t *httpTransport) applyRequestMetadata(req *http.Request, msg rpcRequest) {
+	req.Header.Set("MCP-Protocol-Version", t.protocolVersionFor(msg.Method))
+	if msg.Method != "" {
+		req.Header.Set("Mcp-Method", msg.Method)
+	}
+	if name, ok := mcpRoutingName(msg.Method, msg.Params); ok {
+		req.Header.Set("Mcp-Name", mirrorHeaderValue(name))
+	}
+	if msg.Method == "tools/call" && t.params != nil {
+		var p struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Name != "" {
+			for k, v := range mcpParamHeaders(t.params(p.Name), p.Arguments) {
+				req.Header.Set(k, v)
+			}
+		}
+	}
+}
+
 // applyHeaders sets the transport headers, static config headers, then dynamic
 // ones (so a refreshed bearer token always wins over a stale static value).
 func (t *httpTransport) applyHeaders(ctx context.Context, req *http.Request) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("MCP-Protocol-Version", ProtocolVersion)
 	req.Header.Set("User-Agent", ServerName+"/"+mcpClientVersion)
 	for k, v := range t.static {
 		req.Header.Set(k, v)
@@ -208,6 +298,69 @@ func (t *httpTransport) checkAuth(resp *http.Response) error {
 		Message: fmt.Sprintf("%s requires authorization (HTTP %d): %s",
 			t.url, resp.StatusCode, strings.TrimSpace(string(snippet))),
 	}
+}
+
+// httpStatusError is an upstream HTTP failure whose body was not a JSON-RPC
+// error: a plain status, a proxy error page, an HTML 404. It is kept as its own
+// type so the handshake can tell "this server does not know the method" apart
+// from "the endpoint is not there at all".
+type httpStatusError struct {
+	URL    string
+	Status int
+	Body   string
+}
+
+func (e *httpStatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("%s returned HTTP %d", e.URL, e.Status)
+	}
+	return fmt.Sprintf("%s returned HTTP %d: %s", e.URL, e.Status, e.Body)
+}
+
+// isHTTPStatusError reports whether err is an upstream HTTP failure with one of
+// the given status codes.
+func isHTTPStatusError(err error, statuses ...int) bool {
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	for _, status := range statuses {
+		if statusErr.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+// upstreamHTTPError turns a failed HTTP response into an error, keeping a
+// JSON-RPC error body intact: a modern server answers an unsupported method
+// with 404 and code -32601, which is how the handshake detects the era a server
+// speaks.
+func upstreamHTTPError(url string, resp *http.Response) error {
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	body := strings.TrimSpace(string(snippet))
+	if rpcErr, ok := jsonRPCErrorFromBody(body); ok {
+		enriched := *rpcErr
+		enriched.Message = fmt.Sprintf("%s returned HTTP %d: %s", url, resp.StatusCode, rpcErr.Message)
+		return &enriched
+	}
+	return &httpStatusError{URL: url, Status: resp.StatusCode, Body: body}
+}
+
+// jsonRPCErrorFromBody extracts a JSON-RPC error object from a response body,
+// so an HTTP status does not hide the error code inside it.
+func jsonRPCErrorFromBody(body string) (*rpcError, bool) {
+	trimmed := strings.TrimSpace(body)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil, false
+	}
+	var envelope struct {
+		Error *rpcError `json:"error"`
+	}
+	if json.Unmarshal([]byte(trimmed), &envelope) != nil || envelope.Error == nil {
+		return nil, false
+	}
+	return envelope.Error, true
 }
 
 func (t *httpTransport) Close() error {
@@ -286,6 +439,7 @@ func (t *httpTransport) openStream(ctx context.Context, started chan struct{}) e
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", ProtocolVersion)
 	for k, v := range t.static {
 		req.Header.Set(k, v)
 	}
@@ -364,6 +518,10 @@ func (t *httpTransport) legacyPost(ctx context.Context, msg rpcRequest) (json.Ra
 	if err := t.applyHeaders(ctx, req); err != nil {
 		return nil, err
 	}
+	// The deprecated HTTP+SSE transport predates the request-metadata headers;
+	// the protocol version is still advertised so a dual-era server can tell
+	// which revision is speaking.
+	req.Header.Set("MCP-Protocol-Version", ProtocolVersion)
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err

@@ -19,6 +19,13 @@ function getProviderDisplayName(providerId: string, config: any): string {
   return providerId;
 }
 
+// Where "Fetch" gets model metadata from: Ollama Cloud is the one provider
+// that reports its own catalog (/api/tags + /api/show, so the context length
+// comes from the deployed model); everything else comes from models.dev.
+function getModelInfoSourceLabel(providerId: string): string {
+  return providerId === 'ollama_cloud' ? 'Ollama Cloud' : 'models.dev';
+}
+
 function getModelRouteKey(model: any, config: any): string {
   const id = typeof model === 'string' ? model : model.id;
   const provider = typeof model === 'string'
@@ -169,12 +176,13 @@ export default function ModelsPanel() {
   const fetchModelInfo = async (id?: string) => {
     const modelId = id || newModel.id;
     if (!modelId.trim()) return;
+    const source = getModelInfoSourceLabel(newModel.provider);
     setNewModel(prev => ({ ...prev, infoStatus: 'Fetching...' }));
     try {
       const res = await fetch('/admin/model-info?id=' + encodeURIComponent(modelId) + (newModel.provider ? '&provider=' + encodeURIComponent(newModel.provider) : ''));
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      if (!data.found) { setNewModel(prev => ({ ...prev, infoStatus: 'Model not found on models.dev' })); return; }
+      if (!data.found) { setNewModel(prev => ({ ...prev, infoStatus: 'Model not found on ' + source })); return; }
       setNewModel(prev => ({ ...prev, ctxLen: String(data.context_length || ''), maxOut: String(data.max_output_tokens || ''), effort: Array.isArray(data.reasoning_effort) ? data.reasoning_effort.join(',') : (data.reasoning_effort || ''), reasoning: !!data.reasoning, toolCall: !!data.tool_calling, struct: !!data.structured_outputs, vision: !!data.vision, infoStatus: 'Fetched info for ' + (data.name || modelId) }));
     } catch (e) { setNewModel(prev => ({ ...prev, infoStatus: 'Fetch failed: ' + (e as Error).message })); }
   };
@@ -280,7 +288,7 @@ export default function ModelsPanel() {
                       <SelectItem value="responses">Responses</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button variant="outline" onClick={() => fetchModelInfo()} title="Fetch info from models.dev">Fetch</Button>
+                  <Button variant="outline" onClick={() => fetchModelInfo()} title={'Fetch info from ' + getModelInfoSourceLabel(newModel.provider)}>Fetch</Button>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-2">
                   <div><Label className="text-xs text-muted-foreground mb-0.5">Context Length</Label><Input type="number" placeholder="e.g. 128000" value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>

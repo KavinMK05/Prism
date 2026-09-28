@@ -36,6 +36,41 @@ const (
 // warm after its last tool call before Prism shuts it down.
 const MCPDefaultIdleTimeoutSec = 300
 
+// Default registry source ids. The official registry is always seeded so a
+// fresh install can search without any setup.
+const (
+	MCPRegistryOfficialID  = "official"
+	MCPRegistryOfficialURL = "https://registry.modelcontextprotocol.io"
+)
+
+// MCPRegistrySource is one registry Prism can search for servers. Every source
+// speaks the official registry's OpenAPI shape (GET /v0.1/servers), which is
+// what makes a private or org registry a drop-in addition rather than a new
+// client per vendor.
+type MCPRegistrySource struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	Enabled bool   `json:"enabled"`
+	// Builtin marks the seeded official registry, which cannot be removed.
+	Builtin bool `json:"builtin,omitempty"`
+	// AuthHeader is an optional "Name: value" pair sent on every request, for
+	// private catalogs that require a token. Masked on the way to the UI.
+	AuthHeader string `json:"auth_header,omitempty"`
+	AddedAt    int64  `json:"added_at,omitempty"`
+}
+
+// DefaultMCPRegistrySources returns the sources a fresh config starts with.
+func DefaultMCPRegistrySources() []*MCPRegistrySource {
+	return []*MCPRegistrySource{{
+		ID:      MCPRegistryOfficialID,
+		Name:    "Official MCP Registry",
+		BaseURL: MCPRegistryOfficialURL,
+		Enabled: true,
+		Builtin: true,
+	}}
+}
+
 // MCPServerState values reported by the running gateway.
 const (
 	MCPStateDisabled       = "disabled"
@@ -103,6 +138,20 @@ type MCPServerConfig struct {
 	Publisher    string `json:"publisher,omitempty"`
 	Repository   string `json:"repository,omitempty"`
 
+	// Marketplace provenance. RegistrySourceID is which catalog the server was
+	// installed from, so a later re-resolve can go back to the same place.
+	RegistrySourceID string `json:"registry_source_id,omitempty"`
+	RegistryVersion  string `json:"registry_version,omitempty"`
+	Verified         bool   `json:"verified,omitempty"`
+
+	// SecretEnv names the env keys the registry declared as secrets, so the UI
+	// keeps masking them across edits instead of re-guessing from the name.
+	SecretEnv []string `json:"secret_env,omitempty"`
+
+	// IntegritySHA256 is the package hash the registry published, when it did.
+	// It is verified before a direct-download package is run.
+	IntegritySHA256 string `json:"integrity_sha256,omitempty"`
+
 	AddedAt int64 `json:"added_at,omitempty"`
 }
 
@@ -127,11 +176,31 @@ type MCPConfig struct {
 	IdleTimeoutSec int                               `json:"idle_timeout_sec,omitempty"`
 	Clients        map[string]*MCPClientRegistration `json:"clients,omitempty"`
 
+	// Registries are the catalogs the marketplace searches. The official
+	// registry is seeded and cannot be removed.
+	Registries []*MCPRegistrySource `json:"registries,omitempty"`
+
 	// ClientIDMetadataURL opts into CIMD registration: the client_id is this
 	// HTTPS URL, which must serve a client metadata document. Off by default
 	// because a local-first app has nowhere to host a stable HTTPS document;
 	// users who run their own endpoint can point at it here.
 	ClientIDMetadataURL string `json:"client_id_metadata_url,omitempty"`
+
+	// AutoConnect lets Prism start a sign-in by itself the first time an agent
+	// uses a server the user marked OAuth that has no token yet: the browser
+	// opens, and the call that hit needs_auth is retried once the user
+	// approves. A pointer so an explicit false survives a save; nil is on.
+	AutoConnect *bool `json:"auto_connect,omitempty"`
+}
+
+// AutoConnectEnabled reports whether Prism may start an OAuth sign-in on its
+// own when an agent first uses a server that is not authorized yet. Defaults to
+// on: a config written before this setting existed has no opinion.
+func (m *MCPConfig) AutoConnectEnabled() bool {
+	if m == nil || m.AutoConnect == nil {
+		return true
+	}
+	return *m.AutoConnect
 }
 
 func cloneMCP(m *MCPConfig) *MCPConfig {
@@ -159,6 +228,18 @@ func cloneMCP(m *MCPConfig) *MCPConfig {
 			cp.Clients[k] = &rc
 		}
 	}
+	if m.AutoConnect != nil {
+		v := *m.AutoConnect
+		cp.AutoConnect = &v
+	}
+	cp.Registries = make([]*MCPRegistrySource, len(m.Registries))
+	for i, r := range m.Registries {
+		if r == nil {
+			continue
+		}
+		rc := *r
+		cp.Registries[i] = &rc
+	}
 	return &cp
 }
 
@@ -181,6 +262,7 @@ func cloneMCPServer(s *MCPServerConfig) *MCPServerConfig {
 		}
 	}
 	cp.ToolAllowlist = append([]string(nil), s.ToolAllowlist...)
+	cp.SecretEnv = append([]string(nil), s.SecretEnv...)
 	if s.OAuth != nil {
 		ot := *s.OAuth
 		ot.Scopes = append([]string(nil), s.OAuth.Scopes...)
@@ -207,7 +289,138 @@ func (c *Config) EnsureMCP() *MCPConfig {
 	if c.MCP.IdleTimeoutSec <= 0 {
 		c.MCP.IdleTimeoutSec = MCPDefaultIdleTimeoutSec
 	}
+	c.MCP.Registries = EnsureOfficialRegistry(c.MCP.Registries)
 	return c.MCP
+}
+
+// EnsureOfficialRegistry guarantees the official registry is present and that
+// every source has an id and a base URL. A config saved before the marketplace
+// existed gets the seeded source on the next load, so users who never add a
+// registry keep exactly the behavior they had.
+func EnsureOfficialRegistry(sources []*MCPRegistrySource) []*MCPRegistrySource {
+	out := make([]*MCPRegistrySource, 0, len(sources)+1)
+	seen := map[string]bool{}
+	hasOfficial := false
+	for _, s := range sources {
+		if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+			continue
+		}
+		if s.ID == "" {
+			s.ID = MCPIDFromName(s.Name)
+		}
+		if s.ID == MCPRegistryOfficialID {
+			s.Builtin = true
+			hasOfficial = true
+			if s.Name == "" {
+				s.Name = "Official MCP Registry"
+			}
+		}
+		if seen[s.ID] {
+			continue
+		}
+		seen[s.ID] = true
+		out = append(out, s)
+	}
+	if !hasOfficial {
+		out = append(DefaultMCPRegistrySources(), out...)
+	}
+	return out
+}
+
+// FindMCPRegistry returns the registry source with the given id, or nil.
+func (c *Config) FindMCPRegistry(id string) *MCPRegistrySource {
+	if c == nil || c.MCP == nil {
+		return nil
+	}
+	for _, s := range c.MCP.Registries {
+		if s != nil && s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// EnabledMCPRegistries returns the enabled registry sources.
+func (c *Config) EnabledMCPRegistries() []*MCPRegistrySource {
+	if c == nil || c.MCP == nil {
+		return nil
+	}
+	out := make([]*MCPRegistrySource, 0, len(c.MCP.Registries))
+	for _, s := range c.MCP.Registries {
+		if s != nil && s.Enabled {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// UniqueMCPRegistryID returns base, or base-2/base-3/... if it is taken.
+func (c *Config) UniqueMCPRegistryID(base string) string {
+	if base == "" {
+		base = "registry"
+	}
+	taken := func(id string) bool { return c.FindMCPRegistry(id) != nil }
+	if !taken(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !taken(candidate) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
+}
+
+// RemoveMCPRegistry deletes a registry source. The builtin official registry
+// cannot be removed. Returns true when something was removed.
+func (c *Config) RemoveMCPRegistry(id string) bool {
+	if c == nil || c.MCP == nil {
+		return false
+	}
+	kept := make([]*MCPRegistrySource, 0, len(c.MCP.Registries))
+	removed := false
+	for _, s := range c.MCP.Registries {
+		if s != nil && s.ID == id {
+			if s.Builtin {
+				kept = append(kept, s)
+				continue
+			}
+			removed = true
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if !removed {
+		return false
+	}
+	c.MCP.Registries = kept
+	return true
+}
+
+// ValidateMCPRegistrySource checks the fields required to query a source.
+func ValidateMCPRegistrySource(s *MCPRegistrySource) error {
+	if s == nil {
+		return errors.New("missing registry source")
+	}
+	if strings.TrimSpace(s.Name) == "" {
+		return errors.New("name is required")
+	}
+	raw := strings.TrimSpace(s.BaseURL)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid base URL %q", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("base URL must use http or https")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return errors.New("non-loopback registry URLs must use https")
+	}
+	if u.Fragment != "" {
+		return errors.New("base URL must not contain a fragment")
+	}
+	return nil
 }
 
 // FindMCPServer returns the server with the given id, or nil.
@@ -334,10 +547,30 @@ func (c *Config) RedactMCPSecrets() *Config {
 				s.Headers[k] = maskKey(v)
 			}
 		}
+		// A registry install declares which env keys are credentials, so those
+		// are masked even when the variable name does not give it away (e.g.
+		// WEATHER_API_KEY vs. a key called simply TOKEN_VALUE).
+		for _, k := range s.SecretEnv {
+			if v, ok := s.Env[k]; ok && v != "" {
+				s.Env[k] = maskKey(v)
+			}
+		}
 	}
 	for _, reg := range cp.MCP.Clients {
 		if reg != nil && reg.ClientSecret != "" {
 			reg.ClientSecret = maskKey(reg.ClientSecret)
+		}
+	}
+	for _, src := range cp.MCP.Registries {
+		if src == nil || src.AuthHeader == "" {
+			continue
+		}
+		// Keep the header name so the field reads as configured, but mask the
+		// credential the same way other secrets are masked.
+		if name, value, ok := strings.Cut(src.AuthHeader, ":"); ok {
+			src.AuthHeader = strings.TrimSpace(name) + ": " + maskKey(strings.TrimSpace(value))
+		} else {
+			src.AuthHeader = maskKey(src.AuthHeader)
 		}
 	}
 	return cp

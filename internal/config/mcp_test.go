@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ollama-proxy/internal/platform"
@@ -269,4 +270,244 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return data
+}
+
+// The marketplace fields must survive Clone, or a redacted config served to
+// the UI would silently drop the provenance it is meant to display.
+func TestCloneMCPServerCarriesMarketplaceFields(t *testing.T) {
+	original := &MCPServerConfig{
+		ID:               "weather",
+		Name:             "Weather",
+		SecretEnv:        []string{"API_KEY"},
+		RegistrySourceID: "internal",
+		RegistryVersion:  "1.2.3",
+		Verified:         true,
+		IntegritySHA256:  "abc",
+	}
+	clone := cloneMCPServer(original)
+	if clone == original {
+		t.Fatal("clone returned the same pointer")
+	}
+	// The slice must be copied, not shared.
+	clone.SecretEnv[0] = "CHANGED"
+	if original.SecretEnv[0] != "API_KEY" {
+		t.Error("SecretEnv was shared between the clone and the original")
+	}
+	if clone.RegistrySourceID != "internal" || clone.RegistryVersion != "1.2.3" || !clone.Verified || clone.IntegritySHA256 != "abc" {
+		t.Errorf("marketplace fields lost in the clone: %+v", clone)
+	}
+}
+
+func TestEnsureOfficialRegistry(t *testing.T) {
+	// A fresh install gets the official registry.
+	got := EnsureOfficialRegistry(nil)
+	if len(got) != 1 || got[0].ID != MCPRegistryOfficialID || !got[0].Builtin || !got[0].Enabled {
+		t.Fatalf("official registry not seeded: %+v", got)
+	}
+
+	// A config saved before the marketplace existed is upgraded without losing
+	// its own sources, and the seeded one is not duplicated.
+	existing := []*MCPRegistrySource{{ID: "internal", Name: "Internal", BaseURL: "https://registry.example.com"}}
+	got = EnsureOfficialRegistry(existing)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(got))
+	}
+	if got[0].ID != MCPRegistryOfficialID || got[1].ID != "internal" {
+		t.Errorf("official registry should come first: %v, %v", got[0].ID, got[1].ID)
+	}
+
+	// Running it twice is idempotent.
+	if again := EnsureOfficialRegistry(got); len(again) != 2 {
+		t.Errorf("not idempotent: %d sources", len(again))
+	}
+
+	// Entries with no base URL or a duplicate id are dropped.
+	messy := []*MCPRegistrySource{
+		{ID: "official", BaseURL: "https://registry.modelcontextprotocol.io"},
+		{ID: "official", BaseURL: "https://dupe.example.com"},
+		{ID: "blank", BaseURL: "  "},
+	}
+	got = EnsureOfficialRegistry(messy)
+	if len(got) != 1 || got[0].BaseURL != MCPRegistryOfficialURL {
+		t.Errorf("dedupe/filter failed: %+v", got)
+	}
+}
+
+func TestRemoveMCPRegistryProtectsBuiltin(t *testing.T) {
+	cfg := &Config{}
+	cfg.EnsureMCP()
+	cfg.MCP.Registries = EnsureOfficialRegistry([]*MCPRegistrySource{
+		{ID: "internal", Name: "Internal", BaseURL: "https://registry.example.com"},
+	})
+
+	if cfg.RemoveMCPRegistry(MCPRegistryOfficialID) {
+		t.Error("the official registry must not be removable")
+	}
+	if cfg.FindMCPRegistry(MCPRegistryOfficialID) == nil {
+		t.Error("the official registry disappeared")
+	}
+	if !cfg.RemoveMCPRegistry("internal") {
+		t.Error("a user-added source should be removable")
+	}
+	if cfg.FindMCPRegistry("internal") != nil {
+		t.Error("the removed source is still present")
+	}
+	if cfg.RemoveMCPRegistry("internal") {
+		t.Error("removing an unknown source should return false")
+	}
+}
+
+func TestUniqueMCPRegistryID(t *testing.T) {
+	cfg := &Config{}
+	cfg.EnsureMCP()
+	cfg.MCP.Registries = EnsureOfficialRegistry(nil)
+
+	if got := cfg.UniqueMCPRegistryID("internal"); got != "internal" {
+		t.Errorf("free id changed: %q", got)
+	}
+	// The seeded official id is taken.
+	if got := cfg.UniqueMCPRegistryID(MCPRegistryOfficialID); got == MCPRegistryOfficialID {
+		t.Errorf("a taken id must be suffixed, got %q", got)
+	}
+}
+
+func TestValidateMCPRegistrySource(t *testing.T) {
+	cases := []struct {
+		name    string
+		source  MCPRegistrySource
+		wantErr bool
+	}{
+		{"https ok", MCPRegistrySource{Name: "x", BaseURL: "https://registry.example.com"}, false},
+		{"loopback http ok", MCPRegistrySource{Name: "x", BaseURL: "http://127.0.0.1:9000"}, false},
+		{"remote http rejected", MCPRegistrySource{Name: "x", BaseURL: "http://registry.example.com"}, true},
+		{"missing name", MCPRegistrySource{BaseURL: "https://registry.example.com"}, true},
+		{"missing host", MCPRegistrySource{Name: "x", BaseURL: "https://"}, true},
+		{"bad scheme", MCPRegistrySource{Name: "x", BaseURL: "ftp://registry.example.com"}, true},
+		{"fragment rejected", MCPRegistrySource{Name: "x", BaseURL: "https://registry.example.com#frag"}, true},
+	}
+	for _, tc := range cases {
+		err := ValidateMCPRegistrySource(&tc.source)
+		if tc.wantErr && err == nil {
+			t.Errorf("%s: expected an error", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
+	}
+	if ValidateMCPRegistrySource(nil) == nil {
+		t.Error("nil source should be rejected")
+	}
+}
+
+func TestRedactMCPRegistryAuthHeader(t *testing.T) {
+	cfg := &Config{}
+	m := cfg.EnsureMCP()
+	m.Registries = EnsureOfficialRegistry([]*MCPRegistrySource{{
+		ID:         "internal",
+		Name:       "Internal",
+		BaseURL:    "https://registry.example.com",
+		AuthHeader: "Authorization: Bearer super-secret-token",
+	}})
+
+	redacted := cfg.RedactMCPSecrets()
+	src := redacted.FindMCPRegistry("internal")
+	if src == nil {
+		t.Fatal("source lost")
+	}
+	if src.AuthHeader == "Authorization: Bearer super-secret-token" {
+		t.Error("registry auth header was not masked")
+	}
+	if !strings.HasPrefix(src.AuthHeader, "Authorization:") {
+		t.Errorf("the header name should survive masking, got %q", src.AuthHeader)
+	}
+	if strings.Contains(src.AuthHeader, "super-secret-token") {
+		t.Errorf("the credential leaked into the redacted form: %q", src.AuthHeader)
+	}
+	// The source config must not be mutated by redaction.
+	if original := cfg.FindMCPRegistry("internal"); original.AuthHeader != "Authorization: Bearer super-secret-token" {
+		t.Error("redaction mutated the source config")
+	}
+
+	// A header with no colon is masked whole.
+	cfg2 := &Config{}
+	m2 := cfg2.EnsureMCP()
+	m2.Registries = EnsureOfficialRegistry([]*MCPRegistrySource{{
+		ID: "bare", Name: "Bare", BaseURL: "https://registry.example.com", AuthHeader: "opaque-credential-value",
+	}})
+	if got := cfg2.RedactMCPSecrets().FindMCPRegistry("bare").AuthHeader; got == "opaque-credential-value" {
+		t.Error("a colon-less auth header was not masked")
+	}
+}
+
+func TestMCPRegistryRoundTrip(t *testing.T) {
+	isolateConfigDir(t)
+
+	cfg := Load()
+	cfg.EnsureMCP()
+	cfg.MCP.Registries = append(cfg.MCP.Registries, &MCPRegistrySource{
+		ID:         "internal",
+		Name:       "Internal Registry",
+		BaseURL:    "https://registry.example.com",
+		Enabled:    false,
+		AuthHeader: "X-Api-Key: secret-key",
+	})
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded := Load()
+	src := loaded.FindMCPRegistry("internal")
+	if src == nil {
+		t.Fatal("registry source did not survive the round trip")
+	}
+	if src.BaseURL != "https://registry.example.com" || src.Enabled || src.AuthHeader != "X-Api-Key: secret-key" {
+		t.Errorf("source fields lost: %+v", src)
+	}
+	if loaded.FindMCPRegistry(MCPRegistryOfficialID) == nil {
+		t.Error("the official registry was not seeded on load")
+	}
+	// Disabled sources are excluded from the search set.
+	enabled := loaded.EnabledMCPRegistries()
+	for _, s := range enabled {
+		if s.ID == "internal" {
+			t.Error("a disabled source should not be searched")
+		}
+	}
+}
+
+func TestAutoConnectEnabledDefault(t *testing.T) {
+	var nilCfg *MCPConfig
+	if !nilCfg.AutoConnectEnabled() {
+		t.Error("a missing MCP section must leave auto-connect on")
+	}
+	if !(&MCPConfig{}).AutoConnectEnabled() {
+		t.Error("a config written before this setting existed must leave auto-connect on")
+	}
+	off := false
+	if (&MCPConfig{AutoConnect: &off}).AutoConnectEnabled() {
+		t.Error("an explicit false must turn auto-connect off")
+	}
+	on := true
+	if !(&MCPConfig{AutoConnect: &on}).AutoConnectEnabled() {
+		t.Error("an explicit true must keep auto-connect on")
+	}
+}
+
+func TestCloneMCPCopiesAutoConnect(t *testing.T) {
+	off := false
+	original := &MCPConfig{AutoConnect: &off}
+	clone := cloneMCP(original)
+	if clone == original {
+		t.Fatal("clone returned the same pointer")
+	}
+	if clone.AutoConnect == original.AutoConnect {
+		t.Fatal("AutoConnect pointer was shared with the clone")
+	}
+	*clone.AutoConnect = true
+	if *original.AutoConnect {
+		t.Error("mutating the clone's AutoConnect changed the original")
+	}
+	if cloneMCP(&MCPConfig{}).AutoConnect != nil {
+		t.Error("a nil AutoConnect must stay nil through the clone")
+	}
 }

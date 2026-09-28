@@ -380,6 +380,24 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Pattern A: a normal conversation carrying a typed web_search server tool
+	// (e.g. ZCode after the kind:"anthropic" switch, or Claude Code using the
+	// long-lived conversation shape rather than its dedicated secondary
+	// conversation above). Intercept the model's web_search calls, run them
+	// locally via the SearchRunner, and re-request upstream with the results.
+	// This runs before the provider dispatch so it covers the OpenAI-compatible
+	// upstreams (Ollama Cloud over Chat Completions, OpenCode Go, custom) as well
+	// as the Ollama-native one. Codex OAuth accounts and per-model
+	// API=="responses" routes are excluded: they must keep going to
+	// /v1/responses rather than a Chat Completions endpoint.
+	if rp.ProviderType != "codex" && !(rp.ProviderType == "openai" && pr.getModelAPI(anthroReq.Model, rp.ProviderID) == "responses") {
+		if searchInterceptionEnabled() && hasServerWebSearchTool(&anthroReq) {
+			if pr.handleServerWebSearchLoop(w, r, &anthroReq, rp) {
+				return
+			}
+		}
+	}
+
 	if rp.ProviderType == "openai" || rp.ProviderType == "codex" {
 		// Per-model API routing: responses models (e.g. Zen muse-spark/gpt/grok) via Anthropic inbound
 		// go to /v1/responses even though the provider is "openai". The result is converted back to
@@ -396,16 +414,6 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 		}
 		pr.HandleOpenAIMessages(w, r, &anthroReq, rp)
 		return
-	}
-
-	// Pattern A (Ollama/Anthropic path only): a normal conversation carrying a
-	// typed web_search server tool (e.g. ZCode after the kind:"anthropic" config
-	// switch). Intercept the model's web_search calls, run them locally via the
-	// SearchRunner, and re-request upstream with the results.
-	if searchInterceptionEnabled() && hasServerWebSearchTool(&anthroReq) {
-		if pr.handleServerWebSearchLoop(w, r, &anthroReq, rp) {
-			return
-		}
 	}
 
 	client := detectClient(r)

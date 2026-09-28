@@ -1,6 +1,9 @@
 package proxy
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
 
 type AnthropicRequest struct {
 	Model         string             `json:"model"`
@@ -210,6 +213,58 @@ func promptTokensDetails(cachedTokens int) *OpenAIPromptTokensDetails {
 	return &OpenAIPromptTokensDetails{CachedTokens: cachedTokens}
 }
 
+// estimatedReasoningTokens approximates the reasoning share of an Ollama
+// response's eval_count from its thinking text. Ollama's native /api/chat
+// usage carries no reasoning/output split (unlike OpenAI's
+// completion_tokens_details), so the ~4-chars-per-token convention is applied;
+// callers clamp the result against the reported output total. Pass the whole
+// thinking text, not one delta at a time: rounding up per delta would
+// over-count streams that emit many small chunks.
+func estimatedReasoningTokens(thinking string) int {
+	return reasoningTokensFromRunes(utf8.RuneCountInString(thinking))
+}
+
+// reasoningTokensFromRunes converts an accumulated reasoning rune count to the
+// ~4-runes-per-token estimate used when the upstream reports no split.
+func reasoningTokensFromRunes(runes int) int {
+	if runes <= 0 {
+		return 0
+	}
+	return (runes + 3) / 4
+}
+
+// resolveReasoningTokens picks the reasoning breakdown for a completed
+// response: an upstream-reported count wins, otherwise the rune-based estimate
+// of the reasoning text is used. Either way the result is clamped to the
+// reported output total so the split stays self-consistent.
+func resolveReasoningTokens(upstreamReported, trackedRunes, outputTokens int) int {
+	if upstreamReported > 0 {
+		return clampReasoningTokens(upstreamReported, outputTokens)
+	}
+	return clampReasoningTokens(reasoningTokensFromRunes(trackedRunes), outputTokens)
+}
+
+// clampReasoningTokens keeps a reasoning-token estimate from exceeding the
+// reported output total, which would make the breakdown self-contradictory.
+func clampReasoningTokens(reasoning, outputTokens int) int {
+	if reasoning < 0 {
+		return 0
+	}
+	if outputTokens > 0 && reasoning > outputTokens {
+		return outputTokens
+	}
+	return reasoning
+}
+
+// completionTokensDetails builds OpenAI's completion_tokens_details block, or
+// nil when there is no reasoning split to report so the field stays omitted.
+func completionTokensDetails(reasoningTokens int) *OpenAICompletionTokensDetails {
+	if reasoningTokens <= 0 {
+		return nil
+	}
+	return &OpenAICompletionTokensDetails{ReasoningTokens: reasoningTokens}
+}
+
 type SSEEvent struct {
 	Event string
 	Data  string
@@ -296,10 +351,21 @@ type OpenAIUsage struct {
 	CompletionTokens    int                        `json:"completion_tokens"`
 	TotalTokens         int                        `json:"total_tokens"`
 	PromptTokensDetails *OpenAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// CompletionTokensDetails carries the reasoning-token breakdown OpenAI
+	// reports on the Responses surface. Ollama Cloud omits it entirely; in
+	// that case callers fall back to their own tracked reasoning output.
+	CompletionTokensDetails *OpenAICompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type OpenAIPromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+}
+
+// OpenAICompletionTokensDetails mirrors the upstream completion_tokens_details
+// block (reasoning_tokens, plus vendor extras we ignore via RawMessage-free
+// known fields only).
+type OpenAICompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 type OpenAIStreamChunk struct {
@@ -313,10 +379,11 @@ type OpenAIStreamChunk struct {
 }
 
 type OpenAIStreamUsage struct {
-	PromptTokens        int                        `json:"prompt_tokens"`
-	CompletionTokens    int                        `json:"completion_tokens"`
-	TotalTokens         int                        `json:"total_tokens"`
-	PromptTokensDetails *OpenAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                            `json:"prompt_tokens"`
+	CompletionTokens        int                            `json:"completion_tokens"`
+	TotalTokens             int                            `json:"total_tokens"`
+	PromptTokensDetails     *OpenAIPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *OpenAICompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type OpenAIStreamChoice struct {

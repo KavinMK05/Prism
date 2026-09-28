@@ -10,20 +10,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/stats"
 )
 
 type ollamaStreamState struct {
-	w                http.ResponseWriter
-	flusher          http.Flusher
-	canFlush         bool
-	respID           string
-	model            string
-	outputTokens     int
-	inputTokens      int
-	cachedTokens     int
+	w            http.ResponseWriter
+	flusher      http.Flusher
+	canFlush     bool
+	respID       string
+	model        string
+	outputTokens int
+	inputTokens  int
+	cachedTokens int
+	// reasoningRunes accumulates streamed thinking text so the terminal usage
+	// chunk can report a completion_tokens_details.reasoning_tokens breakdown.
+	// Ollama's native /api/chat usage carries no reasoning/output split.
+	reasoningRunes   int
 	thinkingActive   bool
 	pendingContent   string
 	toolCallsActive  bool
@@ -265,6 +270,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 			if !state.thinkingActive {
 				state.thinkingActive = true
 			}
+			state.reasoningRunes += utf8.RuneCountInString(chunk.Message.Thinking)
 			stats.Global.AddTokens(1)
 			thinking := chunk.Message.Thinking
 			state.writeOpenAISSE(OpenAIStreamChunk{
@@ -390,6 +396,11 @@ func (pr *ProviderRouter) handleOpenAIInboundOllamaStreaming(w http.ResponseWrit
 					CompletionTokens:    state.outputTokens,
 					TotalTokens:         state.inputTokens + state.outputTokens,
 					PromptTokensDetails: promptTokensDetails(state.cachedTokens),
+					// Ollama reports no reasoning/output split, so derive one
+					// from the thinking text we just streamed (chars/4),
+					// clamped to the reported output total.
+					CompletionTokensDetails: completionTokensDetails(clampReasoningTokens(
+						reasoningTokensFromRunes(state.reasoningRunes), state.outputTokens)),
 				},
 			})
 		}
@@ -617,6 +628,7 @@ func (pr *ProviderRouter) handleOpenAIInboundOpenAIStreaming(w http.ResponseWrit
 					choice := chunk.Choices[0]
 					if (choice.Delta.Content != nil && *choice.Delta.Content != "") ||
 						(choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "") ||
+						(choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "") ||
 						len(choice.Delta.ToolCalls) > 0 {
 						liveTokens++
 						stats.Global.AddTokens(1)

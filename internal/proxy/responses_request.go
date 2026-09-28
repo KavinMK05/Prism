@@ -258,7 +258,7 @@ func translateResponsesInputToChatMessages(input []interface{}) []OpenAIChatMess
 			appendRegular(msg)
 
 		case "reasoning":
-			rc := responsesReasoningSummaryText(item)
+			rc := responsesReasoningReplayText(item)
 			if pendingReasoningContent == "" {
 				pendingReasoningContent = rc
 			} else {
@@ -843,17 +843,26 @@ func matchResponsesToolOutputs(pendingIDs []string, pendingNames map[string]stri
 	return matched
 }
 
-// responsesReasoningSummaryText returns the concatenated summary_text from a
-// "reasoning" input item, or "" if the item is not a reasoning item or has no
-// summary text. Used to buffer reasoning content and attach it to the next
+// responsesReasoningReplayText returns the reasoning text to replay from a
+// "reasoning" input item, or "" if the item is not a reasoning item or carries
+// no reasoning. Used to buffer reasoning content and attach it to the next
 // assistant message.
-func responsesReasoningSummaryText(item interface{}) string {
+//
+// encrypted_content is preferred over the summary, mirroring Ollama's
+// FromResponsesRequest (pendingThinking = v.EncryptedContent). It is the
+// round-trip channel: clients echo it back verbatim, so it reproduces the
+// reasoning exactly. summary is a display digest and is only a fallback, for
+// items whose producer did not populate encrypted_content.
+func responsesReasoningReplayText(item interface{}) string {
 	itemMap, ok := item.(map[string]interface{})
 	if !ok {
 		return ""
 	}
 	if t, _ := itemMap["type"].(string); t != "reasoning" {
 		return ""
+	}
+	if enc, ok := itemMap["encrypted_content"].(string); ok && enc != "" {
+		return enc
 	}
 	var sb strings.Builder
 	if summary, ok := itemMap["summary"].([]interface{}); ok {
@@ -1346,7 +1355,7 @@ func translateResponsesInputToOllamaMessages(input []interface{}) []OllamaMessag
 			appendRegular(msg)
 
 		case "reasoning":
-			rc := responsesReasoningSummaryText(item)
+			rc := responsesReasoningReplayText(item)
 			if pendingReasoningContent == "" {
 				pendingReasoningContent = rc
 			} else {

@@ -72,6 +72,11 @@ func runProxyServer() {
 		log.Printf("[Agents] Failed to initialize auto-sync: %v", err)
 	}
 	cfg := config.Load()
+	// This process is a child of the tray process and owns its own copy of the
+	// config: publish it so packages that read config.Current (the MCP
+	// gateway's server list, usage polling) see the servers instead of nil.
+	// Publish, not SetCurrent: the change hook restarts *this* process.
+	config.Publish(cfg)
 	proxyAPIKey := "prism"
 
 	port := os.Getenv("PRISM_PORT")
@@ -97,6 +102,9 @@ func runProxyServer() {
 	mcpManager := mcp.NewManager(config.Current)
 	mcpManager.Start()
 	defer mcpManager.Stop()
+	// An agent's first call to an OAuth-marked upstream can start the sign-in:
+	// the flow runs here, in the process that owns the upstream connections.
+	mcpManager.SetAutoAuthorize(mcpManager.AutoAuthorize)
 	mcpGateway := mcp.NewGateway(mcpManager, config.Current)
 	agents.SyncAllAgentMCP(agents.ParseIntOr(port, 11434))
 
@@ -134,10 +142,16 @@ func runProxyServer() {
 	mux.HandleFunc("/mcp/", loggingMiddleware(authMiddleware(proxyAPIKey, mcpGateway.ServeHTTP)))
 	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleOpenAIChatCompletions)))
 	mux.HandleFunc("/v1/responses", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleResponsesAPI)))
-	mux.HandleFunc("/v1/models", loggingMiddleware(openaiAuthMiddleware(proxyAPIKey, router.HandleModels)))
+	// /v1/models is intentionally unauthenticated: unlike the inference
+	// endpoints there is no upstream spend behind it, and OpenAI-compatible
+	// local servers (Ollama, LM Studio, llama.cpp, vLLM) all expose it openly.
+	// Clients written against those send no key, so requiring one here only
+	// produced spurious 401s when discovering models.
+	mux.HandleFunc("/v1/models", loggingMiddleware(router.HandleModels))
 
-	// Model info endpoint - looks up a model on models.dev (unscoped; the
-	// admin UI's /admin/model-info is the scoped variant).
+	// Model info endpoint - looks up a model on models.dev, or on Ollama's own
+	// endpoints when provider=ollama_cloud. Pass ?provider= to scope the lookup
+	// (the admin UI's /admin/model-info is the scoped variant).
 	mux.HandleFunc("/api/model-info", loggingMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
@@ -148,7 +162,7 @@ func runProxyServer() {
 			http.Error(w, "missing id parameter", 400)
 			return
 		}
-		result, err := admin.FetchModelsDevModel(modelID, "")
+		result, err := admin.FetchModelInfo(modelID, r.URL.Query().Get("provider"))
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return

@@ -1,13 +1,15 @@
-// Package analytics implements opt-in anonymous usage telemetry for Prism.
+// Package analytics implements anonymous usage telemetry for Prism.
 //
 // It sends a single daily "heartbeat" event to PostHog (EU) so the maintainer
-// can count active installs. Participation is strictly opt-in (disabled by
-// default), can be hard-disabled with PRISM_ANALYTICS_DISABLED=1, and can be
-// inspected without sending via PRISM_ANALYTICS_DEBUG=1.
+// can count active installs and active users. Telemetry is on by default and
+// can be turned off from the tray menu, the admin UI settings, or hard-disabled
+// with PRISM_ANALYTICS_DISABLED=1. PRISM_ANALYTICS_DEBUG=1 logs the payload
+// without sending it.
 //
 // The only data ever transmitted is: a random anonymous install ID, the app
-// version, the OS, and the CPU architecture. No prompts, models, requests,
-// tokens, keys, URLs, or identifiers are ever sent.
+// version, the OS, the CPU architecture, whether Prism proxied at least one
+// request in the last 24 hours, and a coarse bucket of that request count. No
+// prompts, models, requests, tokens, keys, URLs, or identifiers are ever sent.
 package analytics
 
 import (
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"ollama-proxy/internal/config"
+	"ollama-proxy/internal/db"
 	"ollama-proxy/internal/platform"
 )
 
@@ -38,10 +41,14 @@ const (
 	heartbeatInterval = 24 * time.Hour
 	// httpTimeout bounds a single heartbeat request. Telemetry is low priority.
 	httpTimeout = 10 * time.Second
+	// usageWindow is how far back we look for proxied requests when deciding
+	// whether this install counts as active today.
+	usageWindow = 24 * time.Hour
 )
 
 // mu guards the state file read/write and the once-per-day dedup check so that
-// concurrent callers (tray loop + admin opt-in handler) never double-send.
+// concurrent callers (tray loop + admin opt-out handler + tray menu toggle)
+// never double-send.
 var mu sync.Mutex
 
 // stateFilePath returns the path to the analytics state file. It holds only
@@ -52,7 +59,7 @@ func stateFilePath() string {
 }
 
 // disabled reports whether the hard kill switch is set. When set, telemetry is
-// never sent and the consent prompt is never shown.
+// never sent and the first-run notice is never shown.
 func disabled() bool {
 	return os.Getenv("PRISM_ANALYTICS_DISABLED") == "1"
 }
@@ -61,6 +68,22 @@ func disabled() bool {
 // not sent, so a skeptical user can verify exactly what would leave the machine.
 func debug() bool {
 	return os.Getenv("PRISM_ANALYTICS_DEBUG") == "1"
+}
+
+// ForcedOff reports whether telemetry is disabled by the environment kill
+// switch. It wins over every other setting, including the in-app toggle.
+func ForcedOff() bool {
+	return disabled()
+}
+
+// Enabled reports whether telemetry should be sent. It is on by default and off
+// only when the user opted out or the kill switch is set.
+func Enabled() bool {
+	if disabled() {
+		return false
+	}
+	c := config.Current()
+	return c != nil && !c.AnalyticsOptOut
 }
 
 func today() string {
@@ -119,15 +142,59 @@ func loadOrCreateID() (string, error) {
 	return id, nil
 }
 
-// PingIfDue sends a heartbeat if the user has opted in and one has not already
+// usageBucket maps a 24h request count onto a coarse bucket so the payload never
+// reveals exactly how much a user proxies.
+func usageBucket(n int) string {
+	switch {
+	case n <= 0:
+		return "0"
+	case n < 10:
+		return "1-9"
+	case n < 100:
+		return "10-99"
+	default:
+		return "100+"
+	}
+}
+
+// usageProperties returns the activity properties for a heartbeat, or nil when
+// the local stats database cannot be read. In that case the event is sent
+// (or not) without them rather than claiming the user was inactive.
+func usageProperties(now time.Time) map[string]any {
+	count, ok := db.RequestCountSince(now.Add(-usageWindow).Unix())
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"used_today":   count > 0,
+		"requests_24h": usageBucket(count),
+	}
+}
+
+// buildPayload assembles the PostHog capture body. It is pure so the exact wire
+// shape can be unit tested.
+func buildPayload(id, version string, usage map[string]any) map[string]any {
+	properties := map[string]any{
+		"distinct_id": id,
+		"version":     version,
+		"os":          runtime.GOOS,
+		"arch":        runtime.GOARCH,
+	}
+	for k, v := range usage {
+		properties[k] = v
+	}
+	return map[string]any{
+		"api_key":    posthogProjectKey,
+		"event":      "app_heartbeat",
+		"properties": properties,
+	}
+}
+
+// PingIfDue sends a heartbeat if telemetry is enabled and one has not already
 // been sent today. It is safe to call concurrently and never blocks the caller
 // on the network (the POST runs in its own goroutine).
 func PingIfDue(version string) {
-	if disabled() {
-		return
-	}
-	c := config.Current()
-	if c == nil || !c.AnalyticsOptIn {
+	if !Enabled() {
 		return
 	}
 
@@ -154,23 +221,14 @@ func PingIfDue(version string) {
 		log.Printf("[analytics] failed to record ping: %v", err)
 	}
 
-	go sendHeartbeat(id, version)
+	usage := usageProperties(time.Now())
+	go sendHeartbeat(id, version, usage)
 }
 
 // sendHeartbeat posts a single app_heartbeat event to PostHog. Errors are
 // swallowed silently: telemetry must never disturb the user.
-func sendHeartbeat(id, version string) {
-	payload := map[string]any{
-		"api_key": posthogProjectKey,
-		"event":   "app_heartbeat",
-		"properties": map[string]any{
-			"distinct_id": id,
-			"version":     version,
-			"os":          runtime.GOOS,
-			"arch":        runtime.GOARCH,
-		},
-	}
-	body, err := json.Marshal(payload)
+func sendHeartbeat(id, version string, usage map[string]any) {
+	body, err := json.Marshal(buildPayload(id, version, usage))
 	if err != nil {
 		return
 	}

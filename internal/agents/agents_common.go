@@ -1,6 +1,7 @@
 // Package agents manages Prism's integrations with third-party coding
 // agents (Claude Code, Codex Desktop, OpenCode, ZCode, OMP, Grok Build,
-// Pi, Kimi Code, and Prime Agent): config installation, restore, and status checks.
+// Pi, Kimi Code, Prime Agent, and Empryo): config installation, restore, and
+// status checks.
 package agents
 
 import (
@@ -50,7 +51,7 @@ func prismRouteForModelID(remap *config.ModelRemapping, id string) string {
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
 // separate endpoint and sync function, but shares the same auto-sync policy.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code", "prime-agent"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code", "prime-agent", "empryo"}
 
 var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
@@ -100,6 +101,10 @@ func agentConfigPath(agentID string) string {
 			return filepath.Join(root, "config.toml")
 		}
 		return filepath.Join(home, ".kimi-code", "config.toml")
+	case "empryo":
+		// Empryo resolves to %LOCALAPPDATA%\Empryo\config.json on Windows, which
+		// the home-based switch here cannot express; see empryoConfigPath.
+		return empryoConfigPath()
 	}
 	return ""
 }
@@ -127,6 +132,8 @@ func AgentDisplayName(agentID string) string {
 		return "Prime Agent"
 	case "kimi-code":
 		return "Kimi Code"
+	case "empryo":
+		return "Empryo"
 	}
 	return agentID
 }
@@ -241,6 +248,7 @@ func lookupBinary(name string) (string, bool) {
 //   - claude-code: env.ANTHROPIC_BASE_URL is set in ~/.claude/settings.json
 //   - factory-droid: a [Prism]-tagged entry exists in customModels[]
 //   - opencode: a "prism" provider block exists
+//   - empryo: an entry with id "prism" exists in providers[]
 func IsAgentActive(agentID string) bool {
 	p := agentConfigPath(agentID)
 	if p == "" {
@@ -368,6 +376,8 @@ func IsAgentActive(agentID string) bool {
 		return isPiActive()
 	case "prime-agent":
 		return isPrimeAgentActive()
+	case "empryo":
+		return hasEmpryoProvider(m["providers"])
 	}
 	return false
 }
@@ -567,6 +577,8 @@ func AgentInstalled(id string) bool {
 		return isPrimeAgentInstalled()
 	case "kimi-code":
 		return isKimiCodeInstalled()
+	case "empryo":
+		return isEmpryoInstalled()
 	}
 	return false
 }
@@ -604,6 +616,8 @@ func SyncAgents(port int) {
 			syncPrimeAgent(port)
 		case "kimi-code":
 			syncKimiCode(port)
+		case "empryo":
+			syncEmpryo(port)
 		}
 	}
 }

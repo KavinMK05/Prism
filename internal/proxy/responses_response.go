@@ -157,14 +157,24 @@ func translateChatCompletionsToResponsesAPI(resp *OpenAIChatResponse, req *Respo
 	// Handle reasoning content (always first in output). Populate the summary
 	// with the actual reasoning text so it is not lost (the previous code
 	// emitted an empty summary array).
-	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+	reasoningText := ""
+	if msg.ReasoningContent != nil {
+		reasoningText = *msg.ReasoningContent
+	}
+	if reasoningText == "" && msg.Reasoning != nil {
+		reasoningText = *msg.Reasoning
+	}
+	if reasoningText != "" {
 		reasoningItem := ResponsesAPIReasoningItem{
 			ID:   generateID("rs_"),
 			Type: "reasoning",
 			Summary: []ResponsesAPIReasoningSummary{{
 				Type: "summary_text",
-				Text: *msg.ReasoningContent,
+				Text: reasoningText,
 			}},
+			// Same round-trip carrier as the streaming path, mirroring Ollama's
+			// ToResponse. See emitReasoningClose for the rationale.
+			EncryptedContent: reasoningText,
 		}
 		output = append(output, reasoningItem)
 	}
@@ -291,15 +301,19 @@ func translateOllamaToResponsesAPI(ollama *OllamaChatResponse, req *ResponsesAPI
 }
 
 func translateOpenAIUsageToResponses(usage OpenAIUsage) ResponsesAPIUsage {
-	inDetails := &ResponsesAPITokensDetails{}
+	inDetails := &ResponsesAPIInputTokensDetails{}
 	if usage.PromptTokensDetails != nil {
 		inDetails.CachedTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	reasoningTokens := 0
+	if usage.CompletionTokensDetails != nil {
+		reasoningTokens = usage.CompletionTokensDetails.ReasoningTokens
 	}
 	return ResponsesAPIUsage{
 		InputTokens:         usage.PromptTokens,
 		InputTokensDetails:  inDetails,
 		OutputTokens:        usage.CompletionTokens,
-		OutputTokensDetails: &ResponsesAPITokensDetails{},
+		OutputTokensDetails: &ResponsesAPIOutputTokensDetails{ReasoningTokens: reasoningTokens},
 		TotalTokens:         usage.TotalTokens,
 	}
 }
@@ -309,12 +323,15 @@ func translateOpenAIUsageToResponses(usage OpenAIUsage) ResponsesAPIUsage {
 // Build's strict Rust client requires) for inline use in streaming events.
 // inputTokens is the logical total and includes the cache hits reported
 // separately in cachedTokens, matching OpenAI's prompt_tokens convention.
-func responsesUsageMap(inputTokens, outputTokens, cachedTokens int) map[string]interface{} {
+// reasoningTokens is the upstream completion_tokens_details.reasoning_tokens
+// when available, otherwise the proxy's own tracked reasoning-output count
+// (Ollama Cloud omits the breakdown entirely).
+func responsesUsageMap(inputTokens, outputTokens, cachedTokens, reasoningTokens int) map[string]interface{} {
 	return map[string]interface{}{
 		"input_tokens":          inputTokens,
 		"input_tokens_details":  map[string]interface{}{"cached_tokens": cachedTokens},
 		"output_tokens":         outputTokens,
-		"output_tokens_details": map[string]interface{}{"reasoning_tokens": 0},
+		"output_tokens_details": map[string]interface{}{"reasoning_tokens": reasoningTokens},
 		"total_tokens":          inputTokens + outputTokens,
 	}
 }

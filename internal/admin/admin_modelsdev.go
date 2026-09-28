@@ -69,6 +69,63 @@ type modelsDevResult struct {
 	ProviderID       string   `json:"provider_id"`
 }
 
+// modelsDevModelInfo is one model entry inside a models.dev provider.
+type modelsDevModelInfo struct {
+	Name  string `json:"name"`
+	ID    string `json:"id"`
+	Limit struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	Reasoning        bool `json:"reasoning"`
+	ToolCall         bool `json:"tool_call"`
+	StructuredOutput bool `json:"structured_output"`
+	Modalities       *struct {
+		Input  []string `json:"input"`
+		Output []string `json:"output"`
+	} `json:"modalities"`
+}
+
+// modelsDevProviderInfo is one provider entry in the models.dev index.
+type modelsDevProviderInfo struct {
+	ID     string                        `json:"id"`
+	Name   string                        `json:"name"`
+	Models map[string]modelsDevModelInfo `json:"models"`
+}
+
+// modelsDevResultFromModel maps a models.dev model entry onto the discovery
+// result shape. searchID is the (lowercased) id the user searched for; it only
+// affects the fallback reasoning-effort list.
+func modelsDevResultFromModel(m modelsDevModelInfo, providerID, searchID string) *modelsDevResult {
+	vision := false
+	if m.Modalities != nil {
+		for _, mod := range m.Modalities.Input {
+			if mod == "image" {
+				vision = true
+			}
+		}
+	}
+	result := &modelsDevResult{
+		ID:               m.ID,
+		Name:             m.Name,
+		ProviderID:       providerID,
+		ContextLength:    m.Limit.Context,
+		MaxOutputTokens:  m.Limit.Output,
+		Reasoning:        m.Reasoning,
+		ToolCall:         m.ToolCall,
+		StructuredOutput: m.StructuredOutput,
+		Vision:           vision,
+	}
+	if m.Reasoning {
+		efforts := []string{"low", "medium", "high"}
+		if strings.Contains(searchID, "deepseek-v4") {
+			efforts = append(efforts, "max")
+		}
+		result.ReasoningEffort = efforts
+	}
+	return result
+}
+
 // modelsDevClient is the HTTP client used for models.dev requests. The
 // provider index is ~3 MB, so a timeout guards against a stalled download
 // hanging the admin UI's "Fetch" indefinitely.
@@ -124,27 +181,6 @@ func FetchModelsDevModel(modelID, prismProvider string) (*modelsDevResult, error
 // id) and only accepts a reverse-substring when the search id is a namespaced
 // form ending in "/"+mID (e.g. "z-ai/glm-5.1" -> "glm-5.1").
 func matchModelsDevModel(raw map[string]json.RawMessage, modelID, prismProvider string) *modelsDevResult {
-	type modelInfo struct {
-		Name  string `json:"name"`
-		ID    string `json:"id"`
-		Limit struct {
-			Context int `json:"context"`
-			Output  int `json:"output"`
-		} `json:"limit"`
-		Reasoning        bool `json:"reasoning"`
-		ToolCall         bool `json:"tool_call"`
-		StructuredOutput bool `json:"structured_output"`
-		Modalities       *struct {
-			Input  []string `json:"input"`
-			Output []string `json:"output"`
-		} `json:"modalities"`
-	}
-	type providerInfo struct {
-		ID     string               `json:"id"`
-		Name   string               `json:"name"`
-		Models map[string]modelInfo `json:"models"`
-	}
-
 	allProviderKeys := make([]string, 0, len(raw))
 	for k := range raw {
 		allProviderKeys = append(allProviderKeys, k)
@@ -159,7 +195,7 @@ func matchModelsDevModel(raw map[string]json.RawMessage, modelID, prismProvider 
 	searchID := strings.ToLower(searchBase)
 
 	type cand struct {
-		m       modelInfo
+		m       modelsDevModelInfo
 		provID  string
 		provKey string
 		exact   bool
@@ -179,7 +215,7 @@ func matchModelsDevModel(raw map[string]json.RawMessage, modelID, prismProvider 
 
 	var scoped, all []cand
 	for provKey, provRaw := range raw {
-		var prov providerInfo
+		var prov modelsDevProviderInfo
 		if json.Unmarshal(provRaw, &prov) != nil {
 			continue
 		}
@@ -241,33 +277,54 @@ func matchModelsDevModel(raw map[string]json.RawMessage, modelID, prismProvider 
 			best = c
 		}
 	}
-	vision := false
-	if best.m.Modalities != nil {
-		for _, mod := range best.m.Modalities.Input {
-			if mod == "image" {
-				vision = true
+	return modelsDevResultFromModel(best.m, best.provID, searchID)
+}
+
+// modelsDevExactModel looks up a model by its exact id within a Prism provider's
+// models.dev entries. Unlike matchModelsDevModel it never strips a ":suffix"
+// from the id, because Ollama Cloud tag names carry the size in the id itself
+// ("gpt-oss:20b") - stripping it made the fuzzy matcher return the sibling
+// "gpt-oss:120b" entry. Returns nil when the provider does not list the model.
+func modelsDevExactModel(modelID, prismProvider string) *modelsDevResult {
+	raw, err := fetchModelsDevAPI()
+	if err != nil {
+		return nil
+	}
+	return matchModelsDevExactModel(raw, modelID, prismProvider)
+}
+
+// matchModelsDevExactModel is the pure, I/O-free half of modelsDevExactModel,
+// split out so it can be unit-tested with fixtures.
+func matchModelsDevExactModel(raw map[string]json.RawMessage, modelID, prismProvider string) *modelsDevResult {
+	allProviderKeys := make([]string, 0, len(raw))
+	for k := range raw {
+		allProviderKeys = append(allProviderKeys, k)
+	}
+	scopedKeys := modelsDevMatchProviders(prismProvider, allProviderKeys)
+	searchID := strings.ToLower(strings.TrimSpace(modelID))
+
+	for provKey, provRaw := range raw {
+		var prov modelsDevProviderInfo
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		scoped := false
+		for _, pk := range scopedKeys {
+			if strings.EqualFold(prov.ID, pk) || strings.EqualFold(provKey, pk) {
+				scoped = true
+				break
+			}
+		}
+		if !scoped {
+			continue
+		}
+		for _, m := range prov.Models {
+			if strings.EqualFold(strings.TrimSpace(m.ID), searchID) {
+				return modelsDevResultFromModel(m, prov.ID, searchID)
 			}
 		}
 	}
-	result := &modelsDevResult{
-		ID:               best.m.ID,
-		Name:             best.m.Name,
-		ProviderID:       best.provID,
-		ContextLength:    best.m.Limit.Context,
-		MaxOutputTokens:  best.m.Limit.Output,
-		Reasoning:        best.m.Reasoning,
-		ToolCall:         best.m.ToolCall,
-		StructuredOutput: best.m.StructuredOutput,
-		Vision:           vision,
-	}
-	if best.m.Reasoning {
-		efforts := []string{"low", "medium", "high"}
-		if strings.Contains(searchID, "deepseek-v4") {
-			efforts = append(efforts, "max")
-		}
-		result.ReasoningEffort = efforts
-	}
-	return result
+	return nil
 }
 
 // writeModelsDevResult writes a modelsDevResult (or {"found":false}) as the
@@ -364,29 +421,12 @@ func handleModelInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prismProvider := r.URL.Query().Get("provider")
-	result, err := FetchModelsDevModel(modelID, prismProvider)
+	result, err := FetchModelInfo(modelID, prismProvider)
 	if err != nil {
 		writeJSONError(w, err.Error(), 502)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if result == nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"found": false})
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"found":              true,
-		"id":                 result.ID,
-		"name":               result.Name,
-		"provider_id":        result.ProviderID,
-		"context_length":     result.ContextLength,
-		"max_output_tokens":  result.MaxOutputTokens,
-		"reasoning":          result.Reasoning,
-		"tool_calling":       result.ToolCall,
-		"structured_outputs": result.StructuredOutput,
-		"vision":             result.Vision,
-		"reasoning_effort":   result.ReasoningEffort,
-	})
+	WriteModelsDevResult(w, result)
 }
 
 func handleModelSearch(w http.ResponseWriter, r *http.Request) {
@@ -396,6 +436,20 @@ func handleModelSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query().Get("q")
 	prismProvider := r.URL.Query().Get("provider")
+
+	// Ollama Cloud lists its live catalog (retired models included by
+	// models.dev are absent here) at GET /api/tags.
+	if isOllamaCloudProvider(prismProvider) {
+		results, err := fetchOllamaCloudSearch(query)
+		if err != nil {
+			writeJSONError(w, err.Error(), 502)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+		return
+	}
+
 	results, err := fetchModelsDevSearch(query, prismProvider)
 	if err != nil {
 		writeJSONError(w, err.Error(), 502)

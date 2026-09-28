@@ -113,6 +113,13 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 	}
 	ollamaReq.Stream = false // non-streaming for the search loop
 
+	// Ollama Cloud and the other OpenAI-compatible providers are reached over
+	// Chat Completions, so the loop talks to them through the normalized turn
+	// shape instead of Ollama's /api/chat response. modReq is re-translated on
+	// every iteration so the assistant/tool_result turns appended below are
+	// picked up.
+	viaChatCompletions := rp.ProviderType == "openai"
+
 	maxSearches := search.Global.Config().MaxPerTurn
 	if maxSearches <= 0 {
 		maxSearches = 5
@@ -130,48 +137,54 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 	searchesPerformed := 0
 
 	for searchesPerformed < maxSearches {
-		resp, err := pr.upstreamChat(ollamaReq, rp)
-		if err != nil {
-			log.Printf("[search] pattern A upstream error: %v", err)
-			WriteAnthropicUpstreamFailure(w, 502, err)
-			return true
+		var turn *normalizedTurn
+		if viaChatCompletions {
+			chatReq := translateToOpenAI(&modReq)
+			chatReq.ReasoningEffort = pr.validateReasoningEffort(chatReq.Model, chatReq.ReasoningEffort)
+			t, err := pr.upstreamOpenAIChat(chatReq, rp)
+			if err != nil {
+				log.Printf("[search] pattern A upstream error: %v", err)
+				WriteAnthropicUpstreamFailure(w, 502, err)
+				return true
+			}
+			turn = t
+		} else {
+			resp, err := pr.upstreamChat(ollamaReq, rp)
+			if err != nil {
+				log.Printf("[search] pattern A upstream error: %v", err)
+				WriteAnthropicUpstreamFailure(w, 502, err)
+				return true
+			}
+			turn = ollamaResponseToNormalized(resp)
 		}
-		totalOutputTokens += resp.EvalCount
+		totalOutputTokens += turn.outputTokens
 
-		if resp.Message.Thinking != "" {
-			blocks = append(blocks, emittedBlock{kind: "thinking", text: resp.Message.Thinking})
+		if turn.thinking != "" {
+			blocks = append(blocks, emittedBlock{kind: "thinking", text: turn.thinking})
 		}
-		if resp.Message.Content != "" {
-			blocks = append(blocks, emittedBlock{kind: "text", text: resp.Message.Content})
+		if turn.content != "" {
+			blocks = append(blocks, emittedBlock{kind: "text", text: turn.content})
 		}
 
 		// Find a web_search tool call.
-		var wsIdx int = -1
-		for i := range resp.Message.ToolCalls {
-			if resp.Message.ToolCalls[i].Function.Name == "web_search" {
-				wsIdx = i
+		var wsCall *normalizedToolCall
+		for i := range turn.toolCalls {
+			if isSearchToolName(turn.toolCalls[i].name) {
+				wsCall = &turn.toolCalls[i]
 				break
 			}
 		}
-		if wsIdx < 0 {
+		if wsCall == nil {
 			// No search requested — this is the final answer.
 			break
 		}
 
-		tc := &resp.Message.ToolCalls[wsIdx]
-		toolID := tc.ID
+		toolID := wsCall.id
 		if toolID == "" {
 			toolID = generateToolUseID("web_search")
-			tc.ID = toolID
+			wsCall.id = toolID
 		}
-		query := ""
-		if tc.Function.Arguments != nil {
-			if qs, ok := tc.Function.Arguments["query"].(string); ok {
-				query = qs
-			} else {
-				query = fmt.Sprint(tc.Function.Arguments["query"])
-			}
-		}
+		query := extractSearchQuery(wsCall)
 
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		outcome, sErr := search.RunSearch(ctx, search.SearchQuery{
@@ -198,21 +211,18 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 
 		// Append the assistant turn (with the web_search tool call) and the
 		// tool result to the conversation, then re-request.
-		assistantMsg := OllamaMessage{
-			Role:      "assistant",
-			Content:   resp.Message.Content,
-			ToolCalls: resp.Message.ToolCalls,
+		payload := buildSearchResultsPayload(query, results, searchErr)
+		if viaChatCompletions {
+			appendAnthropicSearchTurn(&modReq, turn, wsCall, toolID, payload)
+		} else {
+			ollamaReq.Messages = append(ollamaReq.Messages, ollamaSearchTurnMessage(turn))
+			ollamaReq.Messages = append(ollamaReq.Messages, OllamaMessage{
+				Role:       "tool",
+				Content:    payload,
+				ToolCallID: toolID,
+				ToolName:   "web_search",
+			})
 		}
-		if resp.Message.Thinking != "" {
-			assistantMsg.Thinking = resp.Message.Thinking
-		}
-		ollamaReq.Messages = append(ollamaReq.Messages, assistantMsg)
-		ollamaReq.Messages = append(ollamaReq.Messages, OllamaMessage{
-			Role:       "tool",
-			Content:    buildSearchResultsPayload(query, results, searchErr),
-			ToolCallID: toolID,
-			ToolName:   "web_search",
-		})
 	}
 
 	if searchesPerformed >= maxSearches {
@@ -229,6 +239,79 @@ func (pr *ProviderRouter) handleServerWebSearchLoop(w http.ResponseWriter, r *ht
 
 	stats.Global.RecordRequest(req.Model, rp.ProviderID, client, 0, totalOutputTokens, 0, time.Since(reqStart))
 	return true
+}
+
+// ollamaSearchTurnMessage rebuilds the Ollama history message for one
+// intercepted turn, preserving the tool-call type/index the upstream sent so a
+// parallel-call turn keeps its identity on re-request.
+func ollamaSearchTurnMessage(turn *normalizedTurn) OllamaMessage {
+	msg := OllamaMessage{
+		Role:     "assistant",
+		Content:  turn.content,
+		Thinking: turn.thinking,
+	}
+	for _, tc := range turn.toolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, OllamaToolCall{
+			Type: tc.kind,
+			ID:   tc.id,
+			Function: OllamaToolCallFunction{
+				Index:     tc.index,
+				Name:      tc.name,
+				Arguments: tc.arguments,
+			},
+		})
+	}
+	return msg
+}
+
+// appendAnthropicSearchTurn records one intercepted turn on the Anthropic
+// conversation so the next iteration re-translates it for a Chat Completions
+// upstream: an assistant message carrying the model's thinking, text and the
+// intercepted web_search tool_use block, followed by a user message with the
+// tool_result for that call. Non-search tool calls (and any additional search
+// calls) in the same turn are dropped: replaying them without a tool_result
+// makes OpenAI-compatible upstreams reject the request, and the model re-issues
+// anything it still needs on the next iteration. The thinking block is kept
+// because reasoning-mode vendors (DeepSeek/Kimi) require non-empty
+// reasoning_content on assistant tool-call history.
+func appendAnthropicSearchTurn(req *AnthropicRequest, turn *normalizedTurn, wsCall *normalizedToolCall, toolID, payload string) {
+	assistantBlocks := []interface{}{}
+	if turn.thinking != "" {
+		assistantBlocks = append(assistantBlocks, map[string]interface{}{
+			"type":     "thinking",
+			"thinking": turn.thinking,
+		})
+	}
+	if turn.content != "" {
+		assistantBlocks = append(assistantBlocks, map[string]interface{}{
+			"type": "text",
+			"text": turn.content,
+		})
+	}
+	for i := range turn.toolCalls {
+		tc := &turn.toolCalls[i]
+		if tc != wsCall {
+			continue
+		}
+		args := tc.arguments
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		assistantBlocks = append(assistantBlocks, map[string]interface{}{
+			"type":  "tool_use",
+			"id":    tc.id,
+			"name":  tc.name,
+			"input": args,
+		})
+	}
+	req.Messages = append(req.Messages, AnthropicMessage{Role: "assistant", Content: assistantBlocks})
+	req.Messages = append(req.Messages, AnthropicMessage{Role: "user", Content: []interface{}{
+		map[string]interface{}{
+			"type":        "tool_result",
+			"tool_use_id": toolID,
+			"content":     payload,
+		},
+	}})
 }
 
 // upstreamChat performs a single non-streaming Ollama chat request.

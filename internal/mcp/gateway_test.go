@@ -453,3 +453,47 @@ func TestGatewayStatusAndControl(t *testing.T) {
 		t.Errorf("state after restart = %+v", status)
 	}
 }
+
+// Probing without a server id is what the admin panel sends when it opens: it
+// has to warm every enabled server and answer with their statuses so the tool
+// lists are already populated.
+func TestGatewayProbeAll(t *testing.T) {
+	_, url := startFakeUpstream(t)
+	cfg := newTestConfig(testServer("notes", url))
+	g := newTestGateway(cfg)
+
+	// A cold server reports no tools until it is warmed.
+	if status, ok := g.mgr.Status("notes"); !ok || status.ToolCount != 0 {
+		t.Fatalf("cold status = %+v", status)
+	}
+
+	rec := postRPC(g, "/mcp/control", "application/json", `{"action":"probe"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("probe-all status = %d", rec.Code)
+	}
+	var payload struct {
+		Statuses []ServerStatus `json:"statuses"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("probe-all payload: %v", err)
+	}
+	if len(payload.Statuses) != 1 || payload.Statuses[0].ID != "notes" {
+		t.Fatalf("statuses = %+v", payload.Statuses)
+	}
+	if payload.Statuses[0].State != config.MCPStateReady {
+		t.Errorf("state = %q, want ready (err %s)", payload.Statuses[0].State, payload.Statuses[0].LastError)
+	}
+	if payload.Statuses[0].ToolCount != 2 {
+		t.Errorf("tool count = %d, want 2", payload.Statuses[0].ToolCount)
+	}
+
+	// A disabled server is left alone rather than probed.
+	cfg.FindMCPServer("notes").Enabled = false
+	rec = postRPC(g, "/mcp/control", "application/json", `{"action":"probe"}`)
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("probe-all payload: %v", err)
+	}
+	if len(payload.Statuses) != 0 {
+		t.Errorf("disabled server was probed: %+v", payload.Statuses)
+	}
+}

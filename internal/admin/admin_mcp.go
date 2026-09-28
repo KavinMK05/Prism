@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"ollama-proxy/internal/agents"
 	"ollama-proxy/internal/config"
+	"ollama-proxy/internal/db"
 	"ollama-proxy/internal/mcp"
 )
 
@@ -145,15 +147,16 @@ func handleMCPConfig(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]interface{}{
 		"idle_timeout_sec":       cfg.MCP.IdleTimeoutSec,
 		"client_id_metadata_url": cfg.MCP.ClientIDMetadataURL,
+		"auto_connect":           cfg.MCP.AutoConnectEnabled(),
 		"proxy_running":          proxyRunning,
 		"default_idle_timeout":   config.MCPDefaultIdleTimeoutSec,
 		"registry_url":           mcp.RegistryBaseURL,
 	}
-
 	encodeJSON(w, map[string]interface{}{
-		"servers":  servers,
-		"agents":   agentList,
-		"settings": settings,
+		"servers":    servers,
+		"agents":     agentList,
+		"settings":   settings,
+		"registries": registrySourceSummaries(cfg.MCP.Registries),
 	})
 }
 
@@ -188,6 +191,12 @@ type mcpServerRequest struct {
 	Publisher    string `json:"publisher"`
 	Repository   string `json:"repository"`
 
+	RegistrySourceID string   `json:"registry_source_id"`
+	RegistryVersion  string   `json:"registry_version"`
+	Verified         *bool    `json:"verified"`
+	SecretEnv        []string `json:"secret_env"`
+	IntegritySHA256  string   `json:"integrity_sha256"`
+
 	OAuthClientID     string `json:"oauth_client_id"`
 	OAuthClientSecret string `json:"oauth_client_secret"`
 }
@@ -206,25 +215,32 @@ func handleMCPServerAdd(w http.ResponseWriter, r *http.Request) {
 	mcpCfg := cfg.EnsureMCP()
 
 	srv := &config.MCPServerConfig{
-		Name:          strings.TrimSpace(req.Name),
-		Source:        firstNonEmptyString(req.Source, config.MCPSourceManual),
-		Transport:     req.Transport,
-		Enabled:       true,
-		Command:       strings.TrimSpace(req.Command),
-		Args:          req.Args,
-		Env:           req.Env,
-		Cwd:           strings.TrimSpace(req.Cwd),
-		URL:           strings.TrimSpace(req.URL),
-		Headers:       req.Headers,
-		AuthMode:      req.AuthMode,
-		ToolAllowlist: req.ToolAllowlist,
-		RegistryName:  req.RegistryName,
-		Publisher:     req.Publisher,
-		Repository:    req.Repository,
-		AddedAt:       time.Now().Unix(),
+		Name:             strings.TrimSpace(req.Name),
+		Source:           firstNonEmptyString(req.Source, config.MCPSourceManual),
+		Transport:        req.Transport,
+		Enabled:          true,
+		Command:          strings.TrimSpace(req.Command),
+		Args:             req.Args,
+		Env:              req.Env,
+		Cwd:              strings.TrimSpace(req.Cwd),
+		URL:              strings.TrimSpace(req.URL),
+		Headers:          req.Headers,
+		AuthMode:         req.AuthMode,
+		ToolAllowlist:    req.ToolAllowlist,
+		RegistryName:     req.RegistryName,
+		Publisher:        req.Publisher,
+		Repository:       req.Repository,
+		RegistrySourceID: req.RegistrySourceID,
+		RegistryVersion:  req.RegistryVersion,
+		SecretEnv:        req.SecretEnv,
+		IntegritySHA256:  req.IntegritySHA256,
+		AddedAt:          time.Now().Unix(),
 	}
 	if req.Enabled != nil {
 		srv.Enabled = *req.Enabled
+	}
+	if req.Verified != nil {
+		srv.Verified = *req.Verified
 	}
 	if srv.Name == "" {
 		srv.Name = firstNonEmptyString(srv.RegistryName, srv.URL, srv.Command)
@@ -298,6 +314,30 @@ func handleMCPServerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ToolAllowlist != nil {
 		srv.ToolAllowlist = req.ToolAllowlist
+	}
+	if req.SecretEnv != nil {
+		srv.SecretEnv = req.SecretEnv
+	}
+	if req.RegistrySourceID != "" {
+		srv.RegistrySourceID = req.RegistrySourceID
+	}
+	if req.RegistryVersion != "" {
+		srv.RegistryVersion = req.RegistryVersion
+	}
+	if req.RegistryName != "" {
+		srv.RegistryName = req.RegistryName
+	}
+	if req.Publisher != "" {
+		srv.Publisher = req.Publisher
+	}
+	if req.Repository != "" {
+		srv.Repository = req.Repository
+	}
+	if req.IntegritySHA256 != "" {
+		srv.IntegritySHA256 = req.IntegritySHA256
+	}
+	if req.Verified != nil {
+		srv.Verified = *req.Verified
 	}
 	if req.Enabled != nil {
 		srv.Enabled = *req.Enabled
@@ -414,7 +454,8 @@ func handleMCPServerControl(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// handleMCPRegistrySearch searches the official MCP registry.
+// handleMCPRegistrySearch searches one registry source, or every enabled one
+// when no source is named. Results from several sources are merged and capped.
 func handleMCPRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)
@@ -427,17 +468,417 @@ func handleMCPRegistrySearch(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	sourceID := r.URL.Query().Get("source")
+	version := r.URL.Query().Get("version")
+	// cached=1 serves the local catalog only, which is what the browse view
+	// uses so it works offline.
+	cachedOnly := r.URL.Query().Get("cached") == "1"
+
+	cfg := config.Load()
+	sources := cfg.EnabledMCPRegistries()
+	if len(sources) == 0 {
+		sources = config.DefaultMCPRegistrySources()
+	}
+	if sourceID != "" {
+		src := cfg.FindMCPRegistry(sourceID)
+		if src == nil {
+			writeJSONError(w, "unknown registry source", 404)
+			return
+		}
+		if !src.Enabled {
+			writeJSONError(w, "that registry source is disabled", 400)
+			return
+		}
+		sources = []*config.MCPRegistrySource{src}
+	}
+
+	if cachedOnly {
+		items, err := mcp.SearchCatalog(query, sourceID, limit)
+		if err != nil {
+			writeJSONError(w, err.Error(), 500)
+			return
+		}
+		statuses, _ := mcp.CatalogStatuses(cfg.MCP.Registries)
+		encodeJSON(w, map[string]interface{}{
+			"results":    items,
+			"sources":    registrySourceSummaries(sources),
+			"catalog":    statuses,
+			"from_cache": true,
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	items, err := mcp.SearchRegistry(ctx, query, limit)
+
+	results := make([]mcp.RegistrySearchItem, 0, limit)
+	sourceErrors := map[string]string{}
+	for _, src := range sources {
+		if len(results) >= limit {
+			break
+		}
+		client := mcp.NewRegistryClient(src)
+		items, err := client.SearchVersion(ctx, query, limit-len(results), version)
+		if err != nil {
+			sourceErrors[src.ID] = err.Error()
+			continue
+		}
+		for i := range items {
+			items[i].ApplySource(src)
+		}
+		results = append(results, items...)
+	}
+	// A dead source must not fail the whole search. Fall back to the cache if
+	// it has anything, so a browse still works while offline.
+	if len(results) == 0 && len(sourceErrors) == len(sources) && len(sourceErrors) > 0 {
+		if cached, err := mcp.SearchCatalog(query, sourceID, limit); err == nil && len(cached) > 0 {
+			statuses, _ := mcp.CatalogStatuses(cfg.MCP.Registries)
+			encodeJSON(w, map[string]interface{}{
+				"results":       cached,
+				"sources":       registrySourceSummaries(sources),
+				"source_errors": sourceErrors,
+				"catalog":       statuses,
+				"from_cache":    true,
+			})
+			return
+		}
+		msgs := make([]string, 0, len(sourceErrors))
+		for id, msg := range sourceErrors {
+			msgs = append(msgs, id+": "+msg)
+		}
+		sort.Strings(msgs)
+		writeJSONError(w, strings.Join(msgs, "; "), 502)
+		return
+	}
+	encodeJSON(w, map[string]interface{}{
+		"results":       results,
+		"sources":       registrySourceSummaries(sources),
+		"source_errors": sourceErrors,
+	})
+}
+
+// handleMCPRegistrySync refreshes the cached catalog. With no source named it
+// syncs every enabled source.
+func handleMCPRegistrySync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+		return
+	}
+	cfg := config.Load()
+	sources := cfg.EnabledMCPRegistries()
+	if len(sources) == 0 {
+		sources = config.DefaultMCPRegistrySources()
+	}
+	if req.Source != "" {
+		src := cfg.FindMCPRegistry(req.Source)
+		if src == nil {
+			writeJSONError(w, "unknown registry source", 404)
+			return
+		}
+		sources = []*config.MCPRegistrySource{src}
+	}
+	// A full catalog is thousands of servers across many pages, so this gets a
+	// longer budget than an interactive search.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	results, err := mcp.SyncCatalog(ctx, sources)
+	if err != nil {
+		writeJSONError(w, err.Error(), 400)
+		return
+	}
+	statuses, _ := mcp.CatalogStatuses(cfg.MCP.Registries)
+	encodeJSON(w, map[string]interface{}{
+		"status":  "ok",
+		"results": results,
+		"catalog": statuses,
+	})
+}
+
+// handleMCPRegistryCatalog reports what the local catalog currently holds.
+func handleMCPRegistryCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	cfg := config.Load()
+	cfg.EnsureMCP()
+	statuses, err := mcp.CatalogStatuses(cfg.MCP.Registries)
+	if err != nil {
+		writeJSONError(w, err.Error(), 500)
+		return
+	}
+	total := 0
+	for _, s := range statuses {
+		total += s.ServerCount
+	}
+	encodeJSON(w, map[string]interface{}{
+		"catalog": statuses,
+		"total":   total,
+		"empty":   mcp.CatalogIsEmpty(),
+	})
+}
+
+// handleMCPRegistrySources lists, adds, updates, and enables registry sources.
+func handleMCPRegistrySources(w http.ResponseWriter, r *http.Request) {
+	cfg := config.Load()
+	mcpCfg := cfg.EnsureMCP()
+
+	switch r.Method {
+	case http.MethodGet:
+		encodeJSON(w, map[string]interface{}{"sources": registrySourceSummaries(mcpCfg.Registries)})
+	case http.MethodPost, http.MethodPut:
+		var req struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			BaseURL    string `json:"base_url"`
+			Enabled    *bool  `json:"enabled"`
+			AuthHeader string `json:"auth_header"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+			return
+		}
+		if req.ID != "" || r.Method == http.MethodPut {
+			src := cfg.FindMCPRegistry(req.ID)
+			if src == nil {
+				writeJSONError(w, "unknown registry source", 404)
+				return
+			}
+			if req.Name != "" {
+				src.Name = strings.TrimSpace(req.Name)
+			}
+			if req.BaseURL != "" {
+				src.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+			}
+			if req.Enabled != nil {
+				src.Enabled = *req.Enabled
+				// The official registry is how a fresh install works at all.
+				if src.Builtin && !src.Enabled {
+					writeJSONError(w, "the official registry cannot be disabled", 400)
+					return
+				}
+			}
+			if req.AuthHeader != "" && !looksMaskedAuthHeader(req.AuthHeader) {
+				src.AuthHeader = strings.TrimSpace(req.AuthHeader)
+			} else if req.AuthHeader == "" {
+				src.AuthHeader = ""
+			}
+			if err := config.ValidateMCPRegistrySource(src); err != nil {
+				writeJSONError(w, err.Error(), 400)
+				return
+			}
+			if err := config.Save(cfg); err != nil {
+				writeJSONError(w, "save failed: "+err.Error(), 500)
+				return
+			}
+			config.SetCurrent(cfg)
+			encodeJSON(w, map[string]interface{}{"status": "ok", "id": src.ID})
+			return
+		}
+
+		src := &config.MCPRegistrySource{
+			Name:       strings.TrimSpace(req.Name),
+			BaseURL:    strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
+			Enabled:    true,
+			AuthHeader: strings.TrimSpace(req.AuthHeader),
+			AddedAt:    time.Now().Unix(),
+		}
+		if req.Enabled != nil {
+			src.Enabled = *req.Enabled
+		}
+		if err := config.ValidateMCPRegistrySource(src); err != nil {
+			writeJSONError(w, err.Error(), 400)
+			return
+		}
+		src.ID = cfg.UniqueMCPRegistryID(config.MCPIDFromName(src.Name))
+		mcpCfg.Registries = append(mcpCfg.Registries, src)
+		if err := config.Save(cfg); err != nil {
+			writeJSONError(w, "save failed: "+err.Error(), 500)
+			return
+		}
+		config.SetCurrent(cfg)
+		encodeJSON(w, map[string]interface{}{"status": "ok", "id": src.ID})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+// handleMCPRegistrySourceRemove deletes a registry source.
+func handleMCPRegistrySourceRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+		return
+	}
+	cfg := config.Load()
+	if !cfg.RemoveMCPRegistry(req.ID) {
+		writeJSONError(w, "unknown registry source, or the official registry cannot be removed", 404)
+		return
+	}
+	// Drop the source's cached catalog too: keeping rows for a registry the
+	// user just removed would leave its servers searchable.
+	if err := db.ClearMCPCatalogSource(req.ID); err != nil {
+		log.Printf("[admin] failed to clear catalog for %s: %v", req.ID, err)
+	}
+	if err := config.Save(cfg); err != nil {
+		writeJSONError(w, "save failed: "+err.Error(), 500)
+		return
+	}
+	config.SetCurrent(cfg)
+	encodeJSON(w, map[string]interface{}{"status": "ok"})
+}
+
+// handleMCPBInstall downloads and unpacks an MCPB bundle. The published
+// SHA-256 is mandatory: the registry says clients must validate it, and the
+// bundle contains executable code, so nothing is unpacked until the download
+// matches the digest.
+func handleMCPBInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		URL      string `json:"url"`
+		SHA256   string `json:"sha256"`
+		Slug     string `json:"slug"`
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		SourceID string `json:"registry_source_id"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
+		return
+	}
+	slug := config.MCPIDFromName(firstNonEmptyString(req.Slug, req.Name))
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	install, err := mcp.InstallMCPB(ctx, req.URL, req.SHA256, mcp.MCPBInstallDir(slug))
+	if err != nil {
+		writeJSONError(w, err.Error(), 400)
+		return
+	}
+	encodeJSON(w, map[string]interface{}{
+		"status":  "ok",
+		"dir":     install.Dir,
+		"command": install.Command,
+		"args":    install.Args,
+		"env":     install.Env,
+	})
+}
+
+// handleMCPRegistryVersions lists the published versions of one server so the
+// user can pin one instead of always taking latest.
+func handleMCPRegistryVersions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	sourceID := r.URL.Query().Get("source")
+	cfg := config.Load()
+	src := cfg.FindMCPRegistry(sourceID)
+	if sourceID != "" && src == nil {
+		writeJSONError(w, "unknown registry source", 404)
+		return
+	}
+	if src == nil {
+		src = &config.MCPRegistrySource{BaseURL: mcp.RegistryBaseURL}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	versions, err := mcp.NewRegistryClient(src).ListVersions(ctx, name)
 	if err != nil {
 		writeJSONError(w, err.Error(), 502)
 		return
 	}
-	if items == nil {
-		items = []mcp.RegistrySearchItem{}
+	if versions == nil {
+		versions = []string{}
 	}
-	encodeJSON(w, map[string]interface{}{"results": items})
+	encodeJSON(w, map[string]interface{}{"versions": versions})
+}
+
+// handleMCPRegistryResolve returns a ready-to-install config for one exact
+// registry server version. It serves from the local catalog when it can and
+// only reaches the network for a version the cache does not hold, so pinning a
+// version the user already browsed works offline.
+func handleMCPRegistryResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if strings.TrimSpace(name) == "" {
+		writeJSONError(w, "a server name is required", 400)
+		return
+	}
+	sourceID := r.URL.Query().Get("source")
+	version := r.URL.Query().Get("version")
+
+	cfg := config.Load()
+	// A cached entry is only used when the request is for the latest version,
+	// since the catalog stores latest only.
+	if version == "" || version == "latest" {
+		if item, ok := mcp.ResolveCatalogItem(sourceID, name); ok {
+			encodeJSON(w, map[string]interface{}{"status": "ok", "item": item, "from_cache": true})
+			return
+		}
+	}
+
+	src := cfg.FindMCPRegistry(sourceID)
+	if sourceID != "" && src == nil {
+		writeJSONError(w, "unknown registry source", 404)
+		return
+	}
+	if src == nil {
+		enabled := cfg.EnabledMCPRegistries()
+		if len(enabled) > 0 {
+			src = enabled[0]
+		} else {
+			defaults := config.DefaultMCPRegistrySources()
+			src = defaults[0]
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	item, err := mcp.FetchVersionItem(ctx, src, name, version)
+	if err != nil {
+		writeJSONError(w, err.Error(), 502)
+		return
+	}
+	encodeJSON(w, map[string]interface{}{"status": "ok", "item": item, "from_cache": false})
+}
+
+// registrySourceSummaries shapes sources for the admin UI.
+func registrySourceSummaries(sources []*config.MCPRegistrySource) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(sources))
+	for _, s := range sources {
+		if s == nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"id":          s.ID,
+			"name":        s.Name,
+			"base_url":    s.BaseURL,
+			"enabled":     s.Enabled,
+			"builtin":     s.Builtin,
+			"auth_header": s.AuthHeader,
+		})
+	}
+	return out
 }
 
 // handleMCPGitImport clones a repository and returns the servers its manifest
@@ -622,6 +1063,7 @@ func handleMCPSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IdleTimeoutSec      *int   `json:"idle_timeout_sec"`
 		ClientIDMetadataURL string `json:"client_id_metadata_url"`
+		AutoConnect         *bool  `json:"auto_connect"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
@@ -646,6 +1088,9 @@ func handleMCPSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mcpCfg.ClientIDMetadataURL = req.ClientIDMetadataURL
+	if req.AutoConnect != nil {
+		mcpCfg.AutoConnect = req.AutoConnect
+	}
 	if err := config.Save(cfg); err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
@@ -677,11 +1122,41 @@ func preserveMCPSecrets(cur, next *config.Config) {
 	if next.MCP.ClientIDMetadataURL == "" {
 		next.MCP.ClientIDMetadataURL = cur.MCP.ClientIDMetadataURL
 	}
+	if next.MCP.AutoConnect == nil {
+		next.MCP.AutoConnect = cur.MCP.AutoConnect
+	}
 	if next.MCP.IdleTimeoutSec <= 0 {
 		next.MCP.IdleTimeoutSec = cur.MCP.IdleTimeoutSec
 	}
 	if next.MCP.AgentServers == nil {
 		next.MCP.AgentServers = cur.MCP.AgentServers
+	}
+	// Registry sources round-trip through the UI with a masked auth header, so
+	// an unchanged source must keep its stored credential.
+	if next.MCP.Registries == nil {
+		next.MCP.Registries = cur.MCP.Registries
+	} else {
+		for _, src := range next.MCP.Registries {
+			if src == nil {
+				continue
+			}
+			old := cur.FindMCPRegistry(src.ID)
+			if old == nil {
+				continue
+			}
+			if src.AuthHeader == "" || looksMaskedAuthHeader(src.AuthHeader) {
+				src.AuthHeader = old.AuthHeader
+			}
+			if src.Name == "" {
+				src.Name = old.Name
+			}
+			if src.BaseURL == "" {
+				src.BaseURL = old.BaseURL
+			}
+			if old.Builtin {
+				src.Builtin = true
+			}
+		}
 	}
 
 	for _, srv := range next.MCP.Servers {
@@ -750,6 +1225,26 @@ func preserveMCPSecrets(cur, next *config.Config) {
 		}
 		srv.Headers = carryMap(srv.Headers, old.Headers)
 		srv.Env = carryMap(srv.Env, old.Env)
+		// Marketplace provenance is not user-editable, so a round trip that
+		// omits it must not erase which catalog the server came from.
+		if len(srv.SecretEnv) == 0 {
+			srv.SecretEnv = old.SecretEnv
+		}
+		if srv.RegistrySourceID == "" {
+			srv.RegistrySourceID = old.RegistrySourceID
+		}
+		if srv.RegistryVersion == "" {
+			srv.RegistryVersion = old.RegistryVersion
+		}
+		if srv.RegistryName == "" {
+			srv.RegistryName = old.RegistryName
+		}
+		if srv.IntegritySHA256 == "" {
+			srv.IntegritySHA256 = old.IntegritySHA256
+		}
+		if old.Verified {
+			srv.Verified = true
+		}
 		for _, key := range []string{"transport", "name", "source"} {
 			switch key {
 			case "transport":
@@ -790,6 +1285,21 @@ func looksMaskedSecret(v string) bool {
 		return true
 	}
 	return len(v) <= 14 && strings.Contains(v, "...")
+}
+
+// looksMaskedAuthHeader reports whether a "Name: value" pair carries a masked
+// credential rather than a real one. The whole-header check cannot be used
+// because the header name makes the string longer than the mask shape allows,
+// so only the value after the colon is inspected.
+func looksMaskedAuthHeader(v string) bool {
+	value := v
+	if _, rest, ok := strings.Cut(v, ":"); ok {
+		value = strings.TrimSpace(rest)
+	}
+	if value == "" {
+		return false
+	}
+	return looksMaskedSecret(value)
 }
 
 func firstNonEmptyString(values ...string) string {

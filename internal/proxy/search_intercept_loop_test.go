@@ -3,11 +3,13 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/search"
 )
 
@@ -142,7 +144,25 @@ func TestHandleServerWebSearchLoop(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	pr := makeTestRouter(ts.URL)
+	// A router whose catalog knows the model with a restricted effort list, so
+	// the validation inside the search loop is actually exercised: "medium"
+	// (derived from the thinking budget) must be rewritten to the first allowed
+	// value before the request leaves Prism.
+	pr := NewRouter(&config.Config{
+		DefaultProvider: "custom_test",
+		CustomProviders: []*config.ProviderConfig{
+			{ID: "custom_test", Name: "Test", BaseURL: ts.URL, APIKey: "test-key"},
+		},
+	}, &config.ModelRemapping{
+		DefaultModel: "deepseek-v4.1-flash:cloud",
+		KnownModels: []config.ModelEntry{{
+			ID:              "deepseek-v4.1-flash",
+			Provider:        "custom_test",
+			Reasoning:       true,
+			ReasoningEffort: []string{"low", "high", "max"},
+		}},
+		Aliases: map[string]string{},
+	})
 	rp := makeTestRP(ts.URL, "ollama")
 
 	req := &AnthropicRequest{
@@ -177,6 +197,137 @@ func TestHandleServerWebSearchLoop(t *testing.T) {
 	for _, want := range []string{
 		"server_tool_use", "web_search_tool_result", "Test Result",
 		"Here is the final answer", "end_turn", "message_stop",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("composed stream missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// TestHandleServerWebSearchLoopChatCompletionsUpstream covers the
+// OpenAI-compatible branch added for Ollama Cloud: the typed web_search server
+// tool must be rewritten to a function tool, the upstream is reached over
+// /v1/chat/completions, the intercepted call is answered with a tool message,
+// and any reasoning from a reasoning vendor is replayed as reasoning_content.
+func TestHandleServerWebSearchLoopChatCompletionsUpstream(t *testing.T) {
+	var bodies []string
+	var paths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(raw))
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			reasoning := "I should search for that."
+			json.NewEncoder(w).Encode(OpenAIChatResponse{
+				Model: "deepseek-v4.1-flash:cloud",
+				Choices: []OpenAIChoice{{
+					Message: OpenAIChatMessage{
+						Role:             "assistant",
+						Content:          "Let me look that up.",
+						ReasoningContent: &reasoning,
+						ToolCalls: []OpenAIToolCall{{
+							ID:       "call_1",
+							Type:     "function",
+							Function: OpenAIToolCallFunc{Name: "web_search", Arguments: `{"query":"test query"}`},
+						}},
+					},
+					FinishReason: "tool_calls",
+				}},
+				Usage: OpenAIUsage{PromptTokens: 100, CompletionTokens: 20},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(OpenAIChatResponse{
+			Model: "deepseek-v4.1-flash:cloud",
+			Choices: []OpenAIChoice{{
+				Message:      OpenAIChatMessage{Role: "assistant", Content: "Final answer from search."},
+				FinishReason: "stop",
+			}},
+			Usage: OpenAIUsage{PromptTokens: 200, CompletionTokens: 30},
+		})
+	}))
+	defer ts.Close()
+
+	// A router whose catalog knows the model with a restricted effort list, so
+	// the validation inside the search loop is actually exercised: "medium"
+	// (derived from the thinking budget) must be rewritten to the first allowed
+	// value before the request leaves Prism.
+	pr := NewRouter(&config.Config{
+		DefaultProvider: "custom_test",
+		CustomProviders: []*config.ProviderConfig{
+			{ID: "custom_test", Name: "Test", BaseURL: ts.URL, APIKey: "test-key"},
+		},
+	}, &config.ModelRemapping{
+		DefaultModel: "deepseek-v4.1-flash:cloud",
+		KnownModels: []config.ModelEntry{{
+			ID:              "deepseek-v4.1-flash",
+			Provider:        "custom_test",
+			Reasoning:       true,
+			ReasoningEffort: []string{"low", "high", "max"},
+		}},
+		Aliases: map[string]string{},
+	})
+	rp := makeTestRP(ts.URL, "openai")
+
+	budget := 20000
+	req := &AnthropicRequest{
+		Model:     "deepseek-v4.1-flash:cloud",
+		MaxTokens: 1024,
+		Stream:    true,
+		Thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: budget},
+		Messages:  []AnthropicMessage{{Role: "user", Content: "search the web for test query"}},
+		Tools: []AnthropicTool{
+			{Type: "web_search_20250305", Name: "web_search"},
+		},
+	}
+
+	search.RegisterProviderForTest("searxng", func(_ *search.ProviderConfig, c *http.Client) search.SearchProvider {
+		return &fakeStaticProvider{results: []search.SearchResult{{Title: "Test Result", URL: "https://r.example"}}}
+	})
+	search.Global.Reload(&search.Config{
+		Active: "searxng", MaxPerTurn: 3, DefaultNumResults: 3,
+		Providers: map[string]*search.ProviderConfig{"searxng": {Enabled: true}},
+	})
+
+	httpReq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	if !pr.handleServerWebSearchLoop(rr, httpReq, req, rp) {
+		t.Fatal("expected handleServerWebSearchLoop to handle the request")
+	}
+
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 upstream calls, got %d", len(paths))
+	}
+	for _, p := range paths {
+		if p != "/v1/chat/completions" {
+			t.Errorf("upstream path = %q, want /v1/chat/completions", p)
+		}
+	}
+
+	// First request: the typed server tool must have become a plain function.
+	if !strings.Contains(bodies[0], `"name":"web_search"`) {
+		t.Errorf("first request missing web_search function tool:\n%s", bodies[0])
+	}
+	if strings.Contains(bodies[0], "web_search_20250305") {
+		t.Errorf("typed server tool leaked upstream:\n%s", bodies[0])
+	}
+	if !strings.Contains(bodies[0], `"reasoning_effort":"high"`) {
+		t.Errorf("reasoning_effort missing from first request:\n%s", bodies[0])
+	}
+
+	// Second request: the intercepted call must be answered, and the reasoning
+	// vendor's thinking replayed so DeepSeek-style backends accept the history.
+	for _, want := range []string{`"tool_call_id":"call_1"`, `"role":"tool"`, `I should search for that.`} {
+		if !strings.Contains(bodies[1], want) {
+			t.Errorf("second request missing %q:\n%s", want, bodies[1])
+		}
+	}
+
+	body := rr.Body.String()
+	for _, want := range []string{
+		"server_tool_use", "web_search_tool_result", "Test Result",
+		"Final answer from search.", "message_stop",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("composed stream missing %q\n--- body ---\n%s", want, body)

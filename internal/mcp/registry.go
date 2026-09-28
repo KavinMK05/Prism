@@ -9,13 +9,60 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"ollama-proxy/internal/config"
 )
 
 // RegistryBaseURL is the official MCP registry. The API is public and
 // read-only; Prism searches it so users never have to hand-write a server.json.
-const RegistryBaseURL = "https://registry.modelcontextprotocol.io"
+// Any other registry that implements the same OpenAPI shape is searched by
+// RegistryClient against its own base URL.
+const RegistryBaseURL = config.MCPRegistryOfficialURL
+
+// registryHTTPTimeout bounds one registry request. The catalog sync makes many
+// requests, so it uses a shorter timeout than an interactive search would
+// tolerate failing.
+const registryHTTPTimeout = 30 * time.Second
+
+// RegistryClient talks to one registry. Every source Prism supports speaks the
+// official registry's OpenAPI shape, so a private or org catalog is a base URL
+// plus an optional auth header rather than a bespoke client.
+type RegistryClient struct {
+	BaseURL    string
+	AuthHeader string
+	HTTP       *http.Client
+}
+
+// NewRegistryClient builds a client for one source. An empty base URL falls
+// back to the official registry.
+func NewRegistryClient(source *config.MCPRegistrySource) *RegistryClient {
+	c := &RegistryClient{BaseURL: RegistryBaseURL, HTTP: &http.Client{Timeout: registryHTTPTimeout}}
+	if source != nil {
+		if strings.TrimSpace(source.BaseURL) != "" {
+			c.BaseURL = strings.TrimRight(strings.TrimSpace(source.BaseURL), "/")
+		}
+		c.AuthHeader = strings.TrimSpace(source.AuthHeader)
+	}
+	return c
+}
+
+// do issues one GET with the source's auth header applied.
+func (c *RegistryClient) do(ctx context.Context, endpoint string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if name, value, ok := strings.Cut(c.AuthHeader, ":"); ok && strings.TrimSpace(name) != "" && strings.TrimSpace(value) != "" {
+		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+	}
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: registryHTTPTimeout}
+	}
+	return client.Do(req)
+}
 
 // RegistryArgument is one entry of runtimeArguments/packageArguments.
 type RegistryArgument struct {
@@ -67,9 +114,11 @@ type RegistryServer struct {
 	Title       string              `json:"title,omitempty"`
 	Description string              `json:"description,omitempty"`
 	Version     string              `json:"version,omitempty"`
+	Status      string              `json:"status,omitempty"`
 	Packages    []RegistryPackage   `json:"packages,omitempty"`
 	Remotes     []RegistryTransport `json:"remotes,omitempty"`
 	Repository  *RegistryRepository `json:"repository,omitempty"`
+	WebsiteURL  string              `json:"websiteUrl,omitempty"`
 }
 
 // RegistryRepository is the source repository of a server.
@@ -108,42 +157,52 @@ type RegistrySearchItem struct {
 	RequiredEnv []RegistryKeyValue      `json:"required_env,omitempty"`
 	OptionalEnv []RegistryKeyValue      `json:"optional_env,omitempty"`
 	Server      *config.MCPServerConfig `json:"server"`
+
+	// Marketplace fields. They describe provenance and trust so the UI can
+	// show where a server came from before the user installs it.
+	SourceID       string `json:"source_id,omitempty"`
+	SourceName     string `json:"source_name,omitempty"`
+	Publisher      string `json:"publisher,omitempty"`
+	NamespaceMatch bool   `json:"namespace_match,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Trusted        bool   `json:"trusted,omitempty"`
+	Deleted        bool   `json:"deleted,omitempty"`
+	PublisherMeta  string `json:"publisher_meta,omitempty"`
+}
+
+// ApplySource records which marketplace a search result came from.
+func (i *RegistrySearchItem) ApplySource(src *config.MCPRegistrySource) {
+	if src == nil {
+		return
+	}
+	i.SourceID = src.ID
+	i.SourceName = src.Name
 }
 
 // SearchRegistry queries the official registry. An empty query returns the
-// most recently updated servers.
+// most recently updated servers. Kept as the single-source entry point for
+// callers that do not care which catalog answered.
 func SearchRegistry(ctx context.Context, query string, limit int) ([]RegistrySearchItem, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	q := url.Values{}
-	q.Set("limit", fmt.Sprintf("%d", limit))
-	q.Set("version", "latest")
-	if strings.TrimSpace(query) != "" {
-		q.Set("search", strings.TrimSpace(query))
-	}
-	endpoint := RegistryBaseURL + "/v0.1/servers?" + q.Encode()
+	return NewRegistryClient(nil).Search(ctx, query, limit)
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+// Search queries this source. An empty query returns the most recently updated
+// servers.
+func (c *RegistryClient) Search(ctx context.Context, query string, limit int) ([]RegistrySearchItem, error) {
+	return c.SearchVersion(ctx, query, limit, "latest")
+}
+
+// SearchVersion queries this source, pinning the requested version. Pass
+// "latest" (or "") to let the registry pick. A concrete version is only
+// meaningful when searching for one server by name, since the registry keeps
+// one row per version.
+func (c *RegistryClient) SearchVersion(ctx context.Context, query string, limit int, version string) ([]RegistrySearchItem, error) {
+	entries, _, err := c.ListServers(ctx, ListParams{Query: query, Limit: limit, Version: version})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := oauthClient().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("the MCP registry is unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return nil, fmt.Errorf("the MCP registry returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-	}
-	var parsed registrySearchResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("invalid registry response: %w", err)
-	}
-	items := make([]RegistrySearchItem, 0, len(parsed.Servers))
-	for _, entry := range parsed.Servers {
+	items := make([]RegistrySearchItem, 0, len(entries))
+	for _, entry := range entries {
 		item, err := RegistryItemFromEntry(entry)
 		if err != nil {
 			continue // servers Prism cannot run yet (unsupported package types)
@@ -151,6 +210,109 @@ func SearchRegistry(ctx context.Context, query string, limit int) ([]RegistrySea
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// ListParams are the filters the registry API accepts.
+type ListParams struct {
+	Query        string
+	Limit        int
+	Version      string
+	UpdatedSince string // RFC 3339; used for incremental catalog sync
+	Cursor       string
+}
+
+// ListServers performs one page request against this source and returns the
+// raw entries plus the cursor for the next page.
+func (c *RegistryClient) ListServers(ctx context.Context, p ListParams) ([]RegistryEntry, string, error) {
+	limit := p.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q := url.Values{}
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	version := strings.TrimSpace(p.Version)
+	if version == "" {
+		version = "latest"
+	}
+	q.Set("version", version)
+	if strings.TrimSpace(p.Query) != "" {
+		q.Set("search", strings.TrimSpace(p.Query))
+	}
+	if strings.TrimSpace(p.UpdatedSince) != "" {
+		q.Set("updated_since", strings.TrimSpace(p.UpdatedSince))
+	}
+	if strings.TrimSpace(p.Cursor) != "" {
+		q.Set("cursor", strings.TrimSpace(p.Cursor))
+	}
+	endpoint := c.BaseURL + "/v0.1/servers?" + q.Encode()
+
+	resp, err := c.do(ctx, endpoint)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s is unreachable: %w", c.describe(), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return nil, "", fmt.Errorf("%s returned HTTP %d: %s", c.describe(), resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var parsed registrySearchResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&parsed); err != nil {
+		return nil, "", fmt.Errorf("invalid registry response from %s: %w", c.describe(), err)
+	}
+	return parsed.Servers, parsed.Metadata.NextCursor, nil
+}
+
+// ListVersions returns every published version of one server, newest first as
+// the registry orders them.
+func (c *RegistryClient) ListVersions(ctx context.Context, name string) ([]string, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("a server name is required")
+	}
+	// The registry requires the name encoded as one path segment, so the
+	// namespace separator must be escaped too: url.PathEscape alone leaves "/"
+	// intact and would produce a path the API does not route.
+	endpoint := c.BaseURL + "/v0.1/servers/" + escapePathSegment(name) + "/versions"
+	resp, err := c.do(ctx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%s is unreachable: %w", c.describe(), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return nil, fmt.Errorf("%s returned HTTP %d: %s", c.describe(), resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var parsed struct {
+		Servers []RegistryEntry `json:"servers"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("invalid versions response from %s: %w", c.describe(), err)
+	}
+	versions := make([]string, 0, len(parsed.Servers))
+	for _, e := range parsed.Servers {
+		if e.Server.Version != "" {
+			versions = append(versions, e.Server.Version)
+		}
+	}
+	return versions, nil
+}
+
+// escapePathSegment percent-encodes a value so it stays a single URL path
+// segment. url.PathEscape deliberately leaves "/" alone, which is wrong for
+// registry names because the namespace separator must be encoded.
+func escapePathSegment(v string) string {
+	return strings.ReplaceAll(url.PathEscape(v), "/", "%2F")
+}
+
+// describe names this source in errors so a failed search says which registry
+// was at fault.
+func (c *RegistryClient) describe() string {
+	if c.BaseURL == "" {
+		return "the MCP registry"
+	}
+	return c.BaseURL
 }
 
 // RegistryItemFromEntry converts a registry entry into a server config Prism
@@ -172,6 +334,19 @@ func RegistryItemFromEntry(entry RegistryEntry) (RegistrySearchItem, error) {
 	if entry.Server.Repository != nil {
 		item.Repository = entry.Server.Repository.URL
 	}
+	item.Publisher = item.Server.Publisher
+	item.NamespaceMatch = namespaceMatchesRepository(entry.Server.Name, item.Repository)
+	item.Status = entry.Server.Status
+	item.Deleted = entry.Server.Status == "deleted"
+	// A server is "trusted" when its reverse-DNS namespace and its source
+	// repository agree. The registry enforces the namespace half
+	// (io.github.<owner>/... requires proving ownership of that GitHub
+	// account); this checks the other half, that the repo it points at is
+	// the same owner, so a copied namespace cannot borrow someone's repo.
+	item.Trusted = item.NamespaceMatch
+	if meta := publisherMeta(entry.Meta); meta != "" {
+		item.PublisherMeta = meta
+	}
 	for _, v := range env {
 		if v.IsRequired {
 			item.RequiredEnv = append(item.RequiredEnv, v)
@@ -192,11 +367,13 @@ func RegistryServerConfig(entry RegistryEntry) (*config.MCPServerConfig, []Regis
 		display = s.Name
 	}
 	base := &config.MCPServerConfig{
-		ID:           config.MCPIDFromName(lastSegment(s.Name)),
-		Name:         display,
-		Source:       config.MCPSourceRegistry,
-		RegistryName: s.Name,
-		Enabled:      true,
+		ID:              config.MCPIDFromName(lastSegment(s.Name)),
+		Name:            display,
+		Source:          config.MCPSourceRegistry,
+		RegistryName:    s.Name,
+		RegistryVersion: s.Version,
+		Enabled:         true,
+		Verified:        namespaceMatchesRepository(s.Name, repositoryURL(s)),
 	}
 	if s.Repository != nil {
 		base.Repository = s.Repository.URL
@@ -215,15 +392,25 @@ func RegistryServerConfig(entry RegistryEntry) (*config.MCPServerConfig, []Regis
 		base.Args = args
 		if len(pkg.EnvironmentVariables) > 0 {
 			env := map[string]string{}
+			secrets := make([]string, 0, len(pkg.EnvironmentVariables))
 			for _, v := range pkg.EnvironmentVariables {
 				value := v.Value
 				if value == "" {
 					value = v.Default
 				}
 				env[v.Name] = value
+				// The registry tells us which values are credentials; keeping
+				// that list means the UI masks the right fields later instead
+				// of guessing from the variable name.
+				if v.IsSecret {
+					secrets = append(secrets, v.Name)
+				}
 			}
 			base.Env = env
+			sortStrings(secrets)
+			base.SecretEnv = secrets
 		}
+		base.IntegritySHA256 = pkg.FileSha256
 		return base, pkg.EnvironmentVariables, nil
 	}
 
@@ -242,14 +429,20 @@ func RegistryServerConfig(entry RegistryEntry) (*config.MCPServerConfig, []Regis
 		base.URL = remote.URL
 		if len(remote.Headers) > 0 {
 			headers := map[string]string{}
+			secrets := make([]string, 0, len(remote.Headers))
 			for _, h := range remote.Headers {
 				value := h.Value
 				if value == "" {
 					value = h.Default
 				}
 				headers[h.Name] = value
+				if h.IsSecret {
+					secrets = append(secrets, h.Name)
+				}
 			}
 			base.Headers = headers
+			sortStrings(secrets)
+			base.SecretEnv = secrets
 			if len(headers) > 0 {
 				base.AuthMode = config.MCPAuthStatic
 			}
@@ -259,7 +452,28 @@ func RegistryServerConfig(entry RegistryEntry) (*config.MCPServerConfig, []Regis
 	return nil, nil, errors.New("this registry entry has no package or remote Prism can use")
 }
 
+// repositoryURL returns the repository URL or an empty string.
+func repositoryURL(s RegistryServer) string {
+	if s.Repository == nil {
+		return ""
+	}
+	return s.Repository.URL
+}
+
 // packageCommand turns a registry package into the command line Prism runs.
+//
+// Each registry type has its own runtime model, so the mapping is not uniform:
+//
+//   - npm    -> npx -y pkg@version
+//   - pypi   -> uvx pkg@version
+//   - nuget  -> dnx pkg@version
+//   - cargo  -> the crate is installed once and invoked by binary name; there
+//     is no per-invocation runner, so the command is the crate itself
+//   - oci    -> docker run -i --rm image:tag
+//   - mcpb   -> a downloaded .mcpb bundle, executed as a local command
+//
+// A package type in the default branch still works when the manifest supplies
+// an explicit runtimeHint, which keeps newer types usable without a code change.
 func packageCommand(pkg RegistryPackage) (string, []string, error) {
 	versionSuffix := ""
 	if pkg.Version != "" && pkg.Version != "latest" {
@@ -282,6 +496,34 @@ func packageCommand(pkg RegistryPackage) (string, []string, error) {
 		} else {
 			args = append(args, pkg.Identifier)
 		}
+	case "nuget":
+		// dnx is the .NET 10 equivalent of npx and is the documented runtime
+		// for NuGet-distributed MCP servers.
+		command = firstNonEmpty(pkg.RuntimeHint, "dnx")
+		if command == "dnx" && pkg.Version != "" && pkg.Version != "latest" {
+			args = append(args, pkg.Identifier+"@"+pkg.Version)
+		} else {
+			args = append(args, pkg.Identifier)
+		}
+	case "cargo":
+		// cargo has no npx-style runner: `cargo install` puts the binary on
+		// PATH and clients invoke it by name. Prism runs the crate name, which
+		// is what the registry and the package-types guide both assume.
+		if pkg.RuntimeHint != "" {
+			command = pkg.RuntimeHint
+			args = append(args, pkg.Identifier)
+		} else {
+			command = pkg.Identifier
+		}
+	case "mcpb":
+		// A .mcpb is a downloaded bundle, so installing it means running the
+		// artifact. The identifier is a URL; the caller is responsible for
+		// verifying fileSha256 first (see VerifyMCPBPackage).
+		if pkg.Identifier == "" {
+			return "", nil, errors.New("an mcpb package needs an artifact URL")
+		}
+		command = firstNonEmpty(pkg.RuntimeHint, "mcpb")
+		args = append(args, pkg.Identifier)
 	case "oci":
 		command = firstNonEmpty(pkg.RuntimeHint, "docker")
 		args = append(args, "run", "-i", "--rm")
@@ -350,4 +592,58 @@ func lastSegment(name string) string {
 		return name[i+1:]
 	}
 	return name
+}
+
+// namespaceMatchesRepository reports whether a server's reverse-DNS namespace
+// and its repository URL name the same owner. Names look like
+// "io.github.alice/weather" (or "com.example/weather" for a DNS-verified
+// namespace); repositories look like "https://github.com/alice/weather".
+//
+// A server with no repository cannot be cross-checked, so it is not counted as
+// matching.
+func namespaceMatchesRepository(name, repoURL string) bool {
+	ns := name
+	if i := strings.Index(ns, "/"); i >= 0 {
+		ns = ns[:i]
+	}
+	owner := ""
+	switch {
+	case strings.HasPrefix(ns, "io.github."):
+		owner = strings.TrimPrefix(ns, "io.github.")
+	case strings.HasPrefix(ns, "io.gitlab."):
+		owner = strings.TrimPrefix(ns, "io.gitlab.")
+	}
+	if owner == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(repoURL))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segments) < 2 {
+		return false
+	}
+	return strings.EqualFold(segments[0], owner)
+}
+
+// publisherMeta extracts the publisher-provided metadata block the registry
+// reserves for build and provenance information. It is surfaced read-only, so
+// the value is returned as raw JSON for display rather than parsed.
+func publisherMeta(meta map[string]interface{}) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	v, ok := meta["io.modelcontextprotocol.registry/publisher-provided"]
+	if !ok {
+		return ""
+	}
+	raw, err := json.Marshal(v)
+	if err != nil || string(raw) == "null" || string(raw) == "{}" {
+		return ""
+	}
+	if len(raw) > 2048 {
+		raw = raw[:2048]
+	}
+	return string(raw)
 }

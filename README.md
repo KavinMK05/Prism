@@ -60,6 +60,7 @@ Prism is the only thing standing between your agents and the messy reality of LL
 | **OpenCode integration** | ✅ One-click | ❌ |
 | **ZCode integration** | ✅ One-click | ❌ |
 | **Prime Agent integration** | ✅ One-click | ❌ |
+| **Empryo integration** | ✅ One-click | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Free unlimited web search** | ✅ Managed SearXNG | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
@@ -74,7 +75,7 @@ Prism is the only thing standing between your agents and the messy reality of LL
   Claude Code ─────┐
   (Anthropic API)  │                       ┌──────────────┐
                    │    ┌───────────┐       │  Ollama Cloud │
-  Codex Desktop ───┼───→│   Prism   │──────→│  /api/chat    │
+  Codex Desktop ───┼───→│   Prism   │──────→│  /v1/chat/... │
   (Responses API)  │    │  :11434   │       └──────────────┘
                    │    └───────────┘       ┌──────────────┐
   Factory Droid ───┤         │              │  OpenCode Go  │
@@ -119,6 +120,10 @@ curl "http://127.0.0.1:8888/search?q=latest%20go%20release&format=json"
 
 Prism runs and manages the SearXNG instance; pointing an agent's web-search tool at it is a one-time config in that agent (Prism does not auto-write the SearXNG URL into agent configs). Point any agent's "web search" / "fetch" tool at the endpoint above and it just works.
 
+### Automatic interception
+
+Agents that send Anthropic's typed `web_search` server tool (ZCode after the `kind:"anthropic"` switch, Claude Code's WebSearch) don't need the SearXNG URL at all: Prism rewrites the typed tool into a function call, runs the search itself through the configured provider, and streams back the `server_tool_use` + `web_search_tool_result` blocks the client expects. This runs on every upstream except Codex OAuth accounts and per-model `API: responses` routes — both the Ollama-native surface and the OpenAI-compatible one (Ollama Cloud over `/v1/chat/completions`, OpenCode Go, custom providers) go through the same loop. Codex Desktop / Grok Build get the equivalent treatment on the Responses API path.
+
 ### Zero-setup install
 
 First Start bootstraps an isolated Python venv and `pip install`s SearXNG (~80 MB, a minute or two). If no system Python ≥3.11 is on PATH, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first — so SearXNG runs on machines with no Python installed at all. The generated `settings.yml` enables JSON output and turns the bot limiter **off**, so no Valkey/Redis is required for local single-user use.
@@ -159,7 +164,7 @@ You can also configure via the config file — `%APPDATA%\prism\config.json` on 
 
 ### 4. Add your models
 
-In the **Models** tab, just type a model name and Prism auto-fetches all the details — context length, max output tokens, reasoning support, tool calling, vision, structured outputs, and reasoning effort levels — from [models.dev](https://models.dev). No manual configuration needed. Select your provider, search for the model, and click to auto-fill everything.
+In the **Models** tab, just type a model name and Prism auto-fetches all the details — context length, max output tokens, reasoning support, tool calling, vision, structured outputs, and reasoning effort levels. Metadata comes from [models.dev](https://models.dev), except for **Ollama Cloud**, which reports its own catalog via `/api/tags` + `/api/show` so the context length matches the deployed model. No manual configuration needed. Select your provider, search for the model, and click to auto-fill everything.
 
 ### 5. Connect your agents
 
@@ -265,6 +270,27 @@ Prism writes a `[model.prism-*]` block per Prism model into `~/.grok/config.toml
 </details>
 
 <details>
+<summary><strong>Setting up with Empryo</strong></summary>
+
+Prism registers a `prism` custom provider in Empryo's global config — `%LOCALAPPDATA%\Empryo\config.json` on Windows, `~/.empryo/config.json` on macOS and Linux — pointing at `http://127.0.0.1:11434/v1` and listing every Prism model with its context and output limits. Model ids in Empryo are `prism/<provider>/<model>`. Empryo's custom providers declare one OpenAI-format base URL, so Responses-API and Codex models are listed alongside the rest — Prism translates Chat Completions to the Responses API for them.
+
+> On Windows, Empryo does **not** read `~/.empryo/config.json` as its global config. That path only works as a per-project `.empryo/config.json`, which Empryo ignores unless it is started from that exact directory and the directory is trusted — a provider written there never reaches the model picker.
+
+Empryo never stores credentials in config files (it uses the system keychain, DPAPI on Windows, or a protected secrets file on Linux), so Prism cannot write the proxy token for you. Store it once:
+
+```bash
+empryo --set-key prism prism
+```
+
+**One-click setup:** Go to the **Agents** tab in the admin UI and click **Setup** under "Empryo". Prism backs up your existing config and writes the provider block.
+
+**MCP tools:** In the admin UI's **MCP** tab, open **Agent access** and click **Install** on the Empryo row. Prism writes a `prism` entry into Empryo's `mcpServers` (in the same config file, leaving your own servers and the provider block untouched) pointing at `http://127.0.0.1:11434/mcp/empryo`. That entry authenticates with Prism's own token in an `Authorization` header, so it does not need the `empryo --set-key` step above. Empryo reads `mcpServers` at startup — restart it, or run `/mcp` in it, before the tools appear. Its tools are then named `mcp__prism__<tool>`.
+
+**To disable:** Click **Disable** to remove the Prism provider, and **Remove** on the Empryo row in the MCP tab to drop the MCP entry. The integration stays disabled until you click Setup again.
+
+</details>
+
+<details>
 <summary><strong>Setting up with Continue / other OpenAI clients</strong></summary>
 > ⚠️ **Cursor requires a Pro subscription.** Cursor does not allow custom models or custom OpenAI-compatible providers on its free tier — it locks free users to its hosted models and ignores custom base URLs. To use Cursor with Prism, you need a Cursor Pro subscription (which unlocks the "custom OpenAI-compatible" provider option). For a no-subscription alternative, use Continue or any OpenAI-SDK client against `http://127.0.0.1:11434/v1`.
 
@@ -306,6 +332,7 @@ Prism includes built-in, one-click integrations for popular AI coding agents. Ea
 | **OpenCode** | Registers `prism` (+ `prism-responses` when needed) providers | `~/.config/opencode/opencode.json` |
 | **ZCode** | Registers `prism` provider with model list | `~/.zcode/v2/config.json` |
 | **Grok Build** | Adds `[model.prism-*]` entries with smart routing | `~/.grok/config.toml` |
+| **Empryo** | Registers a `prism` custom provider with model list and limits. Empryo keeps keys in the system keychain, so run `empryo --set-key prism prism` once after Setup. The MCP tab's **Agent access** also writes a `prism` MCP entry (restart Empryo to pick it up) | `%LOCALAPPDATA%\Empryo\config.json` (Windows), `~/.empryo/config.json` (macOS/Linux) |
 
 **How it works:**
 
@@ -343,8 +370,8 @@ The admin UI provides:
 |---|---|
 | **Provider** | Select default provider, set API keys, add/edit/remove custom providers |
 | **OAuth** | Manage Codex (OpenAI) accounts — sign in, view session/weekly usage percentages, activate, or remove accounts |
-| **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. **Auto-fill from models.dev** — type a model name, search, and click to populate all fields automatically. |
-| **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, and ZCode. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
+| **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. **Auto-fill** — type a model name, search, and click to populate all fields automatically (models.dev; Ollama Cloud from `/api/tags` + `/api/show`). |
+| **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode and Empryo. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
 | **SearXNG** | Managed local metasearch — **free unlimited web search with no API keys or rate limits**. Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.11 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first. |
@@ -375,7 +402,7 @@ All request data and TPS snapshots are persisted to the stats database (`%APPDAT
 
 Prism automatically identifies which tool is making each request by inspecting the `User-Agent` header. Detected clients include:
 
-**Claude Code, Cursor, Continue, GitHub Copilot, Aider, OpenCode, Windsurf, Trae, Factory Droid, Supermaven, and Claude Desktop.**
+**Claude Code, Cursor, Continue, GitHub Copilot, Aider, OpenCode, Windsurf, Trae, Factory Droid, Supermaven, Empryo, and Claude Desktop.**
 
 You can override detection by setting the `X-Client-Name` header on your requests — the value is used directly in stats, so you can tag requests with custom names like `"my-script"` or `"ci-pipeline"`.
 
@@ -395,7 +422,7 @@ Prism supports multiple upstream providers, configured via the admin UI or the c
 
 | Provider | Config key | Upstream format | Endpoint |
 |---|---|---|---|
-| **Ollama Cloud** | `ollama_cloud` | Ollama Native | `/api/chat` |
+| **Ollama Cloud** | `ollama_cloud` | OpenAI | `/v1/chat/completions` |
 | **OpenCode Go** | `opencode_go` | OpenAI | `/v1/chat/completions` |
 | **Custom providers** | `custom_providers[]` | OpenAI | `/v1/chat/completions` |
 | **Codex (via OAuth)** | `oauth_accounts[]` | OpenAI | `chatgpt.com/backend-api/codex/responses` |
@@ -487,12 +514,14 @@ Configured via the admin UI (**Models** tab) or the model remapping file (`%APPD
 
 ### Auto model configuration
 
-Instead of manually filling in context lengths, token limits, and capabilities, just type a model name in the **Models** tab and click **Search**. Prism queries [models.dev](https://models.dev) and auto-fills:
+Instead of manually filling in context lengths, token limits, and capabilities, just type a model name in the **Models** tab and click **Search**. Prism auto-fills:
 
 - Context length
 - Max output tokens
 - Reasoning toggle and allowed effort levels
 - Tool calling, structured output, and vision capabilities
+
+Metadata comes from [models.dev](https://models.dev) for every provider except **Ollama Cloud**, which is read from Ollama itself: `GET /api/tags` lists the models the cloud currently serves (so retired models never appear) and `POST /api/show` supplies the context length, vision/tool/thinking capabilities, and thinking effort levels of the deployed model. models.dev is still consulted for the display name, max output tokens, and structured-output support, which `/api/show` does not report. **Ollama's own values win** where the two disagree: `nemotron-3-nano:30b` reports a 262144-token context in `/api/show` while models.dev still lists 1048576.
 
 The search is scoped to your selected provider so you get accurate results. No manual configuration needed — search, select, and you're done.
 
@@ -537,7 +566,7 @@ Map incoming model names to different upstream models.
 | **Aliases** | Map model names (e.g. `claude-3-5-haiku` → `deepseek-v4-flash:cloud`) |
 | **Default model** | Fallback when a requested model isn't recognized |
 | **Known models** | Rich entries with per-model provider, reasoning, and capabilities |
-| **Auto config** | Search models.dev and auto-fill all fields |
+| **Auto config** | Search and auto-fill all fields (models.dev; Ollama Cloud from its own `/api/tags` + `/api/show`) |
 
 <details>
 <summary><strong>Full remapping example</strong></summary>
@@ -614,11 +643,11 @@ Map incoming model names to different upstream models.
 | `POST` | `/v1/messages` | `x-api-key` header | Anthropic Messages API |
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <key>` | OpenAI Chat Completions API |
 | `POST` | `/v1/responses` | `Authorization: Bearer <key>` | OpenAI Responses API |
-| `GET` | `/v1/models` | `Authorization: Bearer <key>` | List available models |
+| `GET` | `/v1/models` | None | List available models |
 | `GET` | `/health` | None | Health check |
-| `GET` | `/api/model-info` | None | Look up model details from models.dev (admin UI) |
-| `GET` | `/admin/model-info` | None | Look up model details from models.dev (admin server only) |
-| `GET` | `/admin/model-search` | None | Search models on models.dev (admin server only) |
+| `GET` | `/api/model-info` | None | Look up model details (models.dev; `?provider=ollama_cloud` reads Ollama's `/api/show`) |
+| `GET` | `/admin/model-info` | None | Look up model details, scoped to a provider (Ollama Cloud reads Ollama's `/api/show`) |
+| `GET` | `/admin/model-search` | None | Search models for a provider (Ollama Cloud searches `/api/tags`) |
 | `POST` | `/v1/messages/count_tokens` | `x-api-key` header | Returns 404 (not supported upstream) |
 
 ## Translation support
@@ -793,7 +822,7 @@ The following features are not supported by upstream providers and are handled g
 
 - **Anthropic**: `count_tokens`, `tool_choice`, `metadata`, prompt caching, batches, PDF, URL images
 - **OpenAI Chat inbound**: `/v1/models` returns a static list from config (not proxied), `parallel_tool_calls`, `logprobs`, `seed`, `user`
-- **OpenAI Responses inbound**: `previous_response_id` (conversation continuity), `store`, built-in tools (web search, file search, code interpreter) are filtered out for Ollama upstreams
+- **OpenAI Responses inbound**: `previous_response_id` (conversation continuity), `store`, and built-in tools other than web search (file search, code interpreter). Web search is intercepted and answered locally via the configured search provider.
 
 ## Building from source
 

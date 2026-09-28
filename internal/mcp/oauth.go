@@ -99,6 +99,38 @@ type oauthFlow struct {
 	regMode      string
 	createdAt    time.Time
 	server       *http.Server
+
+	authURL string    // reused when a trigger joins a pending flow
+	done    chan struct{}
+	once    sync.Once
+	flowErr error     // nil once the token was persisted
+	endedAt time.Time // when the flow reached a terminal state
+}
+
+// finishFlow marks the flow terminal and wakes anyone waiting on it. The first
+// caller wins, so a callback and the TTL reaper cannot both decide the outcome.
+func (f *oauthFlow) finishFlow(err error) {
+	f.once.Do(func() {
+		f.flowErr = err
+		f.endedAt = time.Now()
+		close(f.done)
+	})
+}
+
+// wait blocks until the flow ends. It returns errAutoConnectPending, never a
+// bare context error, when the caller gives up first: the sign-in is still
+// running and the caller should keep its original needs_auth error.
+func (f *oauthFlow) wait(ctx context.Context) error {
+	timer := time.NewTimer(autoConnectWait)
+	defer timer.Stop()
+	select {
+	case <-f.done:
+		return f.flowErr
+	case <-ctx.Done():
+		return errAutoConnectPending
+	case <-timer.C:
+		return errAutoConnectPending
+	}
 }
 
 var (
@@ -220,6 +252,7 @@ func authChallenge(ctx context.Context, s *config.MCPServerConfig) (string, erro
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("MCP-Protocol-Version", ProtocolVersion)
+	req.Header.Set("Mcp-Method", "server/discover")
 	// Static headers (API keys) are intentionally not sent: the challenge is
 	// what tells Prism whether OAuth is needed at all.
 	resp, err := oauthClient().Do(req)
@@ -545,27 +578,37 @@ func dynamicClientRegister(ctx context.Context, asmd *AuthorizationServerMetadat
 // the endpoints, resolves a client, opens a loopback callback listener, and
 // returns the URL the user must open.
 func StartOAuthLogin(ctx context.Context, cfg *config.Config, serverID string) (string, string, error) {
+	flow, _, err := startOAuthFlow(ctx, cfg, serverID)
+	if err != nil {
+		return "", "", err
+	}
+	return flow.authURL, flow.redirectURI, nil
+}
+
+// startOAuthFlow begins the flow and returns it, so callers that wait for the
+// user (AutoAuthorize) share the same completion signal as the callback.
+func startOAuthFlow(ctx context.Context, cfg *config.Config, serverID string) (*oauthFlow, string, error) {
 	s := cfg.FindMCPServer(serverID)
 	if s == nil {
-		return "", "", fmt.Errorf("unknown MCP server %q", serverID)
+		return nil, "", fmt.Errorf("unknown MCP server %q", serverID)
 	}
 	if s.Transport == config.MCPTransportStdio {
-		return "", "", errors.New("stdio servers authenticate with environment variables, not OAuth")
+		return nil, "", errors.New("stdio servers authenticate with environment variables, not OAuth")
 	}
 
 	prm, err := discoverProtectedResource(ctx, s)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	asURL := firstAuthorizationServer(prm, s.URL)
 	asmd, err := discoverASMetadata(ctx, asURL)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to start the OAuth callback listener: %w", err)
+		return nil, "", fmt.Errorf("failed to start the OAuth callback listener: %w", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
@@ -574,18 +617,18 @@ func StartOAuthLogin(ctx context.Context, cfg *config.Config, serverID string) (
 	reg, mode, err := resolveClientRegistration(ctx, cfg, s, asURL, asmd, redirectURI, scopes)
 	if err != nil {
 		ln.Close()
-		return "", "", err
+		return nil, "", err
 	}
 
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
 		ln.Close()
-		return "", "", err
+		return nil, "", err
 	}
 	state, err := randomTokenString()
 	if err != nil {
 		ln.Close()
-		return "", "", err
+		return nil, "", err
 	}
 
 	flow := &oauthFlow{
@@ -604,6 +647,7 @@ func StartOAuthLogin(ctx context.Context, cfg *config.Config, serverID string) (
 		authMethod:   defaultAuthMethod(reg.TokenAuthMethod, asmd),
 		regMode:      mode,
 		createdAt:    time.Now(),
+		done:         make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -632,13 +676,20 @@ func StartOAuthLogin(ctx context.Context, cfg *config.Config, serverID string) (
 			defer cancel()
 			flow.server.Shutdown(ctx)
 		}
+		flow.finishFlow(errors.New("the sign-in window expired"))
 	}()
 
 	authURL, err := buildAuthorizeURL(asmd.AuthorizationEndpoint, flow, challenge)
 	if err != nil {
-		return "", "", err
+		ln.Close()
+		flowMu.Lock()
+		delete(flowsByState, state)
+		flowMu.Unlock()
+		flow.finishFlow(err)
+		return nil, "", err
 	}
-	return authURL, redirectURI, nil
+	flow.authURL = authURL
+	return flow, authURL, nil
 }
 
 // challengeScopes returns the scopes Prism should request: the challenge's
@@ -690,24 +741,30 @@ func buildAuthorizeURL(endpoint string, flow *oauthFlow, challenge string) (stri
 
 // handleOAuthCallback completes the flow: validate, exchange, persist.
 func handleOAuthCallback(w http.ResponseWriter, r *http.Request, flow *oauthFlow) {
+	var cbErr error
+	defer func() { flow.finishFlow(cbErr) }()
 	query := r.URL.Query()
 	if errParam := query.Get("error"); errParam != "" {
 		desc := query.Get("error_description")
+		cbErr = errors.New(errParam + ": " + desc)
 		renderOAuthResult(w, http.StatusBadRequest, "Authentication failed", errParam+": "+desc, false)
 		return
 	}
 	if state := query.Get("state"); state != flow.state {
+		cbErr = errors.New("invalid or expired sign-in link")
 		renderOAuthResult(w, http.StatusBadRequest, "Invalid or expired link", "This sign-in link has expired. Start the connection again from Prism.", false)
 		return
 	}
 	// RFC 9207: when the server returns `iss`, it must match the issuer Prism
 	// recorded, compared literally (no normalization or case folding).
 	if iss := query.Get("iss"); iss != "" && flow.issuer != "" && iss != flow.issuer {
+		cbErr = fmt.Errorf("issuer mismatch: %s", iss)
 		renderOAuthResult(w, http.StatusBadRequest, "Issuer mismatch", "The authorization response came from an unexpected issuer ("+iss+").", false)
 		return
 	}
 	code := query.Get("code")
 	if code == "" {
+		cbErr = errors.New("no authorization code was received")
 		renderOAuthResult(w, http.StatusBadRequest, "Missing authorization code", "No authorization code was received.", false)
 		return
 	}
@@ -717,11 +774,13 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request, flow *oauthFlow
 	token, err := exchangeAuthorizationCode(ctx, flow, code)
 	if err != nil {
 		log.Printf("[MCP] OAuth token exchange failed for %s: %v", flow.serverID, err)
+		cbErr = err
 		renderOAuthResult(w, http.StatusInternalServerError, "Token exchange failed", err.Error(), false)
 		return
 	}
 	if err := persistToken(flow, token); err != nil {
 		log.Printf("[MCP] failed to save token for %s: %v", flow.serverID, err)
+		cbErr = err
 		renderOAuthResult(w, http.StatusInternalServerError, "Could not save the token", err.Error(), false)
 		return
 	}

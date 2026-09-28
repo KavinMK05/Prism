@@ -89,11 +89,20 @@ type Config struct {
 	Search            *search.Config           `json:"search,omitempty"`
 	MCP               *MCPConfig               `json:"mcp,omitempty"`
 
-	// AnalyticsOptIn records whether the user has opted in to anonymous usage
-	// telemetry (a single daily heartbeat to PostHog EU). Defaults to false.
-	AnalyticsOptIn bool `json:"analytics_opt_in,omitempty"`
-	// AnalyticsPrompted records whether the one-time first-run consent prompt
-	// has been shown. Defaults to false; once true it is never shown again.
+	// AnalyticsOptOut records an explicit decision to disable anonymous usage
+	// telemetry (a single daily heartbeat to PostHog EU). Telemetry is on by
+	// default; this flag turns it off. The PRISM_ANALYTICS_DISABLED environment
+	// variable is a hard override handled by the analytics package.
+	AnalyticsOptOut bool `json:"analytics_opt_out,omitempty"`
+	// AnalyticsNoticeSeen records whether the one-time first-run telemetry
+	// notice has been acknowledged. Defaults to false; once true it is never
+	// shown again.
+	AnalyticsNoticeSeen bool `json:"analytics_notice_seen,omitempty"`
+
+	// Deprecated: the pre-opt-out consent fields. They are read once in Load to
+	// migrate a previous decision and cleared on the next save. Use
+	// AnalyticsOptOut / AnalyticsNoticeSeen instead.
+	AnalyticsOptIn    bool `json:"analytics_opt_in,omitempty"`
 	AnalyticsPrompted bool `json:"analytics_prompted,omitempty"`
 }
 
@@ -334,9 +343,8 @@ func Load() *Config {
 
 	// Migration: if old "active_provider" field exists and "default_provider" is empty, migrate it
 	var raw rawConfig
+	needsSave := false
 	if json.Unmarshal(data, &raw) == nil {
-		needsSave := false
-
 		// Migrate active_provider → default_provider
 		if raw.ActiveProvider != "" && cfg.DefaultProvider == "" {
 			cfg.DefaultProvider = raw.ActiveProvider
@@ -358,10 +366,23 @@ func Load() *Config {
 			}
 			needsSave = true
 		}
+	}
 
-		if needsSave {
-			Save(cfg)
+	// Migration: telemetry moved from opt-in to opt-out. A never-prompted
+	// install (and anyone who opted in) is on by default; an explicit "no" from
+	// the opt-in era is honoured permanently by recording an opt-out.
+	if cfg.AnalyticsOptIn || cfg.AnalyticsPrompted {
+		if cfg.AnalyticsPrompted && !cfg.AnalyticsOptIn {
+			cfg.AnalyticsOptOut = true
 		}
+		cfg.AnalyticsNoticeSeen = true
+		cfg.AnalyticsOptIn = false
+		cfg.AnalyticsPrompted = false
+		needsSave = true
+	}
+
+	if needsSave {
+		Save(cfg)
 	}
 
 	// Ensure IDs on built-in providers
@@ -459,10 +480,17 @@ func (c *Config) GetProviderByID(id string) (*ProviderInfo, error) {
 		if apiKey == "" {
 			apiKey = os.Getenv("OLLAMA_API_KEY")
 		}
+		// Ollama Cloud is reached over its OpenAI-compatible Chat Completions
+		// API (base URL https://ollama.com -> /v1/chat/completions), not the
+		// native /api/chat surface. Chat Completions is where the cloud
+		// honours graded reasoning effort per model (`reasoning_effort`), where
+		// tool calls carry real ids, and where errors come back in the OpenAI
+		// shape. The native surface remains supported for local Ollama servers
+		// added as custom providers.
 		return &ProviderInfo{
 			BaseURL:      baseURL,
 			APIKey:       apiKey,
-			ProviderType: "ollama",
+			ProviderType: "openai",
 			Name:         name,
 		}, nil
 	case "opencode_go":

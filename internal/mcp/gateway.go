@@ -222,7 +222,17 @@ func gatewayInstructions() string {
 
 func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent string) rpcResponse {
 	servers := g.serversForAgent(agent)
-	tools, _ := g.mgr.ToolsForServers(ctx, servers)
+	tools, statuses := g.mgr.ToolsForServers(ctx, servers)
+	for _, st := range statuses {
+		if st.State != config.MCPStateNeedsAuth {
+			continue
+		}
+		if s := g.findServerForAgent(agent, st.ID); s != nil && g.mgr.autoConnectEligible(s) {
+			// tools/list runs under toolListTimeout, far short of a human
+			// approving: open the window and let the agent retry.
+			go g.mgr.triggerAutoAuthorize(context.WithoutCancel(ctx), st.ID, false)
+		}
+	}
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolMap(t))
@@ -256,6 +266,22 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id json.RawMessage, agent
 			"server %q is not enabled for this endpoint", serverID))
 	}
 	raw, err := g.mgr.CallTool(ctx, server, tool, p.Arguments)
+	if err != nil && isAuthError(err) && g.mgr.autoConnectEligible(server) {
+		// tools/call has toolCallTimeout (10 min), so waiting is worthwhile here.
+		if aerr := g.mgr.triggerAutoAuthorize(ctx, serverID, true); aerr == nil {
+			// The flow stored a token and marked the server OAuth-authenticated;
+			// drop the transport that carried the rejected credential and
+			// re-resolve the server from the live config.
+			g.mgr.Restart(serverID)
+			fresh := server
+			if cfg := g.cfg(); cfg != nil {
+				if fs := cfg.FindMCPServer(serverID); fs != nil {
+					fresh = fs
+				}
+			}
+			raw, err = g.mgr.CallTool(ctx, fresh, tool, p.Arguments)
+		}
+	}
 	if err != nil {
 		return errorResponse(id, errorFromUpstream(err, serverID))
 	}
@@ -338,8 +364,11 @@ func (g *Gateway) ServeControl(w http.ResponseWriter, r *http.Request) {
 		}
 		encodeGatewayJSON(w, map[string]interface{}{"status": "ok"})
 	case "probe":
+		// No server id means "warm every enabled server": the admin UI uses
+		// that when the MCP panel opens so tool lists are ready to show.
 		if req.Server == "" {
-			writeRPCStatusError(w, http.StatusBadRequest, "probe requires a server id")
+			statuses := g.mgr.ProbeAll(ctx)
+			encodeGatewayJSON(w, map[string]interface{}{"statuses": orEmptyStatuses(statuses)})
 			return
 		}
 		status, err := g.mgr.Probe(ctx, req.Server)

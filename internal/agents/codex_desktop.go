@@ -29,6 +29,12 @@ const (
 // model_catalog_json, but never picks which model Codex uses.
 var codexManagedTopLevelKeys = []string{"model_provider", "model_catalog_json"}
 
+// codexOwnedTopLevelKeys are the top-level keys Prism strips along with its
+// Codex block. It covers codexManagedTopLevelKeys plus `model`, which an older
+// Prism version wrote inside the block (the user's own `model` went to the
+// stash), so a migration cannot leave a stale value behind.
+var codexOwnedTopLevelKeys = append(append([]string(nil), codexManagedTopLevelKeys...), "model")
+
 // codexDesktopConfigPath returns the path to Codex Desktop's config.toml.
 // Works on both macOS (~/.codex/) and Windows (%USERPROFILE%/.codex/).
 func codexDesktopConfigPath() string {
@@ -220,7 +226,7 @@ func InstallCodexConfig(port int) error {
 	stashed := extractPreviousTopLevel(string(existing))
 
 	// Strip any existing Prism managed blocks
-	cleaned := stripManagedBlocks(string(existing))
+	cleaned := stripCodexManagedBlocks(string(existing))
 
 	// Previous top-level values: prefer what the body actually has, falling back
 	// to the stash for the keys Prism manages.
@@ -308,7 +314,7 @@ func RestoreCodexConfig() error {
 	stashed := extractPreviousTopLevel(content)
 
 	// Strip managed blocks
-	cleaned := stripManagedBlocks(content)
+	cleaned := stripCodexManagedBlocks(content)
 
 	// Remove the top-level keys Prism set
 	cleaned = removeTopLevelKeys(cleaned)
@@ -362,7 +368,10 @@ func SyncCodexDesktop(port int) {
 
 // ── TOML helpers ──
 
-// stripManagedBlocks removes all sections between >>> prism managed >>> and <<< prism managed <<< markers.
+// stripManagedBlocks removes every line between the >>> prism managed >>> and
+// <<< prism managed <<< markers. It is for agent configs whose managed block
+// Prism owns in full (Grok Build, Kimi Code); Codex uses stripCodexManagedBlocks,
+// which keeps tables Codex wrote for itself inside those markers.
 func stripManagedBlocks(content string) string {
 	lines := strings.Split(content, "\n")
 	var result []string
@@ -382,6 +391,119 @@ func stripManagedBlocks(content string) string {
 		}
 	}
 	return strings.Join(result, "\n")
+}
+
+// stripCodexManagedBlocks removes Prism's Codex markers along with the top-level
+// keys, stash comment, and [model_providers.prism] table that Prism owns,
+// keeping everything else that ended up between the markers.
+//
+// Codex appends the tables it persists — project trust under [projects.*], the
+// Windows sandbox mode under [windows], trusted hook hashes under [hooks.state]
+// — to the end of ~/.codex/config.toml, which is where Prism's blocks sit, so
+// those tables land inside the markers. Deleting the whole region threw the
+// user's answers away on every restart, and Codex asked for them again.
+func stripCodexManagedBlocks(content string) string {
+	return stripManagedRegion(content, codexManagedBegin, codexManagedEnd, isPrismProviderTableHeader, isPrismManagedTopLevelLine)
+}
+
+// stripManagedRegion removes one Prism marker pair and the TOML inside it that
+// Prism owns, while preserving content Prism did not write.
+//
+// ownedTable reports whether a (trimmed) table header names a table Prism
+// wrote, which also ends the previous section; key/value lines under such a
+// header are dropped with it. ownedLine reports whether a non-table line inside
+// the region was written by Prism. Table headers claiming to be Prism's are
+// honoured wherever they appear, so a section left outside the markers by an
+// older version is removed instead of being duplicated on the next write.
+func stripManagedRegion(content, begin, end string, ownedTable func(string) bool, ownedLine func(string) bool) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	inRegion := false
+	inOwnedTable := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == begin {
+			inRegion = true
+			inOwnedTable = false
+			continue
+		}
+		if trimmed == end {
+			inRegion = false
+			inOwnedTable = false
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			// Any table header ends the section that came before it.
+			inOwnedTable = ownedTable(trimmed)
+			if inOwnedTable {
+				continue
+			}
+			out = append(out, line)
+			continue
+		}
+		if inOwnedTable {
+			continue
+		}
+		if inRegion && ownedLine != nil && ownedLine(trimmed) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// isPrismProviderTableHeader reports whether a table header names Prism's model
+// provider table or one of its sub-tables.
+func isPrismProviderTableHeader(trimmed string) bool {
+	return isManagedTableHeader(trimmed, "model_providers."+codexProviderKey)
+}
+
+// isManagedTableHeader reports whether a table header names the dotted key path
+// or a table nested under it, such as [model_providers.prism] and
+// [model_providers.prism.http_headers]. The last segment is also accepted
+// quoted, since Codex quotes a segment that is not a bare key.
+//
+// A longer key must not match: "[model_providers.prismatic]" is not Prism's.
+func isManagedTableHeader(trimmed, path string) bool {
+	segments := strings.Split(path, ".")
+	quoted := append(append([]string(nil), segments[:len(segments)-1]...), `"`+segments[len(segments)-1]+`"`)
+	for _, candidate := range []string{
+		"[" + path + "]",
+		"[" + strings.Join(quoted, ".") + "]",
+	} {
+		base := strings.TrimSuffix(candidate, "]")
+		if trimmed == candidate {
+			return true
+		}
+		if strings.HasPrefix(trimmed, base+".") {
+			return true
+		}
+		// A trailing comment or padding after the header still names the table.
+		if rest, ok := strings.CutPrefix(trimmed, candidate); ok && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '#') {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrismManagedTopLevelLine reports whether a non-table line inside Prism's
+// Codex block was written by Prism: one of the keys it manages, a key an older
+// version managed, or the comment stashing the values it replaced.
+func isPrismManagedTopLevelLine(trimmed string) bool {
+	if strings.HasPrefix(trimmed, codexPreviousTopLevelPrefix) {
+		return true
+	}
+	key, _, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	for _, managed := range codexOwnedTopLevelKeys {
+		if key == managed {
+			return true
+		}
+	}
+	return false
 }
 
 // extractTopLevelOverrides extracts only true top-level key-value pairs (before any [section]).

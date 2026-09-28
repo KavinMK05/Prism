@@ -335,6 +335,9 @@ func translateOpenAIMessageToOllamaWithLookup(msg OpenAIChatMessage, toolIDToNam
 		if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
 			ollamaMsg.Thinking = *msg.ReasoningContent
 		}
+		if ollamaMsg.Thinking == "" && msg.Reasoning != nil {
+			ollamaMsg.Thinking = *msg.Reasoning
+		}
 		return []OllamaMessage{ollamaMsg}
 	}
 
@@ -346,6 +349,9 @@ func translateOpenAIMessageToOllamaWithLookup(msg OpenAIChatMessage, toolIDToNam
 		}
 		if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
 			ollamaMsg.Thinking = *msg.ReasoningContent
+		}
+		if ollamaMsg.Thinking == "" && msg.Reasoning != nil {
+			ollamaMsg.Thinking = *msg.Reasoning
 		}
 		return []OllamaMessage{ollamaMsg}
 	case []interface{}:
@@ -382,6 +388,9 @@ func translateOpenAIMessageToOllamaWithLookup(msg OpenAIChatMessage, toolIDToNam
 		}
 		if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
 			ollamaMsg.Thinking = *msg.ReasoningContent
+		}
+		if ollamaMsg.Thinking == "" && msg.Reasoning != nil {
+			ollamaMsg.Thinking = *msg.Reasoning
 		}
 		return []OllamaMessage{ollamaMsg}
 	default:
@@ -475,6 +484,11 @@ func translateOllamaToOpenAI(ollama *OllamaChatResponse, req *OpenAIChatRequest)
 			CompletionTokens:    ollama.EvalCount,
 			TotalTokens:         ollama.PromptEvalCount + ollama.EvalCount,
 			PromptTokensDetails: promptTokensDetails(ollama.cachedPromptTokens()),
+			// Ollama reports no reasoning/output split, so derive one from the
+			// thinking text; the Responses translator forwards it as
+			// output_tokens_details.reasoning_tokens.
+			CompletionTokensDetails: completionTokensDetails(clampReasoningTokens(
+				estimatedReasoningTokens(ollama.Message.Thinking), ollama.EvalCount)),
 		},
 	}
 }

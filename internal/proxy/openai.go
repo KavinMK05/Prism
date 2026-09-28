@@ -121,6 +121,40 @@ func translateToolChoiceToOpenAI(tc interface{}) interface{} {
 	return nil
 }
 
+// upstreamOpenAIChat performs a single non-streaming Chat Completions request
+// and normalizes the reply into the provider-agnostic turn shape. Sharing this
+// between the Responses and Anthropic web-search interceptors keeps one code
+// path for every OpenAI-compatible upstream (Ollama Cloud, OpenCode Go,
+// custom providers), while the Ollama-native loops keep their own response type.
+func (pr *ProviderRouter) upstreamOpenAIChat(chatReq *OpenAIChatRequest, rp *config.ResolvedProvider) (*normalizedTurn, error) {
+	chatReq.Stream = false
+	chatReq.StreamOptions = nil
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, rp.ChatCompletionsURL(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+rp.APIKey)
+	resp, err := pr.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, parseUpstreamResponseError(resp.StatusCode, b)
+	}
+	var oai OpenAIChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&oai); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return openAIResponseToNormalized(&oai), nil
+}
+
 func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
 	return translateMessageToOpenAIWithReasoning(msg, false, false)
 }

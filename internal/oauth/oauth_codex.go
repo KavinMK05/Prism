@@ -8,13 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"ollama-proxy/internal/config"
+	"ollama-proxy/internal/util"
 )
 
 const (
@@ -82,7 +81,7 @@ func StartCodexOAuth() (string, error) {
 	log.Printf("[OAuth] Auth URL: %s", authURL)
 
 	// Open browser
-	if err := openBrowser(authURL); err != nil {
+	if err := util.OpenBrowser(authURL); err != nil {
 		log.Printf("[OAuth] Failed to open browser: %v", err)
 	}
 
@@ -259,20 +258,6 @@ func findAvailablePort(start, end int) int {
 		}
 	}
 	return 0
-}
-
-// openBrowser opens a URL in the default browser
-func openBrowser(url string) error {
-	switch runtime.GOOS {
-	case "windows":
-		// Use rundll32 instead of cmd /c start to avoid cmd.exe mangling
-		// special characters like & and % in the URL (which are common in OAuth URLs)
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	case "darwin":
-		return exec.Command("open", url).Start()
-	default:
-		return exec.Command("xdg-open", url).Start()
-	}
 }
 
 // startCodexDeviceFlow initiates a device code flow (headless auth)

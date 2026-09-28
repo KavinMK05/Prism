@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Prism
+Comment=Prism local AI proxy
+Exec=prism
+Terminal=false
+Categories=Network;
+Icon=prism
