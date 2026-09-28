@@ -250,7 +250,7 @@ jobs:
           mkdir -p Prism.AppDir/usr/bin Prism.AppDir/usr/share/icons/hicolor/256x256/apps
           cp prism Prism.AppDir/usr/bin/prism
           cp packaging/linux/prism.desktop Prism.AppDir/prism.desktop
-          convert icon.png -resize 256x256 Prism.AppDir/usr/share/icons/hicolor/256x256/apps/prism.png
+          cp icon.png Prism.AppDir/usr/share/icons/hicolor/256x256/apps/prism.png
           curl -fsSL -o appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool.AppImage
           ./appimagetool.AppImage --appimage-extract-and-run Prism.AppDir Prism-Linux-x86_64.AppImage
