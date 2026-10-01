@@ -20,13 +20,15 @@
 
   Deliberately NOT authored here:
 
-    * Uninstall-time cleanup of HKCU\...\Run\Prism, the "start with Windows"
-      value the app owns (internal/platform/autostart_windows.go). A
-      RemoveRegistryValue row fires on *every* removal of the product,
+    * Unconditional uninstall-time cleanup of HKCU\...\Run\Prism, the "start
+      with Windows" value the app owns (internal/platform/autostart_windows.go).
+      A RemoveRegistryValue row fires on *every* removal of the product,
       including the one a major upgrade performs, so it would silently turn
-      auto-start off on each update. Doing this properly needs a custom action
-      conditioned on "NOT UPGRADINGPRODUCTCODE"; until then the value is left
-      behind on uninstall and the README tells the user how to remove it.
+      auto-start off on each update. The AutoStartValue component below adopts
+      the value only when the search finds one already there: MSI then owns the
+      row, so an uninstall removes it, while a fresh install never switches
+      auto-start on behind the user's back. A value the user turns on *after*
+      installing is still not MSI's to remove, and stays behind.
 
     * A desktop shortcut. With no installer UI it cannot be an option, and a
       tray app does not need one.
@@ -57,6 +59,37 @@
                   DowngradeErrorMessage="A newer version of Prism is already installed. Uninstall it first if you need to downgrade." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Install context. Package/@Scope only stamps the package's summary-info
+         flags; the context Windows Installer actually installs in is chosen
+         from ALLUSERS and MSIINSTALLPERUSER. With those rows missing, an
+         administrator gets an *elevated* per-user install: the files still land
+         in %LOCALAPPDATA% and the marker in HKCU (Scope did that much) but the
+         product registers machine-wide at
+         HKLM\...\Installer\UserData\<SID>\Products, so every later msiexec -
+         including the silent one in internal/desktop/update_windows.go - has to
+         elevate. ALLUSERS=2 + MSIINSTALLPERUSER=1 pins the per-user context,
+         and a per-user product also receives per-user updates and repairs.
+         Assert-MsiScope in build-msi.ps1 fails the build if these go missing. -->
+    <!-- WiX emits ALLUSERS=1 by itself for Scope="perMachine" (authoring it
+         again is a WIX0091 duplicate) but emits nothing at all for perUser. -->
+    <?if $(var.Scope) = "perUser" ?>
+    <Property Id="ALLUSERS" Value="2" />
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+    <?endif ?>
+
+    <!-- Non-empty when the user already has auto-start on, which is what
+         conditions the AutoStartValue component: an existing entry is adopted
+         (repointed at the installed exe) rather than duplicated or ignored.
+         Like a Feature, a search property must be inside Package - in a
+         Fragment WiX v6 drops it without a word. -->
+    <Property Id="PRISM_AUTOSTART_PATH">
+      <RegistrySearch Id="PrismAutoStartSearch"
+                      Root="HKCU"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                      Name="Prism"
+                      Type="raw" />
+    </Property>
+
     <!-- The Feature has to live inside Package, not in a Fragment of its own.
          WiX v6 silently discards a Feature that sits outside the Package, and
          with it every component the Feature references: the build succeeds,
@@ -70,7 +103,10 @@
     </Feature>
 
     <!-- Start the app once the install finishes, the way a downloaded
-         installer is expected to behave. ExeCommand is empty but still
+         installer is expected to behave, and again after an in-place upgrade:
+         util:CloseApplication has just terminated the running copy, so without
+         WIX_UPGRADE_DETECTED a manual upgrade would leave the user with a
+         closed tray. ExeCommand is empty but still
          required: WiX demands one of the type attributes for the action
          (WIX0044) and ties Return="asyncNoWait" to ExeCommand (WIX0038), so
          removing it breaks the build. Execute="immediate" is what keeps this
@@ -82,7 +118,8 @@
                   Execute="immediate"
                   Return="asyncNoWait" />
     <InstallExecuteSequence>
-      <Custom Action="LaunchPrism" After="InstallFinalize" Condition="NOT Installed" />
+      <Custom Action="LaunchPrism" After="InstallFinalize"
+              Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
     </InstallExecuteSequence>
 
     <!-- Prism runs as two processes with the same image name: the tray parent
@@ -150,6 +187,26 @@
                        Type="string"
                        Value="[ProductVersion]" />
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+
+      <!-- Adopt a pre-existing auto-start entry. The app writes the path of
+           whatever binary the user toggled it from
+           (internal/platform/autostart_windows.go), so the value goes stale as
+           soon as that build is replaced: a dev checkout, a portable copy or an
+           earlier install path keeps winning at sign-in while the installed
+           copy never starts, and two instances then fight over the
+           single-instance lock. Conditioned on the search above, so a fresh
+           install leaves auto-start off and MSI owns the row for an uninstall.
+           platform.SyncAutoStartPath covers the same case for the portable
+           channel. -->
+      <Component Id="AutoStartValue" Guid="{B9502339-B730-4E28-993D-54B17C545ABA}"
+                 Condition="PRISM_AUTOSTART_PATH">
+        <RegistryValue Root="HKCU"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="Prism"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]prism.exe&quot;"
+                       KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

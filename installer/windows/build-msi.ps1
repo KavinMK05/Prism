@@ -83,6 +83,117 @@ function Assert-MsiFilePayload {
     return $actual
 }
 
+# Read the Property table into a hashtable. A property authored in a Fragment is
+# dropped by WiX v6 without a word, so the built database - not the .wxs - is
+# the source of truth for what the package actually declares.
+function Get-MsiPropertyTable {
+    param([Parameter(Mandatory = $true)][string]$MsiPath)
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `Property`, `Value` FROM `Property`'))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+
+    $props = @{}
+    while ($true) {
+        $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+        if ($null -eq $rec) { break }
+        $name = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1))
+        $props[$name] = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(2))
+    }
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+    return $props
+}
+
+# Single-value query against the built database; returns $null when no row
+# matches, so a missing table row never throws a COM error mid-check.
+function Get-MsiScalar {
+    param(
+        [Parameter(Mandatory = $true)][string]$MsiPath,
+        [Parameter(Mandatory = $true)][string]$Sql,
+        [int]$Field = 1
+    )
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($Sql))
+    if ($null -eq $view) { return $null }
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+    if ($null -eq $rec) {
+        $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+        return $null
+    }
+    $value = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @($Field))
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+    return $value
+}
+
+# Package/@Scope only stamps the package's summary-info flags; the install
+# context comes from ALLUSERS and MSIINSTALLPERUSER. A package that declares
+# Scope="perUser" without them installs from an elevated process as soon as an
+# administrator double-clicks it: files still land in %LOCALAPPDATA% and the
+# marker in HKCU, but the product registers machine-wide under
+# HKLM\...\Installer\UserData\<SID>\Products, so every later msiexec - including
+# the silent one the in-app updater runs - needs elevation. Observed on a real
+# install of version 0.0.121, which is why these rows are asserted.
+function Assert-MsiScope {
+    param(
+        [Parameter(Mandatory = $true)][string]$MsiPath,
+        [Parameter(Mandatory = $true)][string]$Scope
+    )
+
+    $props = Get-MsiPropertyTable -MsiPath $MsiPath
+    $allUsers = $props['ALLUSERS']
+    $perUser = $props['MSIINSTALLPERUSER']
+
+    if ($Scope -eq 'perMachine') {
+        if ($allUsers -ne '1') {
+            throw "A per-machine package must author ALLUSERS=1, but the built MSI has ALLUSERS='$allUsers'."
+        }
+        return 'ALLUSERS=1'
+    }
+    if ($allUsers -ne '2') {
+        throw "A per-user package must author ALLUSERS=2 (built MSI has '$allUsers'). Without it an administrator gets an elevated install that registers under HKLM, and every later msiexec needs elevation."
+    }
+    if ($perUser -ne '1') {
+        throw "A per-user package must author MSIINSTALLPERUSER=1 (built MSI has '$perUser'). ALLUSERS=2 alone lets Windows Installer pick per-machine for an administrator."
+    }
+    return 'ALLUSERS=2 + MSIINSTALLPERUSER=1'
+}
+
+# Auto-start takeover = a search property plus a component conditioned on it.
+# A search property is populated by the AppSearch action at run time and has no
+# Property row, so assert the wiring (all of it silently vanishes when authored
+# in a Fragment) instead of looking for the property itself.
+function Assert-MsiAutostartAdoption {
+    param([Parameter(Mandatory = $true)][string]$MsiPath)
+
+    $signature = Get-MsiScalar -MsiPath $MsiPath -Sql 'SELECT `Signature_` FROM `AppSearch` WHERE `Property` = ''PRISM_AUTOSTART_PATH'''
+    if (-not $signature) {
+        throw "AppSearch has no entry for PRISM_AUTOSTART_PATH, so the auto-start takeover can never fire. WiX v6 drops a search property authored in a Fragment - keep it inside <Package>."
+    }
+
+    # Single-quoted so PowerShell leaves the MSI backticks alone.
+    $searchSql = 'SELECT `Key` FROM `RegLocator` WHERE `Signature_` = ''{0}''' -f $signature
+    $searched = Get-MsiScalar -MsiPath $MsiPath -Sql $searchSql
+    if ($searched -ne 'Software\Microsoft\Windows\CurrentVersion\Run') {
+        throw "PRISM_AUTOSTART_PATH searches '$searched' instead of the per-user Run key."
+    }
+
+    $condition = Get-MsiScalar -MsiPath $MsiPath -Sql 'SELECT `Condition` FROM `Component` WHERE `Component` = ''AutoStartValue'''
+    if ($condition -ne 'PRISM_AUTOSTART_PATH') {
+        throw "AutoStartValue must be conditioned on PRISM_AUTOSTART_PATH (built MSI has '$condition'), otherwise installing switches auto-start on for users who never enabled it."
+    }
+
+    $value = Get-MsiScalar -MsiPath $MsiPath -Sql 'SELECT `Value` FROM `Registry` WHERE `Name` = ''Prism'' AND `Key` = ''Software\Microsoft\Windows\CurrentVersion\Run'''
+    if ($value -ne '"[INSTALLFOLDER]prism.exe"') {
+        throw "The auto-start row must point at the installed exe, but the built MSI has '$value'."
+    }
+
+    return 'repoints HKCU Run\Prism when auto-start was already on'
+}
+
 # --- version ----------------------------------------------------------------
 
 if (-not $Version) {
@@ -194,10 +305,14 @@ $sizeMb = [math]::Round($msi.Length / 1MB, 2)
 # A zero exit code does not mean the package is complete; see the function.
 $exeName = Split-Path $exeFull -Leaf
 $packed = Assert-MsiFilePayload -MsiPath $outputFull -FileName $exeName -ExpectedSize (Get-Item $exeFull).Length
+$scopeInfo = Assert-MsiScope -MsiPath $outputFull -Scope $Scope
+$autostartInfo = Assert-MsiAutostartAdoption -MsiPath $outputFull
 
 Write-Host ""
 Write-Host "Built $($msi.Name) ($sizeMb MB) - Prism $Version, $Scope" -ForegroundColor Green
-Write-Host "  payload : $exeName ($packed bytes) verified inside the MSI" -ForegroundColor Green
+Write-Host "  payload   : $exeName ($packed bytes) verified inside the MSI" -ForegroundColor Green
+Write-Host "  scope     : $scopeInfo" -ForegroundColor Green
+Write-Host "  autostart : $autostartInfo" -ForegroundColor Green
 
 if ($Scope -eq "perMachine") {
     Write-Warning "A per-machine MSI needs an elevated msiexec to install or upgrade. In-app updates do not elevate yet, so this package is for manual installs only."
