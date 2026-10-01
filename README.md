@@ -855,7 +855,7 @@ go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
 
-The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism` (`ALLUSERS=2` + `MSIINSTALLPERUSER=1`, so neither installing nor updating prompts for elevation). `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
+The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism`; the package is marked UAC compliant, so neither installing nor updating needs elevation. `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
 
 To run in console mode (for debugging), build without the flag:
 ```powershell

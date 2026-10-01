@@ -59,23 +59,22 @@
                   DowngradeErrorMessage="A newer version of Prism is already installed. Uninstall it first if you need to downgrade." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Install context. Package/@Scope only stamps the package's summary-info
-         flags; the context Windows Installer actually installs in is chosen
-         from ALLUSERS and MSIINSTALLPERUSER. With those rows missing, an
-         administrator gets an *elevated* per-user install: the files still land
-         in %LOCALAPPDATA% and the marker in HKCU (Scope did that much) but the
-         product registers machine-wide at
-         HKLM\...\Installer\UserData\<SID>\Products, so every later msiexec -
-         including the silent one in internal/desktop/update_windows.go - has to
-         elevate. ALLUSERS=2 + MSIINSTALLPERUSER=1 pins the per-user context,
-         and a per-user product also receives per-user updates and repairs.
-         Assert-MsiScope in build-msi.ps1 fails the build if these go missing. -->
-    <!-- WiX emits ALLUSERS=1 by itself for Scope="perMachine" (authoring it
-         again is a WIX0091 duplicate) but emits nothing at all for perUser. -->
-    <?if $(var.Scope) = "perUser" ?>
-    <Property Id="ALLUSERS" Value="2" />
-    <Property Id="MSIINSTALLPERUSER" Value="1" />
-    <?endif ?>
+    <!-- Install context. Scope="perUser" marks the package UAC compliant
+         (limited privileges) and that flag is the whole mechanism: Windows
+         Installer performs a per-user install in the user's own hive without
+         elevation. Authoring ALLUSERS=2 + MSIINSTALLPERUSER=1 on top of it - the
+         documented "dual purpose" pair - does nothing here, because the
+         installer *deletes* ALLUSERS and reports "MSIINSTALLPERUSER property is
+         not valid for UAC compliant package. Ignoring". Verified against a real
+         install; Assert-MsiScope now checks the flag instead of those rows.
+
+         Nor is the registration location a sign of elevation: a per-user
+         package registers under HKLM\...\Installer\UserData\<SID>\Products
+         with its ARP entry in HKLM\...\Uninstall even when nothing elevated,
+         which is what a silent non-elevated install, upgrade and uninstall of
+         this shape of package were measured doing. The in-app updater therefore
+         needs no elevation (see update_windows.go). The only ALLUSERS value to
+         avoid here is 1, which forces a per-machine install. -->
 
     <!-- Non-empty when the user already has auto-start on, which is what
          conditions the AutoStartValue component: an existing entry is adopted
