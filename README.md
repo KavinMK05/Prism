@@ -159,7 +159,7 @@ Use **Settings → Apps → Installed apps → Prism → Uninstall** (or **Add o
 
 Your data is kept: `%APPDATA%\prism` holds the config, stats database, logs and the managed SearXNG install, and is deliberately left alone so reinstalling restores your setup. Delete that folder to remove everything.
 
-If you had turned on **Start at Login** (admin UI → **Proxy** tab), the logon entry may remain after uninstalling — Windows ignores it once the executable is gone. To clear it, delete the `Prism` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, or disable the entry in **Task Manager → Startup apps**.
+If you had turned on **Start at Login** (admin UI → **Proxy** tab) *before* installing, the installer takes over that logon entry and removes it again on uninstall. A value you turn on *after* installing belongs to the app and is left behind — Windows ignores it once the executable is gone. To clear it, delete the `Prism` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, or disable the entry in **Task Manager → Startup apps**.
 
 ### 2. Start free search (optional)
 
@@ -811,7 +811,7 @@ Thinking/reasoning blocks, tool calls, and images are fully supported in all str
 
 Prism can start automatically when you log in. Toggle this from the admin UI (**Proxy** tab → **Start at Login**).
 
-**Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required. The MSI installer does not manage this value — the app does — so it survives updates and is left behind by an uninstall (see [Uninstalling on Windows](#uninstalling-on-windows)).
+**Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required. Prism rewrites the value at startup whenever it points at a different copy of the binary, so replacing a dev checkout or a portable copy with an MSI install does not leave the old copy starting at login (and both fighting over the proxy port). The installer also adopts an existing entry and removes it on uninstall, provided it was already there when you installed (see [Uninstalling on Windows](#uninstalling-on-windows)).
 
 **macOS:** Uses a LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) to launch Prism at login.
 
@@ -855,7 +855,7 @@ go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
 
-The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism`. `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
+The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism` (`ALLUSERS=2` + `MSIINSTALLPERUSER=1`, so neither installing nor updating prompts for elevation). `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
 
 To run in console mode (for debugging), build without the flag:
 ```powershell

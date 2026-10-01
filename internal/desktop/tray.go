@@ -50,6 +50,14 @@ func getAdminPort() string {
 func RunTray(iconData []byte, cleanup func()) {
 	config.SetCurrent(config.Load())
 
+	// Follow the running binary if the user already has auto-start on. An entry
+	// left pointing at a dev checkout or a replaced install path keeps winning
+	// at sign-in, so the installed copy never starts and the two fight over the
+	// instance lock and the proxy port.
+	if err := platform.SyncAutoStartPath(); err != nil {
+		log.Printf("auto-start path sync failed: %v", err)
+	}
+
 	// Start the admin UI server in the tray process.
 	adminServerStarter(config.Current(), getAdminPort())
 

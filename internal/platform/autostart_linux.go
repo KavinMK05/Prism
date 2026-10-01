@@ -52,3 +52,25 @@ func SetAutoStart(enable bool) error {
 	}
 	return nil
 }
+
+// SyncAutoStartPath rewrites the autostart entry when it launches a different
+// copy of Prism than the one running - a build from a checkout, or a binary that
+// was replaced or moved. Auto-start the user never turned on (no entry) is
+// deliberately left alone.
+func SyncAutoStartPath() error {
+	data, err := os.ReadFile(autostartFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if sameExecutablePath(desktopExecPath(string(data)), exePath) {
+		return nil
+	}
+	return SetAutoStart(true)
+}
