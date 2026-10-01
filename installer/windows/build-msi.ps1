@@ -129,37 +129,48 @@ function Get-MsiScalar {
     return $value
 }
 
-# Package/@Scope only stamps the package's summary-info flags; the install
-# context comes from ALLUSERS and MSIINSTALLPERUSER. A package that declares
-# Scope="perUser" without them installs from an elevated process as soon as an
-# administrator double-clicks it: files still land in %LOCALAPPDATA% and the
-# marker in HKCU, but the product registers machine-wide under
-# HKLM\...\Installer\UserData\<SID>\Products, so every later msiexec - including
-# the silent one the in-app updater runs - needs elevation. Observed on a real
-# install of version 0.0.121, which is why these rows are asserted.
+# The install context comes from the package's privilege flag, not from
+# ALLUSERS. Scope="perUser" marks the package UAC compliant, and Windows
+# Installer then installs per-user without elevation and ignores everything
+# else it finds - it deletes an authored ALLUSERS and logs "MSIINSTALLPERUSER
+# property is not valid for UAC compliant package. Ignoring". Authoring
+# ALLUSERS=2 + MSIINSTALLPERUSER=1 therefore *looks* like it pins the scope
+# while doing nothing at all; that was measured, not assumed. What has to hold:
+#   perUser    -> the per-user flag is set (Character Count, PID 15, bit 3) and
+#                 no ALLUSERS=1 row forces a per-machine install
+#   perMachine -> the flag is clear and ALLUSERS=1 is authored (WiX emits it)
 function Assert-MsiScope {
     param(
         [Parameter(Mandatory = $true)][string]$MsiPath,
         [Parameter(Mandatory = $true)][string]$Scope
     )
 
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
+    $summary = $db.GetType().InvokeMember('SummaryInformation', 'GetProperty', $null, $db, @(0))
+    $charCount = [int]$summary.GetType().InvokeMember('Property', 'GetProperty', $null, $summary, @(15))
+    $perUserFlag = ($charCount -band 8) -eq 8
+
     $props = Get-MsiPropertyTable -MsiPath $MsiPath
     $allUsers = $props['ALLUSERS']
-    $perUser = $props['MSIINSTALLPERUSER']
 
     if ($Scope -eq 'perMachine') {
+        if ($perUserFlag) {
+            throw "A per-machine package must not carry the per-user flag, but the built MSI has Character Count $charCount."
+        }
         if ($allUsers -ne '1') {
             throw "A per-machine package must author ALLUSERS=1, but the built MSI has ALLUSERS='$allUsers'."
         }
-        return 'ALLUSERS=1'
+        return "per-machine, ALLUSERS=1 (Character Count $charCount)"
     }
-    if ($allUsers -ne '2') {
-        throw "A per-user package must author ALLUSERS=2 (built MSI has '$allUsers'). Without it an administrator gets an elevated install that registers under HKLM, and every later msiexec needs elevation."
+
+    if (-not $perUserFlag) {
+        throw "A per-user package must carry the per-user (UAC compliant) flag, but the built MSI has Character Count $charCount - bit 3 is clear, so an administrator would get a per-machine install."
     }
-    if ($perUser -ne '1') {
-        throw "A per-user package must author MSIINSTALLPERUSER=1 (built MSI has '$perUser'). ALLUSERS=2 alone lets Windows Installer pick per-machine for an administrator."
+    if ($allUsers -eq '1') {
+        throw "ALLUSERS=1 forces a per-machine install; a per-user package must not author it."
     }
-    return 'ALLUSERS=2 + MSIINSTALLPERUSER=1'
+    return "per-user without elevation, flag set (Character Count $charCount)"
 }
 
 # Auto-start takeover = a search property plus a component conditioned on it.
