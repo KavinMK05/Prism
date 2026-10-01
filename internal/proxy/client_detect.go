@@ -25,6 +25,15 @@ func detectClient(r *http.Request) string {
 		// Empryo's custom-provider config has no header field, so its User-Agent
 		// is the only client signal Prism gets.
 		return "Empryo"
+	case strings.Contains(ua, "hermes"):
+		// Hermes's provider config has no header field either; the User-Agent is
+		// the only client signal Prism gets.
+		return "Hermes"
+	case strings.Contains(ua, "deepseek-harness"):
+		// DSH sends deepseek-harness/<version> (+<repo url>) on its LLM requests.
+		// Its MCP client sends a bare "node" User-Agent instead, which carries no
+		// usable signal — but that only reaches /mcp, not the LLM endpoints.
+		return "DeepSeek Harness"
 	case strings.Contains(ua, "cursor"):
 		return "Cursor"
 	case strings.Contains(ua, "copilot") || strings.Contains(ua, "github-copilot"):

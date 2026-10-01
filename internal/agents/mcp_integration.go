@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Prism exposes one MCP endpoint per agent (/mcp/<agent>). Each supported
@@ -53,6 +55,8 @@ var mcpSupportedAgents = []string{
 	"pi",
 	"prime-agent",
 	"empryo",
+	"hermes",
+	"deepseek-harness",
 }
 
 // AgentMCPSupported reports whether Prism knows the MCP config shape of an
@@ -87,6 +91,13 @@ func AgentMCPConfigPath(agentID string) string {
 	case "empryo":
 		// Empryo keeps MCP servers beside its providers, in the same file.
 		return empryoConfigPath()
+	case "hermes":
+		// Hermes keeps MCP servers beside its providers, in the same file.
+		return hermesConfigPath()
+	case "deepseek-harness":
+		// DSH keeps MCP servers in the home-level cordis.patch.yml, separate
+		// from the settings.yaml that carries its providers.
+		return deepSeekHarnessPatchPath()
 	}
 	if spec, ok := mcpAgentSpecFor(agentID); ok {
 		return spec.path
@@ -235,6 +246,10 @@ func InstallAgentMCPConfig(agentID string, port int) error {
 		return installGrokMCP(url)
 	case "empryo":
 		return installEmpryoMCP(url)
+	case "hermes":
+		return installHermesMCP(url)
+	case "deepseek-harness":
+		return installDeepSeekHarnessMCP(url)
 	}
 	spec, ok := mcpAgentSpecFor(agentID)
 	if !ok || spec.path == "" {
@@ -274,6 +289,10 @@ func RestoreAgentMCPConfig(agentID string) error {
 		return restoreGrokMCP()
 	case "empryo":
 		return restoreEmpryoMCP()
+	case "hermes":
+		return restoreHermesMCP()
+	case "deepseek-harness":
+		return restoreDeepSeekHarnessMCP()
 	}
 	spec, ok := mcpAgentSpecFor(agentID)
 	if !ok || spec.path == "" {
@@ -329,6 +348,12 @@ func AgentMCPActive(agentID string) bool {
 	}
 	if agentID == "empryo" {
 		return hasEmpryoMCPServer(data)
+	}
+	if agentID == "hermes" {
+		return hasHermesMCPServer(data)
+	}
+	if agentID == "deepseek-harness" {
+		return hasDeepSeekHarnessMCPServer(data)
 	}
 	spec, ok := mcpAgentSpecFor(agentID)
 	if !ok || spec.path == "" {
@@ -559,6 +584,227 @@ func hasEmpryoMCPServer(data []byte) bool {
 	case map[string]interface{}:
 		_, exists := servers[prismMCPEntryName]
 		return exists
+	}
+	return false
+}
+
+// -- Hermes (YAML managed region) --
+
+// Hermes keeps its MCP servers in the same config.yaml as its model providers,
+// under the top-level `mcp_servers:` key. Both writers therefore strip only
+// their own marker pair, so a provider re-sync never removes the MCP entry and
+// vice versa.
+
+// buildHermesMCPBlock emits the managed YAML region inserted under the
+// top-level `mcp_servers:` key. A url with no transport field means streamable
+// HTTP in Hermes.
+func buildHermesMCPBlock(url string) string {
+	var b strings.Builder
+	b.WriteString("  " + hermesMCPManagedBegin + "\n")
+	b.WriteString("  " + prismMCPEntryName + ":\n")
+	b.WriteString("    url: " + url + "\n")
+	b.WriteString("    headers:\n")
+	b.WriteString("      Authorization: " + prismMCPAuthorization + "\n")
+	b.WriteString("    enabled: true\n")
+	b.WriteString("  " + hermesMCPManagedEnd + "\n")
+	return b.String()
+}
+
+// installHermesMCP writes Prism's MCP entry into Hermes's config.yaml, leaving
+// the provider region and every user key untouched.
+func installHermesMCP(url string) error {
+	path := hermesConfigPath()
+	if path == "" {
+		return fmt.Errorf("cannot determine Hermes config path")
+	}
+	var existing string
+	if data, err := os.ReadFile(path); err == nil {
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read Hermes config: %w", err)
+	}
+	cleaned := stripMarkerRegion(existing, hermesMCPManagedBegin, hermesMCPManagedEnd)
+	ensureAgentBackup(path)
+
+	result, err := insertHermesRegion(cleaned, "mcp_servers", buildHermesMCPBlock(url))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create Hermes config dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(result), 0644); err != nil {
+		return fmt.Errorf("failed to write Hermes config: %w", err)
+	}
+	return nil
+}
+
+// restoreHermesMCP removes Prism's MCP region from Hermes's config.yaml,
+// leaving the provider region and every user key alone.
+func restoreHermesMCP() error {
+	path := hermesConfigPath()
+	if path == "" {
+		return fmt.Errorf("cannot determine Hermes config path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read Hermes config: %w", err)
+	}
+	cleaned := stripMarkerRegion(string(data), hermesMCPManagedBegin, hermesMCPManagedEnd)
+	if cleaned != string(data) {
+		if err := os.WriteFile(path, []byte(cleaned), 0644); err != nil {
+			return fmt.Errorf("failed to write Hermes config: %w", err)
+		}
+	}
+	return nil
+}
+
+// hasHermesMCPServer reports whether Hermes's config.yaml carries Prism's MCP
+// entry under mcp_servers.
+func hasHermesMCPServer(data []byte) bool {
+	var m map[string]interface{}
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	servers, ok := m["mcp_servers"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, exists := servers[prismMCPEntryName]
+	return exists
+}
+
+// -- DeepSeek Harness (YAML loader patch) --
+
+// DeepSeek Harness is the one agent whose MCP servers live in a different file
+// from its model providers: providers go to settings.yaml, MCP to the home-level
+// cordis.patch.yml. That file is a top-level YAML sequence of loader entries, so
+// Prism adds an `- insert:` row of its own.
+//
+// It must not patch the existing dsh-llm-pi-ai row instead: a loader patch
+// replaces the targeted row's whole config rather than merging into it, so an
+// override from here would erase every provider the user configured in the
+// Web UI. A new row inserts alongside it and applies to every profile at once.
+
+// deepSeekHarnessMCPEntryID is the loader entry id Prism owns in the patch.
+const deepSeekHarnessMCPEntryID = "prism-mcp"
+
+// buildDeepSeekHarnessMCPBlock emits the managed region appended to the
+// home-level cordis.patch.yml. The plugin name is single-quoted because a
+// leading `@` is a reserved indicator in YAML. toolCallTimeoutMs and
+// failOnStartupError are both written explicitly: dsh-mcp-client declares them
+// non-optional even though the README documents defaults.
+func buildDeepSeekHarnessMCPBlock(url string) string {
+	var b strings.Builder
+	b.WriteString(deepSeekHarnessMCPManagedBegin + "\n")
+	b.WriteString("- insert:\n")
+	b.WriteString("    - id: " + deepSeekHarnessMCPEntryID + "\n")
+	b.WriteString("      name: '@deepseek-ai/dsh-mcp-client'\n")
+	b.WriteString("      config:\n")
+	b.WriteString("        serverName: " + prismMCPEntryName + "\n")
+	b.WriteString("        transport: streamable-http\n")
+	b.WriteString("        url: " + url + "\n")
+	b.WriteString("        headers:\n")
+	b.WriteString("          Authorization: " + prismMCPAuthorization + "\n")
+	b.WriteString("        toolCallTimeoutMs: 60000\n")
+	b.WriteString("        failOnStartupError: false\n")
+	b.WriteString(deepSeekHarnessMCPManagedEnd + "\n")
+	return b.String()
+}
+
+// withDeepSeekHarnessMCPRegion appends a managed block to a top-level YAML
+// sequence, replacing an empty document rather than appending after it: `[]`
+// followed by list items is not valid YAML.
+func withDeepSeekHarnessMCPRegion(content, block string) string {
+	switch trimmed := strings.TrimSpace(content); trimmed {
+	case "", "[]", "{}":
+		return block
+	}
+	return strings.TrimRight(content, "\n") + "\n" + block
+}
+
+// installDeepSeekHarnessMCP writes Prism's MCP loader row into the home-level
+// patch, leaving every other entry and comment untouched.
+func installDeepSeekHarnessMCP(url string) error {
+	path := deepSeekHarnessPatchPath()
+	if path == "" {
+		return fmt.Errorf("cannot determine DeepSeek Harness patch path")
+	}
+	var existing string
+	if data, err := os.ReadFile(path); err == nil {
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read DeepSeek Harness patch: %w", err)
+	}
+	cleaned := stripMarkerRegion(existing, deepSeekHarnessMCPManagedBegin, deepSeekHarnessMCPManagedEnd)
+	ensureAgentBackup(path)
+
+	result := withDeepSeekHarnessMCPRegion(cleaned, buildDeepSeekHarnessMCPBlock(url))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create DeepSeek Harness home: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(result), 0644); err != nil {
+		return fmt.Errorf("failed to write DeepSeek Harness patch: %w", err)
+	}
+	return nil
+}
+
+// restoreDeepSeekHarnessMCP removes Prism's MCP region from the patch,
+// leaving the provider settings and every user entry alone. A patch that
+// existed only for Prism is removed rather than left empty.
+func restoreDeepSeekHarnessMCP() error {
+	path := deepSeekHarnessPatchPath()
+	if path == "" {
+		return fmt.Errorf("cannot determine DeepSeek Harness patch path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read DeepSeek Harness patch: %w", err)
+	}
+	cleaned := stripMarkerRegion(string(data), deepSeekHarnessMCPManagedBegin, deepSeekHarnessMCPManagedEnd)
+	if cleaned == string(data) {
+		return nil
+	}
+	if strings.TrimSpace(cleaned) == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove DeepSeek Harness patch: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(cleaned), 0644); err != nil {
+		return fmt.Errorf("failed to write DeepSeek Harness patch: %w", err)
+	}
+	return nil
+}
+
+// hasDeepSeekHarnessMCPServer reports whether the patch carries Prism's insert
+// row. The file is a YAML sequence, so this inspects each entry's insert list
+// rather than looking up a map key.
+func hasDeepSeekHarnessMCPServer(data []byte) bool {
+	var entries []map[string]interface{}
+	if err := yaml.Unmarshal(data, &entries); err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		inserts, ok := entry["insert"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, raw := range inserts {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if id, _ := item["id"].(string); id == deepSeekHarnessMCPEntryID {
+				return true
+			}
+		}
 	}
 	return false
 }

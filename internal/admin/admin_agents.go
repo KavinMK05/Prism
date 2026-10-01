@@ -363,6 +363,44 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			// shows this command instead of pretending setup is complete.
 			"key_command": "empryo --set-key prism prism",
 		})
+	case "hermes":
+		remap := config.LoadModelRemapping()
+		if len(remap.KnownModels) == 0 {
+			writeJSONError(w, "no Prism models configured", 400)
+			return
+		}
+		if err := agents.InstallHermesConfig(agents.ProxyPortFromEnv(), remap); err != nil {
+			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"models": len(remap.KnownModels),
+		})
+	case "deepseek-harness":
+		remap := config.LoadModelRemapping()
+		if len(remap.KnownModels) == 0 {
+			writeJSONError(w, "no Prism models configured", 400)
+			return
+		}
+		if err := agents.InstallDeepSeekHarnessConfig(agents.ProxyPortFromEnv(), remap); err != nil {
+			writeJSONError(w, "failed to install config: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, true); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"models": len(remap.KnownModels),
+		})
 	default:
 		writeJSONError(w, agents.AgentDisplayName(id)+" setup is not yet implemented", 501)
 	}
@@ -491,6 +529,28 @@ func handleAgentRestore(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "empryo":
 		if err := agents.RestoreEmpryoConfig(); err != nil {
+			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	case "hermes":
+		if err := agents.RestoreHermesConfig(); err != nil {
+			writeJSONError(w, "failed to restore: "+err.Error(), 500)
+			return
+		}
+		if err := agents.SetAgentAutoSync(id, false); err != nil {
+			writeJSONError(w, "failed to save agent preference: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	case "deepseek-harness":
+		if err := agents.RestoreDeepSeekHarnessConfig(); err != nil {
 			writeJSONError(w, "failed to restore: "+err.Error(), 500)
 			return
 		}

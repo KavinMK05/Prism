@@ -22,6 +22,8 @@ const AGENTS = [
   { id: 'prime-agent', name: 'Prime Agent', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in Prime Agent\u2019s models.json (~/.prime/agent, WSL-aware on Windows) so Prime Agent can use your local models via Prism. Your default model is left untouched. Requires Prime Agent (prime-agent) to be installed.' },
   { id: 'kimi-code', name: 'Kimi Code', desc: 'Registers a prism provider and model aliases in ~/.kimi-code/config.toml so Kimi Code CLI can use your local models via Prism. Requires Kimi Code (kimi) to be installed.' },
   { id: 'empryo', name: 'Empryo', desc: 'Registers a prism custom provider in Empryo\u2019s global config.json. Empryo keeps keys in your system keychain, so run \u201Cempryo --set-key prism prism\u201D once after setup. Requires Empryo to be installed.' },
+  { id: 'hermes', name: 'Hermes', desc: 'Registers prism (and prism-responses when Responses-API models are configured) providers in Hermes\u2019s config.yaml so Hermes Agent can use your local models via Prism. Your default model is left untouched. Requires Hermes (hermes) to be installed.' },
+  { id: 'deepseek-harness', name: 'DeepSeek Harness', desc: 'Registers prism (and prism-responses when Responses-API models are configured) provider routes in DeepSeek Harness\u2019s settings.yaml so DSH can use your local models via Prism. One write covers every profile (web and desktop). Your default model is left untouched. Requires DeepSeek Harness (dsh) to be installed.' },
 ];
 
 const TIER_LABELS: Record<string, string> = { opus: 'Opus tier model', sonnet: 'Sonnet tier model', haiku: 'Haiku tier model', subagent: 'Subagent model' };
