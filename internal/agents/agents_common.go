@@ -51,7 +51,7 @@ func prismRouteForModelID(remap *config.ModelRemapping, id string) string {
 // supportedAgents is the canonical list of agent ids handled by the generic
 // /admin/agent/* endpoints and SyncAgents. Codex Desktop is handled by a
 // separate endpoint and sync function, but shares the same auto-sync policy.
-var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code", "prime-agent", "empryo"}
+var supportedAgents = []string{"claude-code", "factory-droid", "opencode", "zcode", "zed", "omp", "grok-build", "pi", "kimi-code", "prime-agent", "empryo", "hermes", "deepseek-harness"}
 
 var allAgentIDs = append([]string{"codex"}, supportedAgents...)
 
@@ -105,6 +105,16 @@ func agentConfigPath(agentID string) string {
 		// Empryo resolves to %LOCALAPPDATA%\Empryo\config.json on Windows, which
 		// the home-based switch here cannot express; see empryoConfigPath.
 		return empryoConfigPath()
+	case "hermes":
+		// Hermes resolves to %LOCALAPPDATA%\hermes\config.yaml on Windows, which
+		// the home-based switch here cannot express; see hermesConfigPath.
+		return hermesConfigPath()
+	case "deepseek-harness":
+		// DSH's providers live in one cordis.patch.yml per profile and its MCP
+		// server in a home-level one, so no single file describes it. The home
+		// directory is the stable answer; IsAgentActive and AgentMCPConfigPath
+		// resolve the individual files.
+		return deepSeekHarnessHome()
 	}
 	return ""
 }
@@ -134,6 +144,10 @@ func AgentDisplayName(agentID string) string {
 		return "Kimi Code"
 	case "empryo":
 		return "Empryo"
+	case "hermes":
+		return "Hermes"
+	case "deepseek-harness":
+		return "DeepSeek Harness"
 	}
 	return agentID
 }
@@ -254,6 +268,11 @@ func IsAgentActive(agentID string) bool {
 	if p == "" {
 		return false
 	}
+	if agentID == "deepseek-harness" {
+		// Providers span one patch per profile, so the single-file read below
+		// cannot answer this.
+		return deepSeekHarnessProvidersPresent()
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return false
@@ -276,7 +295,7 @@ func IsAgentActive(agentID string) bool {
 		return false
 	}
 	var m map[string]interface{}
-	if agentID == "omp" {
+	if agentID == "omp" || agentID == "hermes" {
 		if err := yaml.Unmarshal(data, &m); err != nil {
 			return false
 		}
@@ -378,6 +397,16 @@ func IsAgentActive(agentID string) bool {
 		return isPrimeAgentActive()
 	case "empryo":
 		return hasEmpryoProvider(m["providers"])
+	case "hermes":
+		if provs, ok := m["providers"].(map[string]interface{}); ok {
+			if _, set := provs[hermesProviderID]; set {
+				return true
+			}
+			if _, set := provs[hermesResponsesProviderID]; set {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -579,6 +608,10 @@ func AgentInstalled(id string) bool {
 		return isKimiCodeInstalled()
 	case "empryo":
 		return isEmpryoInstalled()
+	case "hermes":
+		return isHermesInstalled()
+	case "deepseek-harness":
+		return isDeepSeekHarnessInstalled()
 	}
 	return false
 }
@@ -618,6 +651,10 @@ func SyncAgents(port int) {
 			syncKimiCode(port)
 		case "empryo":
 			syncEmpryo(port)
+		case "hermes":
+			syncHermes(port)
+		case "deepseek-harness":
+			syncDeepSeekHarness(port)
 		}
 	}
 }

@@ -843,6 +843,16 @@ function AgentAccess({
                             Restart Empryo, or run /mcp in it, to connect.
                           </span>
                         )}
+                        {agent.id === 'hermes' && (
+                          <span className="text-xs text-muted-foreground">
+                            Restart Hermes to pick up the new server.
+                          </span>
+                        )}
+                        {agent.id === 'deepseek-harness' && (
+                          <span className="text-xs text-muted-foreground">
+                            Restart DeepSeek Harness to pick up the new server.
+                          </span>
+                        )}
                       </div>
                     ) : (
                     <Button
