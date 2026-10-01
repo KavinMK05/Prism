@@ -519,9 +519,11 @@ func handleAdminModelRemap(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid JSON: "+err.Error(), 400)
 			return
 		}
-		if remap.DefaultModel == "" {
-			remap.DefaultModel = "glm-5.1:cloud"
-		}
+		// Never persist an unresolvable default_model. It resolves to an empty
+		// provider and the request lands on cfg.DefaultProvider, which for an
+		// OAuth account such as Codex fails with an upstream 400 for a model the
+		// caller never asked for.
+		remap.DefaultModel = remap.ResolvableDefaultModel()
 		if remap.KnownModels == nil {
 			remap.KnownModels = []config.ModelEntry{}
 		}
