@@ -628,6 +628,31 @@ func (m *ModelRemapping) DefaultProvider() string {
 	return ""
 }
 
+// ResolvableDefaultModel returns a DefaultModel guaranteed to resolve against
+// KnownModels, keeping the current value whenever it already resolves.
+//
+// A DefaultModel that is absent from KnownModels is not inert. ResolveModel
+// still substitutes it, but returns an empty provider, so the request falls
+// through to cfg.DefaultProvider. When that provider is an OAuth account such
+// as Codex, it rejects models it does not serve and the caller sees an upstream
+// 400 naming a model it never requested — which is how a stale default such as
+// "glm-5.1:cloud" silently breaks every unknown-model request.
+func (m *ModelRemapping) ResolvableDefaultModel() string {
+	if m.DefaultModel != "" {
+		for _, entry := range m.KnownModels {
+			if entryMatchesTarget(entry, m.DefaultModel) {
+				return m.DefaultModel
+			}
+		}
+	}
+	// Unset, or set to a model that no longer exists. Seed from the first known
+	// model so the default always routes somewhere real.
+	if len(m.KnownModels) == 0 {
+		return ""
+	}
+	return m.KnownModels[0].ID
+}
+
 // GenerateProviderID creates a stable-ish unique ID for a custom provider.
 func GenerateProviderID(name string) string {
 	slug := strings.ToLower(name)
