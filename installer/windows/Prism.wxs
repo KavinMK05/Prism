@@ -105,12 +105,15 @@
          installer is expected to behave, and again after an in-place upgrade:
          util:CloseApplication has just terminated the running copy, so without
          WIX_UPGRADE_DETECTED a manual upgrade would leave the user with a
-         closed tray. ExeCommand is empty but still
-         required: WiX demands one of the type attributes for the action
-         (WIX0044) and ties Return="asyncNoWait" to ExeCommand (WIX0038), so
-         removing it breaks the build. Execute="immediate" is what keeps this
-         legal after InstallFinalize - a deferred action cannot be sequenced
-         there - and starts the tray as the installing user, not elevated. -->
+         closed tray.
+
+         FileRef resolves through the File table at run time and fails with
+         error 2753 if Windows Installer judged PrismExe unchanged. The PE
+         version is now monotonically increasing across CI and release builds,
+         so the payload is installed and marked for this action. asyncNoWait keeps
+         the installer from waiting on a tray app that never exits. Execute="immediate"
+         keeps this legal after InstallFinalize and launches Prism as the
+         installing user, not elevated. -->
     <CustomAction Id="LaunchPrism"
                   FileRef="PrismExe"
                   ExeCommand=""

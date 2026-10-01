@@ -59,9 +59,25 @@ jobs:
             if ($v -notmatch '^\d+\.\d+\.\d+$') {
               throw "Tag '$env:GITHUB_REF_NAME' is not v<major>.<minor>.<build>; the MSI build needs a numeric version."
             }
-            go-winres make --file-version $v --product-version $v
+            # The first CI MSI shipped PE FileVersion 1.0.0.0 while releases
+            # used semantic versions such as 0.3.23. MSI therefore classified
+            # the release exe as older and planned no copy before removing the
+            # previous product. Encode the globally increasing workflow run
+            # number across the middle PE fields on *all* builds (each Windows
+            # version field is capped at 65535); keep ProductVersion semantic for
+            # display and MSI metadata.
+            $run = [long]$env:GITHUB_RUN_NUMBER
+            $minor = [math]::Floor($run / 65536)
+            $build = $run % 65536
+            $fileVersion = "2.$minor.$build.0"
+            go-winres make --file-version $fileVersion --product-version $v
           } else {
-            go-winres make
+            $run = [long]$env:GITHUB_RUN_NUMBER
+            $minor = [math]::Floor($run / 65536)
+            $build = $run % 65536
+            $fileVersion = "2.$minor.$build.0"
+            $productVersion = "0.0.$env:GITHUB_RUN_NUMBER"
+            go-winres make --file-version $fileVersion --product-version $productVersion
           }
 
       - name: Build

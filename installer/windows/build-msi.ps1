@@ -173,6 +173,45 @@ function Assert-MsiScope {
     return "per-user without elevation, flag set (Character Count $charCount)"
 }
 
+# Pin the FileRef source used by the post-install launch. The PE version check
+# below ensures Windows Installer schedules the file, avoiding error 2753.
+function Assert-MsiLaunch {
+    param([Parameter(Mandatory = $true)][string]$MsiPath)
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
+
+    # A column named like its table cannot be referenced in MSI SQL
+    # (SELECT `CustomAction` FROM `CustomAction` fails to open), so read the rows
+    # and pick the one we want here.
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT * FROM `CustomAction`'))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    $caType = $null
+    $source = $null
+    $target = $null
+    while ($true) {
+        $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+        if ($null -eq $rec) { break }
+        if ([string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1)) -ne 'LaunchPrism') { continue }
+        # Columns: CustomAction, Type, Source, Target
+        $caType = [int]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(2))
+        $source = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(3))
+        $target = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(4))
+    }
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+
+    if ($null -eq $caType) {
+        throw 'The LaunchPrism custom action is missing from the built MSI.'
+    }
+
+    # Bit 4 (0x10) of the base type means the source is a File table key.
+    if (-not (($caType -band 0x3F) -band 0x10) -or $source -ne 'PrismExe' -or $target) {
+        throw "LaunchPrism must use FileRef=PrismExe and no arguments (built MSI has type '$caType', source '$source', target '$target')."
+    }
+
+    return 'launches PrismExe with asyncNoWait'
+}
+
 # Auto-start takeover = a search property plus a component conditioned on it.
 # A search property is populated by the AppSearch action at run time and has no
 # Property row, so assert the wiring (all of it silently vanishes when authored
@@ -232,6 +271,15 @@ if (-not $ExePath) { $ExePath = Join-Path $root "prism.exe" }
 $exeFull = Resolve-RepoPath $ExePath
 if (-not (Test-Path $exeFull)) {
     throw "prism.exe not found at $exeFull. Run ./build.ps1 first, or pass -ExePath <path>."
+}
+
+# Legacy PR MSI builds stamped prism.exe as 1.0.0.0. A lower FileVersion makes
+# Windows Installer skip the payload before RemoveExistingProducts deletes that
+# old copy, leaving the new install registered but broken. The release workflow
+# stamps 2.<run high bits>.<run low bits>.0; reject an unstamped payload here.
+$peVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exeFull).FileVersion
+if ($peVersion -notmatch '^2\.\d+\.\d+\.0$') {
+    throw "prism.exe PE FileVersion '$peVersion' is not a monotonic 2.<run high bits>.<run low bits>.0 version. Run go-winres make before building the MSI."
 }
 
 $iconFull = Join-Path $root "internal\platform\logo_icon.ico"
@@ -318,12 +366,14 @@ $exeName = Split-Path $exeFull -Leaf
 $packed = Assert-MsiFilePayload -MsiPath $outputFull -FileName $exeName -ExpectedSize (Get-Item $exeFull).Length
 $scopeInfo = Assert-MsiScope -MsiPath $outputFull -Scope $Scope
 $autostartInfo = Assert-MsiAutostartAdoption -MsiPath $outputFull
+$launchInfo = Assert-MsiLaunch -MsiPath $outputFull
 
 Write-Host ""
 Write-Host "Built $($msi.Name) ($sizeMb MB) - Prism $Version, $Scope" -ForegroundColor Green
 Write-Host "  payload   : $exeName ($packed bytes) verified inside the MSI" -ForegroundColor Green
 Write-Host "  scope     : $scopeInfo" -ForegroundColor Green
 Write-Host "  autostart : $autostartInfo" -ForegroundColor Green
+Write-Host "  launch    : $launchInfo" -ForegroundColor Green
 
 if ($Scope -eq "perMachine") {
     Write-Warning "A per-machine MSI needs an elevated msiexec to install or upgrade. In-app updates do not elevate yet, so this package is for manual installs only."
