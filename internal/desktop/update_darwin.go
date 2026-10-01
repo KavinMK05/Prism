@@ -15,6 +15,13 @@ func getUpdateAssetName() string {
 	return "Prism-macOS.tar.gz"
 }
 
+// updateAssetCandidates lists the release assets to try, in order of
+// preference. macOS has a single channel: the tar.gz that replaces the app
+// bundle in place.
+func updateAssetCandidates() []string {
+	return []string{getUpdateAssetName()}
+}
+
 func createDestFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 }
@@ -70,7 +77,7 @@ func performUpdate(info *UpdateInfo, progressFn func(percent int)) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	tarPath := filepath.Join(tmpDir, "Prism-macOS.tar.gz")
+	tarPath := filepath.Join(tmpDir, filepath.Base(info.AssetName))
 	log.Printf("[Update] Downloading %s to %s", info.DownloadURL, tarPath)
 	if err := downloadFile(info.DownloadURL, tarPath, progressFn); err != nil {
 		return fmt.Errorf("download update: %w", err)

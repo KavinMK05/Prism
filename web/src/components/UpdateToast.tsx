@@ -14,7 +14,11 @@ export default function UpdateToast({ status, install }: UpdateToastProps) {
 
   if (!status || dismissed) return null;
 
-  const { state, version, current } = status;
+  const { state, version, current, install_kind } = status;
+  const installTitle =
+    install_kind === 'msi'
+      ? `Install v${version.replace(/^v/, '')} with Windows Installer`
+      : `Download and install v${version.replace(/^v/, '')}`;
 
   // Auto-dismiss once the user has seen this particular version's toast.
   if (version && seenVersion.current === null) seenVersion.current = version;
@@ -45,7 +49,7 @@ export default function UpdateToast({ status, install }: UpdateToastProps) {
           <span className="font-semibold tracking-tight">Update available</span>
           <span className="text-muted-foreground"> &mdash; v{version.replace(/^v/, '')} is ready to install</span>
         </div>
-        <Button size="sm" disabled={starting} onClick={startInstall} title={`Download and install v${version.replace(/^v/, '')}`}>
+        <Button size="sm" disabled={starting} onClick={startInstall} title={installTitle}>
           <DownloadIcon />
           Update
         </Button>

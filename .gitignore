@@ -14,6 +14,13 @@
 docs/
 droid-wiki/
 
+# Windows MSI installer
+*.msi
+*.wixpdb
+installer/**/obj/
+# WiX local extension cache (created when an extension is added without -g)
+.wix/
+
 # Dev scratch images
 =ro
 extracted_new.png

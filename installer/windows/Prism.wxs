@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Prism - Windows MSI package (WiX v6+).
+
+  Build with installer/windows/build-msi.ps1, which supplies the preprocessor
+  variables this file needs:
+    -d PrismVersion=<numeric version, e.g. 0.9.1>
+    -d PrismExe=<absolute path to the built prism.exe>
+    -d IconFile=<absolute path to internal/platform/logo_icon.ico>
+    -d Scope=perUser|perMachine
+
+  Scope:
+    * perUser (default) installs to %LOCALAPPDATA%\Programs\Prism, records its
+      install state under HKCU, and never prompts for elevation. The in-app
+      updater hands a new MSI to msiexec without an elevation prompt.
+    * perMachine installs to %ProgramFiles%\Prism and records state under HKLM,
+      so every upgrade needs an elevated msiexec. The updater in
+      internal/desktop/update_windows.go does not elevate yet - see the
+      "Windows MSI" section of AGENTS.md before shipping a per-machine package.
+
+  Deliberately NOT authored here:
+
+    * Uninstall-time cleanup of HKCU\...\Run\Prism, the "start with Windows"
+      value the app owns (internal/platform/autostart_windows.go). A
+      RemoveRegistryValue row fires on *every* removal of the product,
+      including the one a major upgrade performs, so it would silently turn
+      auto-start off on each update. Doing this properly needs a custom action
+      conditioned on "NOT UPGRADINGPRODUCTCODE"; until then the value is left
+      behind on uninstall and the README tells the user how to remove it.
+
+    * A desktop shortcut. With no installer UI it cannot be an option, and a
+      tray app does not need one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?define ProductName="Prism" ?>
+  <?define MarkerKey="Software\Prism" ?>
+
+  <?if $(var.Scope) = "perMachine" ?>
+  <?define MarkerRoot="HKLM" ?>
+  <?else ?>
+  <?define MarkerRoot="HKCU" ?>
+  <?endif ?>
+
+  <Package Name="$(var.ProductName)"
+           Manufacturer="Prism"
+           Version="$(var.PrismVersion)"
+           UpgradeCode="{10F8B1C4-F448-419B-A5AE-48B2B17B6B0D}"
+           Scope="$(var.Scope)"
+           Language="1033">
+
+    <!-- afterInstallInitialize removes the previous version before laying down
+         the new files, which gives upgrades and fresh installs one code path
+         and sidesteps the file-versioning rules of minor upgrades. -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of Prism is already installed. Uninstall it first if you need to downgrade." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- The Feature has to live inside Package, not in a Fragment of its own.
+         WiX v6 silently discards a Feature that sits outside the Package, and
+         with it every component the Feature references: the build succeeds,
+         reports no warning, and produces an ~28 KB MSI with no File rows, no
+         Component table and no payload. Verified by comparing a Fragment
+         Feature (empty package) against this one (full payload). Keep the
+         directories and components below in Fragments, where they do work. -->
+    <Feature Id="MainFeature" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="MainComponents" />
+      <ComponentGroupRef Id="ShortcutComponents" />
+    </Feature>
+
+    <!-- Start the app once the install finishes, the way a downloaded
+         installer is expected to behave. ExeCommand is empty but still
+         required: WiX demands one of the type attributes for the action
+         (WIX0044) and ties Return="asyncNoWait" to ExeCommand (WIX0038), so
+         removing it breaks the build. Execute="immediate" is what keeps this
+         legal after InstallFinalize - a deferred action cannot be sequenced
+         there - and starts the tray as the installing user, not elevated. -->
+    <CustomAction Id="LaunchPrism"
+                  FileRef="PrismExe"
+                  ExeCommand=""
+                  Execute="immediate"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchPrism" After="InstallFinalize" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
+    <!-- Prism runs as two processes with the same image name: the tray parent
+         and its `prism.exe` child started with the serve flag. TerminateProcess
+         kills both, which is what lets an upgrade replace the file while the
+         app is running. RebootPrompt has to be "no" whenever
+         TerminateProcess is set. Like the CustomAction above, this belongs
+         inside Package - in a Fragment WiX v6 drops it without a word. -->
+    <util:CloseApplication Id="CloseRunningPrism"
+                           Target="prism.exe"
+                           TerminateProcess="1"
+                           PromptToContinue="no"
+                           RebootPrompt="no" />
+  </Package>
+
+  <Fragment>
+    <Icon Id="PrismIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="PrismIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/KavinMK05/Prism" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/KavinMK05/Prism#readme" />
+  </Fragment>
+
+  <Fragment>
+    <?if $(var.Scope) = "perMachine" ?>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="$(var.ProductName)" />
+    </StandardDirectory>
+    <?else ?>
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="$(var.ProductName)" />
+      </Directory>
+    </StandardDirectory>
+    <?endif ?>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppProgramsFolder" Name="$(var.ProductName)" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="MainComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="{D11BC0CB-B619-4957-A62B-F0BCF3027186}">
+        <File Id="PrismExe" Source="$(var.PrismExe)" KeyPath="yes" />
+      </Component>
+
+      <!-- Install state the app reads to tell an MSI-managed copy from a
+           portable one (see internal/platform/install_windows.go). The value
+           names are a public contract: changing them breaks install-type
+           detection in already-shipped binaries. -->
+      <Component Id="InstallState" Guid="{9DC04FE3-10B2-49BB-8275-C7C60748DC87}">
+        <RegistryValue Root="$(var.MarkerRoot)"
+                       Key="$(var.MarkerKey)"
+                       Name="InstallType"
+                       Type="string"
+                       Value="msi"
+                       KeyPath="yes" />
+        <RegistryValue Root="$(var.MarkerRoot)"
+                       Key="$(var.MarkerKey)"
+                       Name="InstallDir"
+                       Type="string"
+                       Value="[INSTALLFOLDER]" />
+        <RegistryValue Root="$(var.MarkerRoot)"
+                       Key="$(var.MarkerKey)"
+                       Name="InstalledVersion"
+                       Type="string"
+                       Value="[ProductVersion]" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ShortcutComponents" Directory="AppProgramsFolder">
+      <Component Id="StartMenuShortcut" Guid="{32149E8C-D3C4-406A-BF37-7C03C5486153}">
+        <Shortcut Id="PrismStartMenuShortcut"
+                  Name="$(var.ProductName)"
+                  Description="Prism - LLM API proxy"
+                  Target="[INSTALLFOLDER]prism.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="PrismIcon" />
+        <RemoveFolder Id="RemoveAppProgramsFolder" On="uninstall" />
+        <RegistryValue Root="$(var.MarkerRoot)"
+                       Key="$(var.MarkerKey)"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>
