@@ -50,8 +50,17 @@ func getAdminPort() string {
 func RunTray(iconData []byte, cleanup func()) {
 	config.SetCurrent(config.Load())
 
-	// Start the admin UI server in the tray process
+	// Start the admin UI server in the tray process.
 	adminServerStarter(config.Current(), getAdminPort())
+
+	// The proxy is the core service; don't make it depend on the notification
+	// area accepting our tray icon. Windows can reject Shell_NotifyIcon (for
+	// example, when the executable is launched from a protected location), in
+	// which case systray.Run never invokes its ready callback. Start the proxy
+	// first so the API remains available even if tray registration fails.
+	if !IsProxyRunning() {
+		StartProxyProcess()
+	}
 
 	systray.Run(func() {
 		setPlatformIcon(iconData)
@@ -176,6 +185,11 @@ func RunTray(iconData []byte, cleanup func()) {
 }
 
 func UpdateMenu(running bool) {
+	// Admin API proxy controls can be called even when Windows rejected tray
+	// initialization, leaving these menu items unset.
+	if statusItem == nil || startItem == nil || stopItem == nil || mRestart == nil {
+		return
+	}
 	if running {
 		statusItem.SetTitle("● Running")
 		startItem.Disable()
