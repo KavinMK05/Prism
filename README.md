@@ -61,6 +61,7 @@ Prism is the only thing standing between your agents and the messy reality of LL
 | **ZCode integration** | ✅ One-click | ❌ |
 | **Prime Agent integration** | ✅ One-click | ❌ |
 | **Empryo integration** | ✅ One-click | ❌ |
+| **DeepSeek Harness integration** | ✅ One-click | ❌ |
 | **Web admin UI** | ✅ | ❌ |
 | **Free unlimited web search** | ✅ Managed SearXNG | ❌ |
 | **Windows native** | ✅ System tray + admin UI | ❌ Requires Python |
@@ -135,6 +136,11 @@ See the [SearXNG control surface](#searxng-control-surface) section below for th
 ### 1. Run Prism
 
 **Windows:**
+
+Download `Prism-Windows-x64.msi` from the [latest release](https://github.com/KavinMK05/Prism/releases/latest) and run it. Prism installs for the current user only — no admin prompt — adds a Start Menu shortcut and starts automatically when the install finishes. Updates are applied by Windows Installer, from inside the app.
+
+Prefer a single file? The portable `prism.exe` in the same release runs as-is. It updates itself in place, so keep it somewhere writable.
+
 ```powershell
 ./prism.exe
 ```
@@ -146,6 +152,14 @@ open Prism.app
 ```
 
 That's it. Prism starts on `http://127.0.0.1:11434` and a system tray icon appears. A web admin UI is available at `http://127.0.0.1:8765/admin`.
+
+#### Uninstalling on Windows
+
+Use **Settings → Apps → Installed apps → Prism → Uninstall** (or **Add or remove programs**). This removes the program files and the Start Menu shortcut.
+
+Your data is kept: `%APPDATA%\prism` holds the config, stats database, logs and the managed SearXNG install, and is deliberately left alone so reinstalling restores your setup. Delete that folder to remove everything.
+
+If you had turned on **Start at Login** (admin UI → **Proxy** tab), the logon entry may remain after uninstalling — Windows ignores it once the executable is gone. To clear it, delete the `Prism` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, or disable the entry in **Task Manager → Startup apps**.
 
 ### 2. Start free search (optional)
 
@@ -333,6 +347,8 @@ Prism includes built-in, one-click integrations for popular AI coding agents. Ea
 | **ZCode** | Registers `prism` provider with model list | `~/.zcode/v2/config.json` |
 | **Grok Build** | Adds `[model.prism-*]` entries with smart routing | `~/.grok/config.toml` |
 | **Empryo** | Registers a `prism` custom provider with model list and limits. Empryo keeps keys in the system keychain, so run `empryo --set-key prism prism` once after Setup. The MCP tab's **Agent access** also writes a `prism` MCP entry (restart Empryo to pick it up) | `%LOCALAPPDATA%\Empryo\config.json` (Windows), `~/.empryo/config.json` (macOS/Linux) |
+| **Hermes** | Registers `prism` (+ `prism-responses` when Responses-API models are configured) providers with model list and context windows. Your default model is left untouched. The MCP tab's **Agent access** also writes a `prism` MCP entry | `%LOCALAPPDATA%\hermes\config.yaml` (Windows), `~/.hermes/config.yaml` (macOS/Linux) |
+| **DeepSeek Harness** | Registers `prism` (+ `prism-responses` when Responses-API models are configured) provider routes with model list and context windows in DSH's `settings.yaml`. One write covers every profile (web and desktop), and your default model is left untouched. The MCP tab's **Agent access** also writes a `prism` MCP entry into the home-level `cordis.patch.yml` | `$DSH_HOME/settings.yaml`, `$DSH_HOME/cordis.patch.yml` (default `~/.dsh`) |
 
 **How it works:**
 
@@ -371,7 +387,7 @@ The admin UI provides:
 | **Provider** | Select default provider, set API keys, add/edit/remove custom providers |
 | **OAuth** | Manage Codex (OpenAI) accounts — sign in, view session/weekly usage percentages, activate, or remove accounts |
 | **Models** | Edit model remapping — default model, known models with per-model provider, reasoning toggle, capabilities (tools/vision/struct), context length, max output tokens, reasoning effort levels, and aliases. **Auto-fill** — type a model name, search, and click to populate all fields automatically (models.dev; Ollama Cloud from `/api/tags` + `/api/show`). |
-| **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode and Empryo. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
+| **Agents** | One-click setup/restore for Claude Code, Codex Desktop, Factory Droid, OpenCode, ZCode, Empryo, Hermes and DeepSeek Harness. Claude Code includes per-tier model selectors (opus, sonnet, haiku, subagent). |
 | **Stats** | Live and historical performance dashboard (see below) |
 | **Proxy** | Start, stop, and restart the proxy; view status; toggle auto-start at login |
 | **SearXNG** | Managed local metasearch — **free unlimited web search with no API keys or rate limits**. Start, stop, and restart the managed SearXNG metasearch instance; toggle auto-start on Prism launch; structured editor for the user-tunable subset of `settings.yml` (server / search / UI). First Start bootstraps an isolated Python venv and installs SearXNG (~80 MB); if no system Python ≥3.11 is found, Prism downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) interpreter (≥3.11) first. |
@@ -402,7 +418,7 @@ All request data and TPS snapshots are persisted to the stats database (`%APPDAT
 
 Prism automatically identifies which tool is making each request by inspecting the `User-Agent` header. Detected clients include:
 
-**Claude Code, Cursor, Continue, GitHub Copilot, Aider, OpenCode, Windsurf, Trae, Factory Droid, Supermaven, Empryo, and Claude Desktop.**
+**Claude Code, Cursor, Continue, GitHub Copilot, Aider, OpenCode, Windsurf, Trae, Factory Droid, Supermaven, Empryo, Hermes, DeepSeek Harness, and Claude Desktop.**
 
 You can override detection by setting the `X-Client-Name` header on your requests — the value is used directly in stats, so you can tag requests with custom names like `"my-script"` or `"ci-pipeline"`.
 
@@ -795,7 +811,7 @@ Thinking/reasoning blocks, tool calls, and images are fully supported in all str
 
 Prism can start automatically when you log in. Toggle this from the admin UI (**Proxy** tab → **Start at Login**).
 
-**Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required.
+**Windows:** Uses the Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) to launch the Prism executable at login. No admin rights required. The MSI installer does not manage this value — the app does — so it survives updates and is left behind by an uninstall (see [Uninstalling on Windows](#uninstalling-on-windows)).
 
 **macOS:** Uses a LaunchAgent plist (`~/Library/LaunchAgents/com.prism.plist`) to launch Prism at login.
 
@@ -828,10 +844,18 @@ The following features are not supported by upstream providers and are handled g
 
 **Windows:**
 ```powershell
+./build.ps1                                  # frontend + prism.exe
+./installer/windows/build-msi.ps1            # optional: MSI for prism.exe
+```
+
+Or by hand:
+```powershell
 go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .
 ```
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
+
+The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism`. `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
 
 To run in console mode (for debugging), build without the flag:
 ```powershell

@@ -8,6 +8,10 @@ type UpdateStatusInfo struct {
 	Version string `json:"version"` // latest version when state is available
 	Current string `json:"current"`
 	Error   string `json:"error,omitempty"`
+	// InstallKind is "msi" when updates are applied by Windows Installer
+	// instead of the portable self-replace flow, and empty otherwise. The
+	// admin UI uses it to tell the user what clicking Update will do.
+	InstallKind string `json:"install_kind,omitempty"`
 }
 
 var updateSubscribers = make(map[chan UpdateStatusInfo]struct{})
@@ -53,6 +57,9 @@ func GetUpdateStatus() UpdateStatusInfo {
 	defer updateMu.Unlock()
 
 	info := UpdateStatusInfo{State: "idle", Current: version}
+	if InstalledViaMSI() {
+		info.InstallKind = "msi"
+	}
 	switch updateState {
 	case UpdateChecking:
 		info.State = "checking"

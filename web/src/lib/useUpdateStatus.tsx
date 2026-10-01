@@ -6,6 +6,8 @@ export interface UpdateStatus {
   version: string;
   current: string;
   error?: string;
+  /** 'msi' when a Windows Installer package applies the update, empty otherwise. */
+  install_kind?: string;
 }
 
 const POLL_MS = 30_000;

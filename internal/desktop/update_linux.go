@@ -32,6 +32,13 @@ func getUpdateAssetName() string {
 	return "Prism-Linux.tar.gz"
 }
 
+// updateAssetCandidates lists the release assets to try, in order of
+// preference. Linux has a single channel per install shape: the AppImage
+// replaces itself in place, a plain binary is unpacked from the tar.gz.
+func updateAssetCandidates() []string {
+	return []string{getUpdateAssetName()}
+}
+
 func createDestFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 }
@@ -77,7 +84,7 @@ func performUpdate(info *UpdateInfo, progressFn func(percent int)) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	tarPath := filepath.Join(tmpDir, getUpdateAssetName())
+	tarPath := filepath.Join(tmpDir, filepath.Base(info.AssetName))
 	log.Printf("[Update] Downloading %s to %s", info.DownloadURL, tarPath)
 	if err := downloadFile(info.DownloadURL, tarPath, progressFn); err != nil {
 		return fmt.Errorf("download update: %w", err)

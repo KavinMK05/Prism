@@ -127,30 +127,33 @@ func checkForUpdate() (*UpdateInfo, error) {
 		return nil, nil
 	}
 
-	assetName := getUpdateAssetName()
-	downloadURL := ""
-	var assetSize int64
+	assetCandidates := updateAssetCandidates()
+	var chosen *GitHubReleaseAsset
 
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.BrowserDownloadURL
-			assetSize = asset.Size
+	for _, want := range assetCandidates {
+		for i := range release.Assets {
+			if release.Assets[i].Name == want {
+				chosen = &release.Assets[i]
+				break
+			}
+		}
+		if chosen != nil {
 			break
 		}
 	}
 
-	if downloadURL == "" {
-		log.Printf("[Update] Asset %q not found in release %s", assetName, latestVersion)
-		return nil, fmt.Errorf("asset %q not found in release", assetName)
+	if chosen == nil {
+		log.Printf("[Update] None of %v found in release %s", assetCandidates, latestVersion)
+		return nil, fmt.Errorf("no matching asset in release %s (looked for %v)", latestVersion, assetCandidates)
 	}
 
-	log.Printf("[Update] Update available: %s -> %s", version, latestVersion)
+	log.Printf("[Update] Update available: %s -> %s (%s)", version, latestVersion, chosen.Name)
 
 	return &UpdateInfo{
 		Version:     latestVersion,
-		DownloadURL: downloadURL,
-		AssetName:   assetName,
-		AssetSize:   assetSize,
+		DownloadURL: chosen.BrowserDownloadURL,
+		AssetName:   chosen.Name,
+		AssetSize:   chosen.Size,
 		ReleaseURL:  release.HTMLURL,
 	}, nil
 }

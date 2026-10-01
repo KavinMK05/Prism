@@ -15,6 +15,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'rsrc/**'
+      - 'installer/**'
       - 'Info.plist'
       - '.github/workflows/release.yml'
       - 'web/**'
@@ -48,17 +49,47 @@ jobs:
         run: go install github.com/tc-hib/go-winres@latest
 
       - name: Generate Windows resources
-        run: go-winres make
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            # The PE version resource and the MSI both need numeric versions, so
+            # strip the leading "v" here. -X main.version keeps the raw tag for
+            # display in the tray and admin UI.
+            $v = $env:GITHUB_REF_NAME.TrimStart('v')
+            if ($v -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Tag '$env:GITHUB_REF_NAME' is not v<major>.<minor>.<build>; the MSI build needs a numeric version."
+            }
+            go-winres make --file-version $v --product-version $v
+          } else {
+            go-winres make
+          }
 
       - name: Build
         run: go build -ldflags="-H windowsgui -X main.version=$env:GITHUB_REF_NAME" -o prism.exe .
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $v = $env:GITHUB_REF_NAME.TrimStart('v')
+          } else {
+            # Pull-request builds only prove the package compiles. 0.0.<run> is
+            # lower than any release, so the upgrade rules refuse to install one
+            # of these over a released Prism instead of silently downgrading it.
+            # The modulo keeps the build field inside Windows Installer's 65535
+            # limit on a long-lived repository.
+            $v = "0.0.$([int]$env:GITHUB_RUN_NUMBER % 60000)"
+          }
+          ./installer/windows/build-msi.ps1 -Version $v -ExePath prism.exe -Output Prism-Windows-x64.msi
 
       - name: Upload artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: prism-exe
-          path: prism.exe
+          path: |
+            prism.exe
+            Prism-Windows-x64.msi
 
       - name: Write release notes from the tag annotation
         if: startsWith(github.ref, 'refs/tags/')
@@ -76,7 +107,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
-          files: prism.exe
+          files: |
+            prism.exe
+            Prism-Windows-x64.msi
 
   build-macos:
     runs-on: macos-latest
