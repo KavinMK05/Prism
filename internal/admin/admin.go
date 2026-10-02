@@ -261,12 +261,30 @@ func isPortAvailable(port string) bool {
 	return true
 }
 
+// adminHashedAssetPrefix is where Vite writes its build output. Vite puts a
+// content hash in those names (assets/index-B3iE4Sj9.js), so a rebuilt bundle
+// gets a new name; files copied from web/public/ land at the dist root with
+// stable names and must not be treated the same way.
+const adminHashedAssetPrefix = "assets/"
+
+// adminStaticCacheControl returns the Cache-Control header for a path under
+// web/dist. Hashed build output can be cached indefinitely - a content change
+// produces a new URL - while everything else has to revalidate, so a rebuilt
+// bundle is picked up without asking the user to hard-refresh.
+func adminStaticCacheControl(path string) string {
+	if strings.HasPrefix(path, adminHashedAssetPrefix) {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
+}
+
 func handleAdminIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	html, err := assets.ReadFile("web/dist/index.html")
 	if err != nil {
 		w.Write([]byte("<!DOCTYPE html><html><body>Frontend not built. Run: cd web && npm install && npm run build</body></html>"))
@@ -281,6 +299,7 @@ func handleAdminStatic(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		// /admin/ - serve index.html
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
 		html, err := assets.ReadFile("web/dist/index.html")
 		if err != nil {
 			http.NotFound(w, r)
@@ -294,6 +313,7 @@ func handleAdminStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", adminStaticCacheControl(path))
 	switch {
 	case strings.HasSuffix(path, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -315,6 +335,7 @@ func handleAdminLegacy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	html, _ := assets.ReadFile("admin.html")
 	w.Write(html)
 }
