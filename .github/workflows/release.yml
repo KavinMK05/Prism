@@ -381,7 +381,7 @@ jobs:
           # version-free, and the AppImage is the one artifact with no other way
           # to report which version it is.
           grep -q '^X-AppImage-Version=' Prism.AppDir/prism.desktop || \
-            printf 'X-AppImage-Version=%s\n' "$VERSION" >> Prism.AppDir/prism.desktop
+            printf '\nX-AppImage-Version=%s\n' "$VERSION" >> Prism.AppDir/prism.desktop
           cp icon.png Prism.AppDir/usr/share/icons/hicolor/256x256/apps/prism.png
           cp icon.png Prism.AppDir/prism.png
           curl -fsSL -o appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
