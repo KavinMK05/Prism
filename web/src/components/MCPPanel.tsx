@@ -1026,39 +1026,33 @@ function AddServerDrawer({
           </DrawerDescription>
         </DrawerHeader>
         <div className="flex-1 overflow-y-auto px-4 pb-4">
-          <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
-            {(
-              [
-                ['registry', 'Marketplace'],
-                ['manual', 'Manual'],
-                ['git', 'From git'],
-              ] as const
-            ).map(([value, label]) => (
-              <Button
-                key={value}
-                type="button"
-                size="sm"
-                variant={mode === value ? 'secondary' : 'ghost'}
-                aria-pressed={mode === value}
-                onClick={() => setMode(value)}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
-          {mode === 'registry' && <RegistrySearch onAdded={onAdded} />}
-          {mode === 'manual' && (
-            <ServerForm
-              formId="mcp-add-server-form"
-              idPrefix="mcp-add"
-              setSaving={setSaving}
-              onSaved={async () => {
-                await onAdded();
-                onClose();
-              }}
-            />
-          )}
-          {mode === 'git' && <GitImport onAdded={onAdded} />}
+          <Tabs
+            value={mode}
+            onValueChange={(value) => setMode(value as AddMode)}
+          >
+            <TabsList className="mb-5 grid h-auto w-full grid-cols-3">
+              <TabsTrigger value="registry">Marketplace</TabsTrigger>
+              <TabsTrigger value="manual">Manual</TabsTrigger>
+              <TabsTrigger value="git">From git</TabsTrigger>
+            </TabsList>
+            <TabsContent value="registry">
+              <RegistrySearch onAdded={onAdded} />
+            </TabsContent>
+            <TabsContent value="manual">
+              <ServerForm
+                formId="mcp-add-server-form"
+                idPrefix="mcp-add"
+                setSaving={setSaving}
+                onSaved={async () => {
+                  await onAdded();
+                  onClose();
+                }}
+              />
+            </TabsContent>
+            <TabsContent value="git">
+              <GitImport onAdded={onAdded} />
+            </TabsContent>
+          </Tabs>
         </div>
         <DrawerFooter className="flex-row justify-end">
           {mode === 'manual' && (
