@@ -164,7 +164,17 @@
   <Fragment>
     <ComponentGroup Id="MainComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="{D11BC0CB-B619-4957-A62B-F0BCF3027186}">
-        <File Id="PrismExe" Source="$(var.PrismExe)" KeyPath="yes" />
+        <!-- Name pins the *installed* file name. The built artifact may be
+             version-stamped (prism-0.9.1.exe), and WiX would otherwise derive
+             both the File table's FileName and the installed name from the
+             source basename. Everything else in this package keys on
+             "prism.exe": util:CloseApplication matches the running image by
+             name, the auto-start value and the Start Menu shortcut point at
+             [INSTALLFOLDER]prism.exe, and the app's own single-instance lock
+             and installer-state detection assume it. build-msi.ps1 asserts
+             this through Assert-MsiFilePayload (which looks for prism.exe, not
+             the source basename) and Assert-MsiShortcutTarget. -->
+        <File Id="PrismExe" Source="$(var.PrismExe)" Name="prism.exe" KeyPath="yes" />
       </Component>
 
       <!-- Install state the app reads to tell an MSI-managed copy from a

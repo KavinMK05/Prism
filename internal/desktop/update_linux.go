@@ -18,25 +18,23 @@ func runningAsAppImage() bool {
 	return os.Getenv("APPIMAGE") != ""
 }
 
-func appImageAssetName() string {
+func appImageAssetTail() string {
 	if runtime.GOARCH == "arm64" {
-		return "Prism-Linux-aarch64.AppImage"
+		return "-Linux-aarch64.AppImage"
 	}
-	return "Prism-Linux-x86_64.AppImage"
+	return "-Linux-x86_64.AppImage"
 }
 
-func getUpdateAssetName() string {
-	if runningAsAppImage() {
-		return appImageAssetName()
-	}
-	return "Prism-Linux.tar.gz"
-}
-
-// updateAssetCandidates lists the release assets to try, in order of
+// updateAssetShapes lists the release asset channels to try, in order of
 // preference. Linux has a single channel per install shape: the AppImage
-// replaces itself in place, a plain binary is unpacked from the tar.gz.
-func updateAssetCandidates() []string {
-	return []string{getUpdateAssetName()}
+// replaces itself in place, a plain binary is unpacked from the tar.gz. Each
+// shape matches both the version-stamped name (Prism-0.9.1-Linux.tar.gz) and
+// the unversioned alias older installs look for; see update_assets.go.
+func updateAssetShapes() []updateAssetShape {
+	if runningAsAppImage() {
+		return []updateAssetShape{{Product: "Prism", Tail: appImageAssetTail()}}
+	}
+	return []updateAssetShape{{Product: "Prism", Tail: "-Linux.tar.gz"}}
 }
 
 func createDestFile(path string) (*os.File, error) {

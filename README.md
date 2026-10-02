@@ -137,12 +137,12 @@ See the [SearXNG control surface](#searxng-control-surface) section below for th
 
 **Windows:**
 
-Download `Prism-Windows-x64.msi` from the [latest release](https://github.com/KavinMK05/Prism/releases/latest) and run it. Prism installs for the current user only — no admin prompt — adds a Start Menu shortcut and starts automatically when the install finishes. Updates are applied by Windows Installer, from inside the app.
+Download `Prism-0.9.1-Windows-x64.msi` (or `Prism-Windows-x64.msi` — every release publishes both names, see [Release artifacts](#release-artifacts)) from the [latest release](https://github.com/KavinMK05/Prism/releases/latest) and run it. Prism installs for the current user only — no admin prompt — adds a Start Menu shortcut and starts automatically when the install finishes. Updates are applied by Windows Installer, from inside the app.
 
 Prefer a single file? The portable `prism.exe` in the same release runs as-is. It updates itself in place, so keep it somewhere writable.
 
 ```powershell
-./prism.exe
+./prism.exe        # the same file is also published as prism-0.9.1.exe
 ```
 
 **macOS:**
@@ -840,12 +840,29 @@ The following features are not supported by upstream providers and are handled g
 - **OpenAI Chat inbound**: `/v1/models` returns a static list from config (not proxied), `parallel_tool_calls`, `logprobs`, `seed`, `user`
 - **OpenAI Responses inbound**: `previous_response_id` (conversation continuity), `store`, and built-in tools other than web search (file search, code interpreter). Web search is intercepted and answered locally via the configured search provider.
 
+## Release artifacts
+
+Every release publishes each artifact twice — once under a name that carries its version, and once under the unversioned name releases used before Prism started version-stamping builds:
+
+| Artifact | Version-stamped name | Also published as |
+| --- | --- | --- |
+| Windows installer | `Prism-0.9.1-Windows-x64.msi` | `Prism-Windows-x64.msi` |
+| Windows portable | `prism-0.9.1.exe` | `prism.exe` |
+| macOS disk image | `Prism-0.9.1-macOS.dmg` | `Prism-macOS.dmg` |
+| macOS auto-update archive | `Prism-0.9.1-macOS.tar.gz` | `Prism-macOS.tar.gz` |
+| Linux auto-update archive | `Prism-0.9.1-Linux.tar.gz` | `Prism-Linux.tar.gz` |
+| Linux AppImage | `Prism-0.9.1-Linux-x86_64.AppImage` | `Prism-Linux-x86_64.AppImage` |
+
+The two names are byte-identical copies of the same file. The plain names are still published because the in-app updater in versions released before version stamping looks its download up by exact file name — dropping them would leave those installs unable to update themselves. Current versions accept **either** name, so updating from inside the app works no matter which one you downloaded. The plain names will be removed in a later release, once no install that needs them is still updating.
+
+The archives still contain a plain `Prism.app` / `prism` binary: Prism unpacks them over the installed path, so only the archive name carries the version. The portable `prism-0.9.1.exe` and the AppImage replace themselves in place when you update from inside the app, so the name on disk describes what you downloaded, not necessarily what is currently running.
+
 ## Building from source
 
 **Windows:**
 ```powershell
 ./build.ps1                                  # frontend + prism.exe
-./installer/windows/build-msi.ps1            # optional: MSI for prism.exe
+./installer/windows/build-msi.ps1            # optional: MSI for prism.exe (Prism-<version>-Windows-x64.msi)
 ```
 
 Or by hand:
@@ -855,7 +872,7 @@ go-winres make; go build -ldflags="-H windowsgui" -o prism.exe .
 
 The `-H windowsgui` flag hides the console window and enables system tray integration.
 
-The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism`; the package is marked UAC compliant, so neither installing nor updating needs elevation. `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate. `-Version` defaults to the newest git tag.
+The MSI is authored with the [WiX toolset](https://wixtoolset.org/) (v6+, installed as a .NET tool), needs a numeric version, and defaults to a per-user install under `%LOCALAPPDATA%\Programs\Prism`; the package is marked UAC compliant, so neither installing nor updating needs elevation. `-Version` defaults to the newest git tag and `-Output` to `Prism-<version>-Windows-x64.msi`, matching the release asset names. Whatever the build output is called, the installed executable stays `prism.exe` (the package pins `File/@Name`), so shortcuts, auto-start and single-instance locking are unaffected. `build-msi.ps1 -Scope perMachine` produces a machine-wide package instead — that variant needs an elevated `msiexec` to install and upgrade, so it is for manual installs only until the updater learns to elevate.
 
 To run in console mode (for debugging), build without the flag:
 ```powershell

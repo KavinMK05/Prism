@@ -1,14 +1,17 @@
 # Builds the Prism MSI on Windows.
 #
 #   ./installer/windows/build-msi.ps1                     # version from the latest git tag
-#   ./installer/windows/build-msi.ps1 -Version 0.9.1
+#   ./installer/windows/build-msi.ps1 -Version 0.9.1      # -> Prism-0.9.1-Windows-x64.msi
 #   ./installer/windows/build-msi.ps1 -Scope perMachine
 #
 # Requires a .NET SDK (for the WiX tool) - https://dot.net - and a prism.exe
 # produced by ./build.ps1 (or by CI, via -ExePath).
 #
 # The release workflow calls this same script, so "works locally" and "works in
-# CI" mean the same thing.
+# CI" mean the same thing. CI passes -ExePath and -Output explicitly: it builds
+# prism-<version>.exe and uploads Prism-<version>-Windows-x64.msi next to the
+# unversioned prism.exe / Prism-Windows-x64.msi aliases that installs shipped
+# before version stamping still look for.
 [CmdletBinding()]
 param(
     # Numeric product version (major.minor.build). Defaults to the newest git
@@ -19,7 +22,10 @@ param(
     [string]$ExePath = "",
 
     # Output MSI path. Relative paths resolve against the repository root.
-    [string]$Output = "Prism-Windows-x64.msi",
+    # Defaults to Prism-<Version>-Windows-x64.msi once the version is known; the
+    # release workflow passes the name it uploads explicitly, including the
+    # unversioned alias it keeps for installs shipped before version stamping.
+    [string]$Output = "",
 
     # perUser (default) installs under %LOCALAPPDATA% with no elevation;
     # perMachine installs under %ProgramFiles% and needs an elevated msiexec.
@@ -244,6 +250,41 @@ function Assert-MsiAutostartAdoption {
     return 'repoints HKCU Run\Prism when auto-start was already on'
 }
 
+# The Start Menu shortcut must point at the file the package actually installs.
+# Prism.wxs pins File/@Name="prism.exe" so the installed name cannot follow a
+# version-stamped build artifact (prism-0.9.1.exe); this assertion is what
+# catches it if that pin is ever dropped. A shortcut aimed at a file that is no
+# longer installed fails for the user with no build-time symptom.
+function Assert-MsiShortcutTarget {
+    param([Parameter(Mandatory = $true)][string]$MsiPath)
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($MsiPath, 0))
+
+    # Same MSI SQL rule as Assert-MsiLaunch: the Shortcut table has a column
+    # named like the table, so read the rows and pick the one we want here.
+    $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT * FROM `Shortcut`'))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    $target = $null
+    while ($true) {
+        $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+        if ($null -eq $rec) { break }
+        if ([string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1)) -ne 'PrismStartMenuShortcut') { continue }
+        # Columns: Shortcut, Directory_, Name, Component_, Target
+        $target = [string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(5))
+    }
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+
+    if ($null -eq $target) {
+        throw 'The Start Menu shortcut is missing from the built MSI.'
+    }
+    if ($target -ne '[INSTALLFOLDER]prism.exe') {
+        throw "The Start Menu shortcut must target [INSTALLFOLDER]prism.exe, but the built MSI has '$target'. Prism.wxs pins File/@Name='prism.exe'; without that pin the installed name follows the built artifact and every path authored against prism.exe goes stale."
+    }
+
+    return 'starts [INSTALLFOLDER]prism.exe'
+}
+
 # --- version ----------------------------------------------------------------
 
 if (-not $Version) {
@@ -270,22 +311,27 @@ if ($versionParts[0] -gt 255 -or $versionParts[1] -gt 255 -or $versionParts[2] -
 if (-not $ExePath) { $ExePath = Join-Path $root "prism.exe" }
 $exeFull = Resolve-RepoPath $ExePath
 if (-not (Test-Path $exeFull)) {
-    throw "prism.exe not found at $exeFull. Run ./build.ps1 first, or pass -ExePath <path>."
+    throw "Built exe not found at $exeFull. Run ./build.ps1 first, or pass -ExePath <path> (CI passes the version-stamped prism-<version>.exe)."
 }
 
-# Legacy PR MSI builds stamped prism.exe as 1.0.0.0. A lower FileVersion makes
+# Legacy PR MSI builds stamped the payload as 1.0.0.0. A lower FileVersion makes
 # Windows Installer skip the payload before RemoveExistingProducts deletes that
 # old copy, leaving the new install registered but broken. The release workflow
 # stamps 2.<run high bits>.<run low bits>.0; reject an unstamped payload here.
 $peVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exeFull).FileVersion
 if ($peVersion -notmatch '^2\.\d+\.\d+\.0$') {
-    throw "prism.exe PE FileVersion '$peVersion' is not a monotonic 2.<run high bits>.<run low bits>.0 version. Run go-winres make before building the MSI."
+    throw "The payload's PE FileVersion '$peVersion' is not a monotonic 2.<run high bits>.<run low bits>.0 version. Run go-winres make before building the MSI."
 }
 
 $iconFull = Join-Path $root "internal\platform\logo_icon.ico"
 if (-not (Test-Path $iconFull)) {
     throw "Icon not found at $iconFull."
 }
+
+# Default the output name to the version-stamped one. The release workflow
+# always passes -Output explicitly, because it uploads both this name and the
+# unversioned alias that installs shipped before version stamping look for.
+if (-not $Output) { $Output = "Prism-$Version-Windows-x64.msi" }
 
 $outputFull = Resolve-RepoPath $Output
 
@@ -361,19 +407,27 @@ if ($LASTEXITCODE -ne 0) { throw "wix build failed (exit $LASTEXITCODE)" }
 $msi = Get-Item $outputFull
 $sizeMb = [math]::Round($msi.Length / 1MB, 2)
 
-# A zero exit code does not mean the package is complete; see the function.
-$exeName = Split-Path $exeFull -Leaf
-$packed = Assert-MsiFilePayload -MsiPath $outputFull -FileName $exeName -ExpectedSize (Get-Item $exeFull).Length
+# A zero exit code does not mean the package is complete; see the functions.
+#
+# Assert on the *installed* name, not on the built artifact's basename.
+# Prism.wxs pins File/@Name="prism.exe", so the File table holds prism.exe no
+# matter what -ExePath points at; deriving the name from the source here would
+# quietly stop checking the payload the moment CI version-stamps the build
+# output (prism-0.9.1.exe).
+$installedExeName = 'prism.exe'
+$packed = Assert-MsiFilePayload -MsiPath $outputFull -FileName $installedExeName -ExpectedSize (Get-Item $exeFull).Length
 $scopeInfo = Assert-MsiScope -MsiPath $outputFull -Scope $Scope
 $autostartInfo = Assert-MsiAutostartAdoption -MsiPath $outputFull
 $launchInfo = Assert-MsiLaunch -MsiPath $outputFull
+$shortcutInfo = Assert-MsiShortcutTarget -MsiPath $outputFull
 
 Write-Host ""
 Write-Host "Built $($msi.Name) ($sizeMb MB) - Prism $Version, $Scope" -ForegroundColor Green
-Write-Host "  payload   : $exeName ($packed bytes) verified inside the MSI" -ForegroundColor Green
+Write-Host "  payload   : $installedExeName ($packed bytes) installed in the MSI; built from $(Split-Path $exeFull -Leaf)" -ForegroundColor Green
 Write-Host "  scope     : $scopeInfo" -ForegroundColor Green
 Write-Host "  autostart : $autostartInfo" -ForegroundColor Green
 Write-Host "  launch    : $launchInfo" -ForegroundColor Green
+Write-Host "  shortcut  : $shortcutInfo" -ForegroundColor Green
 
 if ($Scope -eq "perMachine") {
     Write-Warning "A per-machine MSI needs an elevated msiexec to install or upgrade. In-app updates do not elevate yet, so this package is for manual installs only."

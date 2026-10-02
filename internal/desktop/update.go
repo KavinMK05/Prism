@@ -127,24 +127,13 @@ func checkForUpdate() (*UpdateInfo, error) {
 		return nil, nil
 	}
 
-	assetCandidates := updateAssetCandidates()
-	var chosen *GitHubReleaseAsset
-
-	for _, want := range assetCandidates {
-		for i := range release.Assets {
-			if release.Assets[i].Name == want {
-				chosen = &release.Assets[i]
-				break
-			}
-		}
-		if chosen != nil {
-			break
-		}
-	}
+	shapes := updateAssetShapes()
+	chosen := pickReleaseAsset(release.Assets, shapes, latestVersion)
 
 	if chosen == nil {
-		log.Printf("[Update] None of %v found in release %s", assetCandidates, latestVersion)
-		return nil, fmt.Errorf("no matching asset in release %s (looked for %v)", latestVersion, assetCandidates)
+		expected := expectedAssetNames(shapes, latestVersion)
+		log.Printf("[Update] None of %v found in release %s", expected, latestVersion)
+		return nil, fmt.Errorf("no matching asset in release %s (looked for %v)", latestVersion, expected)
 	}
 
 	log.Printf("[Update] Update available: %s -> %s (%s)", version, latestVersion, chosen.Name)

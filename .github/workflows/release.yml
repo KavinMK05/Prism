@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 
 on:
   push:
@@ -52,42 +52,14 @@ jobs:
         shell: pwsh
         run: |
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            # The PE version resource and the MSI both need numeric versions, so
-            # strip the leading "v" here. -X main.version keeps the raw tag for
-            # display in the tray and admin UI.
+            # The PE version resource, the MSI and the release asset names all
+            # need numeric versions, so strip the leading "v" here. -X
+            # main.version keeps the raw tag for display in the tray and admin
+            # UI.
             $v = $env:GITHUB_REF_NAME.TrimStart('v')
             if ($v -notmatch '^\d+\.\d+\.\d+$') {
               throw "Tag '$env:GITHUB_REF_NAME' is not v<major>.<minor>.<build>; the MSI build needs a numeric version."
             }
-            # The first CI MSI shipped PE FileVersion 1.0.0.0 while releases
-            # used semantic versions such as 0.3.23. MSI therefore classified
-            # the release exe as older and planned no copy before removing the
-            # previous product. Encode the globally increasing workflow run
-            # number across the middle PE fields on *all* builds (each Windows
-            # version field is capped at 65535); keep ProductVersion semantic for
-            # display and MSI metadata.
-            $run = [long]$env:GITHUB_RUN_NUMBER
-            $minor = [math]::Floor($run / 65536)
-            $build = $run % 65536
-            $fileVersion = "2.$minor.$build.0"
-            go-winres make --file-version $fileVersion --product-version $v
-          } else {
-            $run = [long]$env:GITHUB_RUN_NUMBER
-            $minor = [math]::Floor($run / 65536)
-            $build = $run % 65536
-            $fileVersion = "2.$minor.$build.0"
-            $productVersion = "0.0.$env:GITHUB_RUN_NUMBER"
-            go-winres make --file-version $fileVersion --product-version $productVersion
-          }
-
-      - name: Build
-        run: go build -ldflags="-H windowsgui -X main.version=$env:GITHUB_REF_NAME" -o prism.exe .
-
-      - name: Build MSI
-        shell: pwsh
-        run: |
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $v = $env:GITHUB_REF_NAME.TrimStart('v')
           } else {
             # Pull-request builds only prove the package compiles. 0.0.<run> is
             # lower than any release, so the upgrade rules refuse to install one
@@ -96,7 +68,52 @@ jobs:
             # limit on a long-lived repository.
             $v = "0.0.$([int]$env:GITHUB_RUN_NUMBER % 60000)"
           }
-          ./installer/windows/build-msi.ps1 -Version $v -ExePath prism.exe -Output Prism-Windows-x64.msi
+
+          # The first CI MSI shipped PE FileVersion 1.0.0.0 while releases
+          # used semantic versions such as 0.3.23. MSI therefore classified
+          # the release exe as older and planned no copy before removing the
+          # previous product. Encode the globally increasing workflow run
+          # number across the middle PE fields on *all* builds (each Windows
+          # version field is capped at 65535); keep ProductVersion semantic for
+          # display and MSI metadata.
+          $run = [long]$env:GITHUB_RUN_NUMBER
+          $minor = [math]::Floor($run / 65536)
+          $build = $run % 65536
+          $fileVersion = "2.$minor.$build.0"
+          go-winres make --file-version $fileVersion --product-version $v
+
+          # One version for the whole job: the exe, the MSI, and the names every
+          # artifact is uploaded under.
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $v = $env:VERSION
+          go build -ldflags="-H windowsgui -X main.version=$env:GITHUB_REF_NAME" -o "prism-$v.exe" .
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $v = $env:VERSION
+          ./installer/windows/build-msi.ps1 -Version $v -ExePath "prism-$v.exe" -Output "Prism-$v-Windows-x64.msi"
+
+      # Every release publishes each artifact twice: the version-stamped name
+      # (Prism-0.9.1-Windows-x64.msi) and the unversioned name releases used
+      # before version stamping (Prism-Windows-x64.msi). An install shipped
+      # before version stamping matches release assets by exact name, so
+      # dropping the unversioned alias would silently stop auto-update for
+      # every copy in the field. The aliases are byte-identical copies; see
+      # "Release asset names" in AGENTS.md for when they can be retired.
+      - name: Prepare release asset names
+        shell: pwsh
+        run: |
+          $v = $env:VERSION
+          Copy-Item "prism-$v.exe" prism.exe
+          Copy-Item "Prism-$v-Windows-x64.msi" Prism-Windows-x64.msi
+          $want = @("prism-$v.exe", "prism.exe", "Prism-$v-Windows-x64.msi", "Prism-Windows-x64.msi")
+          $missing = @($want | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) { throw "Missing release assets: $($missing -join ', ')" }
 
       - name: Upload artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -104,6 +121,8 @@ jobs:
         with:
           name: prism-exe
           path: |
+            prism-${{ env.VERSION }}.exe
+            Prism-${{ env.VERSION }}-Windows-x64.msi
             prism.exe
             Prism-Windows-x64.msi
 
@@ -124,6 +143,8 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
+            prism-${{ env.VERSION }}.exe
+            Prism-${{ env.VERSION }}-Windows-x64.msi
             prism.exe
             Prism-Windows-x64.msi
 
@@ -149,6 +170,24 @@ jobs:
       - name: Build frontend
         working-directory: web
         run: npm ci && npm run build
+
+      # Every artifact name carries the version (Prism-0.9.1-macOS.dmg). On a
+      # tag push that is the tag without its leading "v"; pull-request refs such
+      # as "123/merge" are not usable file names, so those builds use the same
+      # 0.0.<run> token as the Windows job.
+      - name: Resolve version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "Tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<build>; release asset names need a numeric version." >&2
+              exit 1
+            fi
+          else
+            VERSION="0.0.$(( GITHUB_RUN_NUMBER % 60000 ))"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Version: $VERSION"
 
       - name: Import Apple Code Signing Certificate
         if: ${{ env.HAS_SIGNING == 'true' }}
@@ -183,6 +222,12 @@ jobs:
           mkdir -p Prism.app/Contents/Resources
           cp prism Prism.app/Contents/MacOS/prism
           cp Info.plist Prism.app/Contents/Info.plist
+          # Info.plist is a tracked file with a placeholder version, so stamp
+          # the copy inside the bundle. This has to happen before codesign: the
+          # signature covers the plist, and stamping afterwards would leave the
+          # bundle signed over a different version than it ships.
+          plutil -replace CFBundleShortVersionString -string "$VERSION" Prism.app/Contents/Info.plist
+          plutil -replace CFBundleVersion -string "$VERSION" Prism.app/Contents/Info.plist
           cp logo_icon.icns Prism.app/Contents/Resources/prism.icns
           echo -n "APPL????" > Prism.app/Contents/PkgInfo
           chmod +x Prism.app/Contents/MacOS/prism
@@ -211,7 +256,7 @@ jobs:
             --icon "Prism.app" 175 120 \
             --hide-extension "Prism.app" \
             --app-drop-link 425 120 \
-            Prism-macOS.dmg \
+            "Prism-$VERSION-macOS.dmg" \
             Prism.app
 
       - name: Sign DMG
@@ -219,7 +264,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp Prism-macOS.dmg
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "Prism-$VERSION-macOS.dmg"
 
       - name: Notarize DMG
         if: ${{ env.HAS_NOTARIZATION == 'true' }}
@@ -231,7 +276,7 @@ jobs:
           # Decode API key to a temporary file
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > AuthKey.p8
           # Submit to Apple for notarization
-          xcrun notarytool submit Prism-macOS.dmg \
+          xcrun notarytool submit "Prism-$VERSION-macOS.dmg" \
             --key AuthKey.p8 \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER_ID" \
@@ -239,17 +284,32 @@ jobs:
           # Clean up the sensitive key file immediately
           rm -f AuthKey.p8
           # Staple the notarization ticket
-          xcrun stapler staple Prism-macOS.dmg
+          xcrun stapler staple "Prism-$VERSION-macOS.dmg"
 
       - name: Create tar.gz for auto-update
-        run: tar czf Prism-macOS.tar.gz Prism.app
+        run: tar czf "Prism-$VERSION-macOS.tar.gz" Prism.app
+
+      # See the comment on the Windows job's "Prepare release asset names": each
+      # artifact ships under its version-stamped name and under the unversioned
+      # alias that installs predating version stamping look for.
+      - name: Prepare release asset names
+        run: |
+          cp "Prism-$VERSION-macOS.dmg" Prism-macOS.dmg
+          cp "Prism-$VERSION-macOS.tar.gz" Prism-macOS.tar.gz
+          for f in "Prism-$VERSION-macOS.dmg" Prism-macOS.dmg "Prism-$VERSION-macOS.tar.gz" Prism-macOS.tar.gz; do
+            [ -f "$f" ] || { echo "Missing release asset: $f" >&2; exit 1; }
+          done
 
       - name: Upload artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: Prism-macOS
-          path: Prism-macOS.dmg
+          path: |
+            Prism-${{ env.VERSION }}-macOS.dmg
+            Prism-${{ env.VERSION }}-macOS.tar.gz
+            Prism-macOS.dmg
+            Prism-macOS.tar.gz
 
       - name: Write release notes from the tag annotation
         if: startsWith(github.ref, 'refs/tags/')
@@ -268,6 +328,8 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
+            Prism-${{ env.VERSION }}-macOS.dmg
+            Prism-${{ env.VERSION }}-macOS.tar.gz
             Prism-macOS.dmg
             Prism-macOS.tar.gz
 
@@ -291,6 +353,22 @@ jobs:
         working-directory: web
         run: npm ci && npm run build
 
+      # See the comment on the macOS job's "Resolve version": the asset names
+      # carry the version, and pull-request refs are not usable file names.
+      - name: Resolve version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "Tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<build>; release asset names need a numeric version." >&2
+              exit 1
+            fi
+          else
+            VERSION="0.0.$(( GITHUB_RUN_NUMBER % 60000 ))"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Version: $VERSION"
+
       - name: Build
         run: CGO_ENABLED=0 go build -ldflags="-X main.version=$GITHUB_REF_NAME" -o prism .
 
@@ -299,11 +377,33 @@ jobs:
           mkdir -p Prism.AppDir/usr/bin Prism.AppDir/usr/share/icons/hicolor/256x256/apps
           cp prism Prism.AppDir/usr/bin/prism
           cp packaging/linux/prism.desktop Prism.AppDir/prism.desktop
+          # Only the AppDir copy is stamped: the tracked desktop file stays
+          # version-free, and the AppImage is the one artifact with no other way
+          # to report which version it is.
+          grep -q '^X-AppImage-Version=' Prism.AppDir/prism.desktop || \
+            printf 'X-AppImage-Version=%s\n' "$VERSION" >> Prism.AppDir/prism.desktop
           cp icon.png Prism.AppDir/usr/share/icons/hicolor/256x256/apps/prism.png
           cp icon.png Prism.AppDir/prism.png
           curl -fsSL -o appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool.AppImage
-          ./appimagetool.AppImage --appimage-extract-and-run Prism.AppDir Prism-Linux-x86_64.AppImage
+          # appimagetool wants the architecture in the output name; keep it.
+          ./appimagetool.AppImage --appimage-extract-and-run Prism.AppDir "Prism-$VERSION-Linux-x86_64.AppImage"
+
+      - name: Package for auto-update
+        run: tar czf "Prism-$VERSION-Linux.tar.gz" prism
+
+      # See the comment on the Windows job's "Prepare release asset names": each
+      # artifact ships under its version-stamped name and under the unversioned
+      # alias that installs predating version stamping look for. The tarball
+      # itself still contains a plain "prism" binary - the updater unpacks it
+      # over the installed executable, so only the archive name is versioned.
+      - name: Prepare release asset names
+        run: |
+          cp "Prism-$VERSION-Linux.tar.gz" Prism-Linux.tar.gz
+          cp "Prism-$VERSION-Linux-x86_64.AppImage" Prism-Linux-x86_64.AppImage
+          for f in "Prism-$VERSION-Linux.tar.gz" Prism-Linux.tar.gz "Prism-$VERSION-Linux-x86_64.AppImage" Prism-Linux-x86_64.AppImage; do
+            [ -f "$f" ] || { echo "Missing release asset: $f" >&2; exit 1; }
+          done
 
       - name: Upload artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -312,11 +412,10 @@ jobs:
           name: prism-linux
           path: |
             prism
+            Prism-${{ env.VERSION }}-Linux.tar.gz
+            Prism-${{ env.VERSION }}-Linux-x86_64.AppImage
+            Prism-Linux.tar.gz
             Prism-Linux-x86_64.AppImage
-
-      - name: Package for auto-update
-        if: startsWith(github.ref, 'refs/tags/')
-        run: tar czf Prism-Linux.tar.gz prism
 
       - name: Write release notes from the tag annotation
         if: startsWith(github.ref, 'refs/tags/')
@@ -335,5 +434,7 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
+            Prism-${{ env.VERSION }}-Linux.tar.gz
+            Prism-${{ env.VERSION }}-Linux-x86_64.AppImage
             Prism-Linux.tar.gz
             Prism-Linux-x86_64.AppImage

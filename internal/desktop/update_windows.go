@@ -15,28 +15,26 @@ import (
 	"ollama-proxy/internal/platform"
 )
 
-// Release asset names. The MSI name is produced by the release workflow and is
-// looked up by exact match, so it has to keep the name
+// Release asset channels. Each shape matches the version-stamped asset a
+// release publishes now (prism-0.9.1.exe, Prism-0.9.1-Windows-x64.msi) and the
+// unversioned alias it also publishes for installs shipped before version
+// stamping; see update_assets.go. The MSI tail has to keep matching what
 // installer/windows/build-msi.ps1 writes.
-const (
-	portableUpdateAssetName = "prism.exe"
-	msiUpdateAssetName      = "Prism-Windows-x64.msi"
+var (
+	portableUpdateShape = updateAssetShape{Product: "prism", Tail: ".exe"}
+	msiUpdateShape      = updateAssetShape{Product: "Prism", Tail: "-Windows-x64.msi"}
 )
 
-func getUpdateAssetName() string {
-	return portableUpdateAssetName
-}
-
-// updateAssetCandidates lists the release assets to try, in order of
+// updateAssetShapes lists the release asset channels to try, in order of
 // preference for how this copy of Prism is installed. An MSI install takes the
 // package (and only the package: falling back to the portable exe would
 // overwrite a file Windows Installer owns), everything else takes the
 // single-file build that replaces itself.
-func updateAssetCandidates() []string {
+func updateAssetShapes() []updateAssetShape {
 	if InstalledViaMSI() {
-		return []string{msiUpdateAssetName}
+		return []updateAssetShape{msiUpdateShape}
 	}
-	return []string{getUpdateAssetName()}
+	return []updateAssetShape{portableUpdateShape}
 }
 
 func createDestFile(path string) (*os.File, error) {

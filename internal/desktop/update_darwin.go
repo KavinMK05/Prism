@@ -11,15 +11,13 @@ import (
 	"time"
 )
 
-func getUpdateAssetName() string {
-	return "Prism-macOS.tar.gz"
-}
-
-// updateAssetCandidates lists the release assets to try, in order of
+// updateAssetShapes lists the release asset channels to try, in order of
 // preference. macOS has a single channel: the tar.gz that replaces the app
-// bundle in place.
-func updateAssetCandidates() []string {
-	return []string{getUpdateAssetName()}
+// bundle in place. The shape matches both the version-stamped name
+// (Prism-0.9.1-macOS.tar.gz) and the unversioned alias older installs look for;
+// see update_assets.go.
+func updateAssetShapes() []updateAssetShape {
+	return []updateAssetShape{{Product: "Prism", Tail: "-macOS.tar.gz"}}
 }
 
 func createDestFile(path string) (*os.File, error) {
