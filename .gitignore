@@ -33,3 +33,7 @@ web/node_modules/
 web/dist/*
 !web/dist/.gitkeep
 .empryo
+
+# Frontend build scratch: build.ps1 points TEMP/TMP here and deletes it again on
+# the way out, so this only appears when a build is interrupted. See AGENTS.md.
+.build-tmp/

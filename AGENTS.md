@@ -1,9 +1,10 @@
 Build command (Windows): ./build.ps1
 Build command (macOS): ./build.sh
-Manual build (Windows): cd web; npm run build; cd ..; go-winres make; go build -ldflags="-H windowsgui -X main.version=dev" -o prism.exe .
+Manual build (Windows): cd web; npm run build; cd ..; go-winres make; go build -ldflags="-H windowsgui -X main.version=dev" -o prism.exe . (point TEMP at .build-tmp first, or the frontend step fails on Windows - see the note below)
 Manual build (macOS): cd web; npm run build; cd ..; CGO_ENABLED=1 go build -ldflags="-X main.version=dev" -o prism .
 MSI build (Windows, after the exe exists): ./installer/windows/build-msi.ps1 [-Version 0.9.1] [-ExePath prism-0.9.1.exe] [-Scope perUser|perMachine] (defaults to Prism-<Version>-Windows-x64.msi)
 Frontend dev server: cd web; npm run dev (HMR on localhost:5173/admin/, proxies API to Go on localhost:8765)
+Frontend build temp dir: vite/esbuild extracts its ~2 MB helper into %TEMP% and deletes it when it exits, and Defender's real-time scan races that delete, so a bare `cd web; npm run build` can fail with `[vite:esbuild-transpile] remove C:\...\Temp\esbuild-<hash>: Access is denied` - leaving web/dist emptied, because vite clears outDir before writing. build.ps1 avoids this by pointing TEMP/TMP/TMPDIR at a gitignored `.build-tmp` for the frontend step and restoring the original environment afterwards: prefer ./build.ps1 over the manual command.
 Version: Injected at build time via `-ldflags "-X main.version=TAG"`. Defaults to "dev" if not set. CI injects `$GITHUB_REF_NAME` (the git tag) automatically. The tray/updater copies it via `desktop.SetVersion(version)`.
 Admin UI: React app in `web/`, embedded via `go:embed` in root `assets.go` (served by `internal/admin`).
 
