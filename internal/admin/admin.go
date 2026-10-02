@@ -19,9 +19,8 @@ import (
 	"ollama-proxy/internal/platform"
 )
 
-// assets is the embedded admin UI filesystem (admin.html, icon.png,
-// web/dist), owned by the main package's go:embed and wired in by
-// StartAdminServer.
+// assets is the embedded admin UI filesystem (icon.png, web/dist), owned by
+// the main package's go:embed and wired in by StartAdminServer.
 var assets embed.FS
 
 func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
@@ -43,9 +42,6 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	// Serve the React admin UI (Vite build output in web/dist)
 	mux.HandleFunc("/admin", handleAdminIndex)
 	mux.HandleFunc("/admin/", handleAdminStatic)
-
-	// Serve the legacy single-page admin UI (plain HTML, pre-React migration)
-	mux.HandleFunc("/admin-legacy", handleAdminLegacy)
 
 	// Serve the brand icon
 	mux.HandleFunc("/admin/icon.png", handleAdminIcon)
@@ -327,17 +323,6 @@ func handleAdminStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Write(data)
-}
-
-func handleAdminLegacy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	html, _ := assets.ReadFile("admin.html")
-	w.Write(html)
 }
 
 func handleAdminIcon(w http.ResponseWriter, r *http.Request) {

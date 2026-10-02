@@ -5,10 +5,10 @@ Manual build (macOS): cd web; npm run build; cd ..; CGO_ENABLED=1 go build -ldfl
 MSI build (Windows, after the exe exists): ./installer/windows/build-msi.ps1 [-Version 0.9.1] [-ExePath prism-0.9.1.exe] [-Scope perUser|perMachine] (defaults to Prism-<Version>-Windows-x64.msi)
 Frontend dev server: cd web; npm run dev (HMR on localhost:5173/admin/, proxies API to Go on localhost:8765)
 Version: Injected at build time via `-ldflags "-X main.version=TAG"`. Defaults to "dev" if not set. CI injects `$GITHUB_REF_NAME` (the git tag) automatically. The tray/updater copies it via `desktop.SetVersion(version)`.
-Admin UI: React app in `web/`, embedded via `go:embed` in root `assets.go` (served by `internal/admin`). Legacy HTML at `/admin-legacy`.
+Admin UI: React app in `web/`, embedded via `go:embed` in root `assets.go` (served by `internal/admin`).
 
 Repository layout:
-- Root (package main): `main.go` (entrypoint, proxy server, HTTP middleware), `assets.go` (go:embed of `admin.html`, `icon.png`, `web/dist`). Everything else lives in `internal/`.
+- Root (package main): `main.go` (entrypoint, proxy server, HTTP middleware), `assets.go` (go:embed of `icon.png`, `web/dist`). Everything else lives in `internal/`.
 - `internal/config`: config load/save, live config API (`Current`/`SetCurrent`/`SetChangeHook`), model remapping, OAuth account types.
 - `internal/db`: SQLite persistence (requests, TPS snapshots, MCP marketplace catalog) + `RequestStats`.
 - `internal/stats`: in-memory stats tracker (`stats.Global`), `StatsToJSON`.

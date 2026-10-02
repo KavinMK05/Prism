@@ -1,4 +1,4 @@
-// API client - mirrors the original admin.html api() helper.
+// API client for the React admin UI.
 // All Go API endpoints are served under /admin/* and return JSON.
 
 export async function api(path: string, opts?: RequestInit): Promise<any> {
