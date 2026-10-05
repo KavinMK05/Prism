@@ -61,6 +61,9 @@ func StartAdminServer(adminAssets embed.FS, cfg *config.Config, port string) {
 	// API: Proxy status
 	mux.HandleFunc("/admin/status", handleAdminStatus)
 
+	// API: Live connection reference for the Connect panel
+	mux.HandleFunc("/admin/connect", handleAdminConnect)
+
 	// API: Proxy control
 	mux.HandleFunc("/admin/proxy/start", handleProxyStart)
 
