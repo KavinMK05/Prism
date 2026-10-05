@@ -9,13 +9,14 @@ import OAuthPanel from './components/OAuthPanel';
 import ProviderPanel from './components/ProviderPanel';
 import ModelsPanel from './components/ModelsPanel';
 import StatsPanel from './components/StatsPanel';
+import ConnectPanel from './components/ConnectPanel';
 import StarPrompt from './components/StarPrompt';
 import AnalyticsBanner from './components/AnalyticsBanner';
 import UpdateToast from './components/UpdateToast';
 import { useUpdateStatus, DownloadIcon } from './lib/useUpdateStatus.tsx';
 import { api } from './api';
 
-type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search' | 'mcp';
+type TabId = 'provider' | 'oauth' | 'models' | 'stats' | 'agents' | 'proxy' | 'searxng' | 'search' | 'mcp' | 'connect';
 
 interface Tab {
   id: TabId;
@@ -24,6 +25,16 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
+  {
+    id: 'connect',
+    label: 'Connect',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+      </svg>
+    ),
+  },
   {
     id: 'provider',
     label: 'Provider',
@@ -127,6 +138,7 @@ const TABS: Tab[] = [
 ];
 
 const SECTIONS: { label: string; tabs: TabId[] }[] = [
+  { label: 'Connect', tabs: ['connect'] },
   { label: 'Configuration', tabs: ['provider', 'models', 'agents'] },
   { label: 'Integrations', tabs: ['oauth', 'mcp', 'proxy', 'searxng', 'search'] },
   { label: 'Analytics', tabs: ['stats'] },
@@ -183,6 +195,7 @@ export default function App() {
       case 'searxng': return <SearXNGPanel />;
       case 'search': return <SearchProvidersPanel />;
       case 'mcp': return <MCPPanel />;
+      case 'connect': return <ConnectPanel onNavigate={(tab) => setActiveTab(tab)} />;
       default: return null;
     }
   };
