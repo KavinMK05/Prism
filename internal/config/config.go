@@ -178,14 +178,21 @@ type ModelCapabilities struct {
 
 // ModelEntry represents a known model with its associated provider and capabilities
 type ModelEntry struct {
-	ID              string             `json:"id"`
-	Provider        string             `json:"provider"`
-	Reasoning       bool               `json:"reasoning,omitempty"`
-	ReasoningEffort []string           `json:"reasoning_effort,omitempty"`
-	ContextLength   int                `json:"context_length,omitempty"`
-	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
-	Capabilities    *ModelCapabilities `json:"capabilities,omitempty"`
-	API             string             `json:"api,omitempty"` // "chat_completions" (default) or "responses"
+	ID              string   `json:"id"`
+	Provider        string   `json:"provider"`
+	Reasoning       bool     `json:"reasoning,omitempty"`
+	ReasoningEffort []string `json:"reasoning_effort,omitempty"`
+	// ReasoningPreservation controls whether a model's thinking history is
+	// replayed to the upstream as reasoning_content. Empty (the default)
+	// infers it from the model name (DeepSeek/Kimi/MiMo-style endpoints
+	// require non-empty reasoning_content on assistant tool-call history);
+	// "always" replays it for any model; "never" drops it even for the
+	// vendors that normally require it.
+	ReasoningPreservation string             `json:"reasoning_preservation,omitempty"`
+	ContextLength         int                `json:"context_length,omitempty"`
+	MaxOutputTokens       int                `json:"max_output_tokens,omitempty"`
+	Capabilities          *ModelCapabilities `json:"capabilities,omitempty"`
+	API                   string             `json:"api,omitempty"` // "chat_completions" (default) or "responses"
 }
 
 // ModelRouteKey returns the provider-qualified model identifier used by

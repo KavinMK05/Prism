@@ -269,7 +269,20 @@ func (pr *ProviderRouter) postResponsesBody(ctx context.Context, upstreamURL str
 // unrelated reason would only repeat the same error.
 func isReasoningRejection(body []byte) bool {
 	lower := strings.ToLower(string(body))
-	for _, marker := range []string{"include", "encrypted_content", "reasoning"} {
+	for _, marker := range []string{
+		"include",
+		"encrypted_content",
+		"reasoning",
+		// A replayed signature the upstream cannot validate: Codex answers
+		// "thinking_signature_invalid" / "invalid_encrypted_content", Anthropic
+		// "invalid signature in thinking block". None of these contain
+		// "reasoning", so they need their own markers — without them a stale or
+		// foreign signature would turn an otherwise working provider into a hard
+		// failure instead of a retry without the replay.
+		"thinking_signature_invalid",
+		"invalid signature in thinking block",
+		"invalid_encrypted_content",
+	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -337,7 +350,14 @@ func inputImageParts(content interface{}) []map[string]interface{} {
 func (pr *ProviderRouter) handleGenericChatToResponses(w http.ResponseWriter, r *http.Request, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider) {
 	reqStart := time.Now()
 	client := detectClient(r)
-	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, false)
+	// Restore reasoning signatures the OpenAI protocol cannot carry back (it has
+	// no signature field), so the Codex upstream keeps its chain of thought;
+	// see thinking_replay.go. Include=reasoning.encrypted_content is only
+	// requested when there is a restored signature to replay - a plain request
+	// stays byte-identical, and a provider that rejects the include is retried
+	// without it by postResponsesBody.
+	replayed := restoreThinkingReplayForOpenAI(r, openAIReq, rp)
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, replayed > 0)
 	// Unlike the Codex backend (which rejects it), generic /v1/responses
 	// endpoints accept max_output_tokens; forward the client's limit.
 	if openAIReq.MaxTokens > 0 {
@@ -371,8 +391,16 @@ func (pr *ProviderRouter) handleCodexChatCompletions(w http.ResponseWriter, r *h
 	reqStart := time.Now()
 	client := detectClient(r)
 
+	// Restore reasoning signatures the OpenAI protocol cannot carry back (it has
+	// no signature field), so the Codex upstream keeps its chain of thought;
+	// see thinking_replay.go. Include=reasoning.encrypted_content is only
+	// requested when there is a restored signature to replay - a plain request
+	// stays byte-identical, and a provider that rejects the include is retried
+	// without it by postResponsesBody.
+	replayed := restoreThinkingReplayForOpenAI(r, openAIReq, rp)
+
 	// Translate to Responses API format
-	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, false)
+	bodyMap := translateChatCompletionsToCodexResponses(openAIReq, replayed > 0)
 	resp, err := pr.postResponsesBody(r.Context(), rp.ResponsesURL(), bodyMap, rp, true, " (codex chat completions translation)")
 	if err != nil {
 		log.Printf("[ERR] Codex upstream request failed: %v", err)
@@ -413,6 +441,14 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 	var roleSent bool
 	var toolCallIndex int
 	var finishReason string
+	// Accumulate the completed assistant turn so its reasoning signature can be
+	// replayed on a later request; an OpenAI client has no field to echo a
+	// Responses reasoning item back in, so the cache is the only carrier
+	// (see thinking_replay.go).
+	var replayText strings.Builder
+	replayReasoning := strings.Builder{}
+	var replayCalls []OpenAIToolCall
+	var replaySignature string
 
 	defer func() {
 		stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
@@ -474,12 +510,14 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 			delta, _ := event["delta"].(string)
 			if delta != "" {
 				stats.Global.AddTokens(1)
+				replayText.WriteString(delta)
 				writeChunk(OpenAIStreamDelta{Content: &delta}, nil, nil)
 			}
 
 		case "response.reasoning_summary_text.delta":
 			delta, _ := event["delta"].(string)
 			if delta != "" {
+				replayReasoning.WriteString(delta)
 				writeChunk(OpenAIStreamDelta{ReasoningContent: &delta}, nil, nil)
 			}
 
@@ -492,6 +530,7 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 			if itemType == "function_call" {
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)
+				replayCalls = append(replayCalls, OpenAIToolCall{ID: callID, Type: "function", Function: OpenAIToolCallFunc{Name: name}})
 				idx := toolCallIndex
 				toolCallIndex++
 				writeChunk(OpenAIStreamDelta{
@@ -523,6 +562,20 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 				}, nil, nil)
 			}
 
+		case "response.output_item.done":
+			// A reasoning item's final encrypted_content is only delivered on
+			// item.done; item.added carries a pre-content snapshot. Capture it for
+			// the replay cache below.
+			item, _ := event["item"].(map[string]interface{})
+			if item == nil {
+				continue
+			}
+			if it, _ := item["type"].(string); it == "reasoning" {
+				if sig, _ := item["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
+					replaySignature = sig
+				}
+			}
+
 		case "response.completed":
 			responseObj, _ := event["response"].(map[string]interface{})
 			if responseObj != nil {
@@ -547,6 +600,21 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 				} else {
 					finishReason = "stop"
 				}
+				// Some providers only surface reasoning items on the completed
+				// response; take the last encrypted_content seen for the replay cache.
+				if output, ok := responseObj["output"].([]interface{}); ok {
+					for _, rawItem := range output {
+						itemMap, ok := rawItem.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if t, _ := itemMap["type"].(string); t == "reasoning" {
+							if sig, _ := itemMap["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
+								replaySignature = sig
+							}
+						}
+					}
+				}
 			}
 			// Send final chunk with finish reason
 			fr := finishReason
@@ -560,6 +628,17 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[ERR] Codex SSE read error: %v", err)
+	}
+
+	// Remember this turn so a later request that lost the signature (the OpenAI
+	// protocol has no carrier for it) can replay it; see thinking_replay.go.
+	if replaySignature != "" || replayReasoning.Len() > 0 {
+		msg := OpenAIChatMessage{Role: "assistant", Content: replayText.String(), ToolCalls: replayCalls, ReasoningSignatures: responseReasoningSignatures(replaySignature)}
+		if replayReasoning.Len() > 0 {
+			reasoning := replayReasoning.String()
+			msg.ReasoningContent = &reasoning
+		}
+		cacheThinkingReplayFromMessage(openAISessionID(r, openAIReq), thinkingReplayFamily(rp, openAIReq.Model), msg)
 	}
 
 	// If no finish reason was sent, send a default one
@@ -579,6 +658,12 @@ func (pr *ProviderRouter) translateCodexResponsesToChatCompletionsStream(w http.
 // backend and builds a complete Chat Completions JSON response.
 func (pr *ProviderRouter) translateCodexResponsesToChatCompletions(w http.ResponseWriter, r *http.Request, resp *http.Response, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider, client string, reqStart time.Time) {
 	chatResp, inputTokens, outputTokens, cachedTokens := collectCodexResponsesSSE(resp, openAIReq.Model)
+
+	// Remember the turn's reasoning signature so a later request can replay it;
+	// see thinking_replay.go.
+	if len(chatResp.Choices) > 0 {
+		cacheThinkingReplayFromMessage(openAISessionID(r, openAIReq), thinkingReplayFamily(rp, openAIReq.Model), chatResp.Choices[0].Message)
+	}
 
 	stats.Global.RecordRequest(openAIReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 

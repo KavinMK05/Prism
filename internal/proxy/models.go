@@ -284,6 +284,15 @@ type OpenAIChatRequest struct {
 	ResponseFormat    interface{}          `json:"response_format,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
 	StreamOptions     *OpenAIStreamOptions `json:"stream_options,omitempty"`
+	// PromptCacheKey is the opt-in session identity of an OpenAI-protocol
+	// client (Codex CLI sends it). Prism uses it to scope reasoning replay so a
+	// later turn of the same session can reclaim reasoning state the OpenAI
+	// protocol itself cannot carry; see thinking_replay.go. Forwarded upstream
+	// unchanged, as OpenAI-compatible providers expect.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// User is the legacy OpenAI end-user identifier and the fallback session
+	// identity when no prompt_cache_key is present.
+	User string `json:"user,omitempty"`
 }
 
 type OpenAIStreamOptions struct {
@@ -314,6 +323,12 @@ type OpenAIChatMessage struct {
 	ToolID           string           `json:"tool_call_id,omitempty"`
 	Name             string           `json:"name,omitempty"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	// ReasoningPlaceholder marks a reasoning_content value the translator
+	// synthesized ("tool call") only to satisfy DeepSeek/Kimi/MiMo-style
+	// endpoints that reject an assistant tool-call turn without reasoning.
+	// The replay cache replaces a placeholder with the turn's real reasoning
+	// when it has one; it is never serialized.
+	ReasoningPlaceholder bool `json:"-"`
 	// Reasoning is emitted by some OpenAI-compatible providers, including
 	// OpenRouter, instead of reasoning_content.
 	Reasoning *string `json:"reasoning,omitempty"`
