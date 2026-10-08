@@ -89,6 +89,13 @@ type Config struct {
 	Search            *search.Config           `json:"search,omitempty"`
 	MCP               *MCPConfig               `json:"mcp,omitempty"`
 
+	// UncoalesceTurns restores one assistant message per tool round when a
+	// client (Claude Code) packs every round of a single user prompt into one
+	// assistant message. A chat upstream otherwise reads the whole loop as a
+	// single unfinished turn and keeps re-narrating its own closing line.
+	// Defaults to true; set false to forward the client's shape untouched.
+	UncoalesceTurns *bool `json:"uncoalesce_turns,omitempty"`
+
 	// AnalyticsOptOut records an explicit decision to disable anonymous usage
 	// telemetry (a single daily heartbeat to PostHog EU). Telemetry is on by
 	// default; this flag turns it off. The PRISM_ANALYTICS_DISABLED environment
@@ -104,6 +111,16 @@ type Config struct {
 	// AnalyticsOptOut / AnalyticsNoticeSeen instead.
 	AnalyticsOptIn    bool `json:"analytics_opt_in,omitempty"`
 	AnalyticsPrompted bool `json:"analytics_prompted,omitempty"`
+}
+
+// UncoalesceTurnsEnabled reports whether the proxy may split a client-coalesced
+// assistant turn back into one message per tool round (see
+// internal/proxy/uncoalesce.go). Defaults to true.
+func (c *Config) UncoalesceTurnsEnabled() bool {
+	if c == nil || c.UncoalesceTurns == nil {
+		return true
+	}
+	return *c.UncoalesceTurns
 }
 
 // EnsureAgentIntegrations initializes the agent integration section and its
