@@ -60,18 +60,29 @@ type assistantTurnReplay struct {
 	at         time.Time
 }
 
-// matches reports whether msg is the request-side counterpart of this cached
-// turn: same non-thinking text and the same tool calls in the same order.
+// matches reports whether a request-side turn is the counterpart of this
+// cached turn. Tool-call turns are identified by their call ids: the upstream
+// mints e.g. "call_t78435va", Prism hands the client sanitizeToolUseID's
+// "toolu_callt78435va", and the client echoes that rewritten id back, so
+// toolCallIDs canonicalizes both sides into the same space. Ids are minted per
+// turn and unique, which makes them a stronger identity than the assistant
+// text — text reconstruction can differ in whitespace or in how multiple text
+// blocks were joined (the translator joins with "\n", a streamed response is a
+// plain concatenation). Text-only turns (no calls on either side) still match
+// on text, since they have no other identity.
 func (t assistantTurnReplay) matches(text string, callIDs []string) bool {
-	if t.text != text || len(t.callIDs) != len(callIDs) {
-		return false
-	}
-	for i := range callIDs {
-		if t.callIDs[i] != callIDs[i] {
+	if len(t.callIDs) > 0 && len(callIDs) > 0 {
+		if len(t.callIDs) != len(callIDs) {
 			return false
 		}
+		for i := range callIDs {
+			if t.callIDs[i] != callIDs[i] {
+				return false
+			}
+		}
+		return true
 	}
-	return true
+	return len(t.callIDs) == 0 && len(callIDs) == 0 && t.text == text
 }
 
 func (t assistantTurnReplay) bytes() int {
@@ -158,13 +169,20 @@ func openAISessionID(r *http.Request, req *OpenAIChatRequest) string {
 	return strings.TrimSpace(req.User)
 }
 
-// toolCallIDs returns the non-empty call IDs of a message, in order.
+// toolCallIDs returns the non-empty call IDs of a message, in order, in the
+// client-visible id space. An Anthropic-inbound response hands the client
+// sanitizeToolUseID's rewritten id (upstream "call_t78435va" becomes
+// "toolu_callt78435va"), which the client echoes back on the next request, so
+// canonicalizing both sides here is what lets a cached turn be matched at all.
+// The rewrite is idempotent for ids that are already toolu_-shaped.
 func toolCallIDs(msg OpenAIChatMessage) []string {
 	var ids []string
 	for _, tc := range msg.ToolCalls {
-		if id := strings.TrimSpace(tc.ID); id != "" {
-			ids = append(ids, id)
+		id := strings.TrimSpace(tc.ID)
+		if id == "" {
+			continue
 		}
+		ids = append(ids, sanitizeToolUseID(id))
 	}
 	return ids
 }

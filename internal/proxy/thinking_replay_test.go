@@ -280,12 +280,16 @@ func TestThinkingReplay_CacheAndRestore(t *testing.T) {
 	if turn.reasoning != reasoning || len(turn.signatures) != 1 || turn.signatures[0].Signature != sig.Signature {
 		t.Errorf("cached turn mismatch: %+v", turn)
 	}
-	// A different identity (text or calls) must not match.
-	if _, ok := lookupThinkingReplayTurn("session-a", "p1:m", "other text", []string{"toolu_1"}); ok {
-		t.Errorf("turn matched on wrong text")
-	}
+	// A different identity must not match. Wrong call IDs block the match even
+	// with identical text...
 	if _, ok := lookupThinkingReplayTurn("session-a", "p1:m", "let me check", []string{"toolu_9"}); ok {
 		t.Errorf("turn matched on wrong call IDs")
+	}
+	// ...while a tool-call turn is matched by its call IDs, so a text difference
+	// alone (whitespace, or how multiple text blocks were joined) does not hide
+	// the turn's reasoning.
+	if _, ok := lookupThinkingReplayTurn("session-a", "p1:m", "other text", []string{"toolu_1"}); !ok {
+		t.Errorf("tool-call turn was not matched by its call IDs")
 	}
 	// Different session or model family must not match (no cross-caller leak).
 	if _, ok := lookupThinkingReplayTurn("session-b", "p1:m", "let me check", []string{"toolu_1"}); ok {
@@ -575,6 +579,56 @@ func TestRestoreReasoningReplay_ReplacesPlaceholder(t *testing.T) {
 	}
 	if *translated[0].ReasoningContent != real {
 		t.Errorf("real reasoning was overwritten: %q", *translated[0].ReasoningContent)
+	}
+}
+
+// TestThinkingReplay_UpstreamToolIDsAreCanonicalized pins the bug a live probe
+// exposed: the upstream mints "call_t78435va", Prism answers the client with
+// sanitizeToolUseID's "toolu_callt78435va", and the client echoes that back. A
+// cache that stored the raw upstream id could never match the request side.
+func TestThinkingReplay_UpstreamToolIDsAreCanonicalized(t *testing.T) {
+	resetThinkingReplayCache()
+	reasoning := "the real plan"
+	// Response side: raw upstream id, as it arrives from the provider.
+	cacheThinkingReplayFromMessage("session-ids", "ollama_cloud:m", OpenAIChatMessage{
+		Role:             "assistant",
+		ToolCalls:        []OpenAIToolCall{{ID: "call_t78435va", Type: "function"}},
+		ReasoningContent: &reasoning,
+	})
+	// Request side: the id the client got from Prism and echoed back.
+	placeholder := "[redacted thinking]"
+	msgs := []OpenAIChatMessage{{
+		Role:                 "assistant",
+		ToolCalls:            []OpenAIToolCall{{ID: "toolu_callt78435va", Type: "function"}},
+		ReasoningContent:     &placeholder,
+		ReasoningPlaceholder: true,
+	}}
+	if got := sanitizeToolUseID("call_t78435va"); got != "toolu_callt78435va" {
+		t.Fatalf("premise changed: sanitizeToolUseID(call_t78435va) = %q", got)
+	}
+	if n := restoreReasoningReplay("session-ids", "ollama_cloud:m", msgs, false, true); n != 1 {
+		t.Fatalf("restored = %d, want 1 (upstream and client id spaces must match)", n)
+	}
+	if *msgs[0].ReasoningContent != reasoning {
+		t.Errorf("reasoning not restored: %q", *msgs[0].ReasoningContent)
+	}
+
+	// The other direction: an upstream id that already looks like a chatcmpl
+	// tool id is rewritten the same way on both sides.
+	resetThinkingReplayCache()
+	cacheThinkingReplayFromMessage("session-ids2", "p:m", OpenAIChatMessage{
+		Role:             "assistant",
+		ToolCalls:        []OpenAIToolCall{{ID: "chatcmpl-tool-abc", Type: "function"}},
+		ReasoningContent: &reasoning,
+	})
+	msgs = []OpenAIChatMessage{{
+		Role:                 "assistant",
+		ToolCalls:            []OpenAIToolCall{{ID: "toolu_abc", Type: "function"}},
+		ReasoningContent:     &placeholder,
+		ReasoningPlaceholder: true,
+	}}
+	if n := restoreReasoningReplay("session-ids2", "p:m", msgs, false, true); n != 1 {
+		t.Fatalf("restored = %d, want 1 for a chatcmpl-tool id", n)
 	}
 }
 
