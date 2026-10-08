@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,12 +37,6 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	// Inject stream_options to get usage data from the upstream provider
 	openAIReq.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
 
-	body, err := json.Marshal(openAIReq)
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to marshal OpenAI request")
-		return
-	}
-
 	// Capture the complete Anthropic -> OpenAI-compatible streaming hop.
 	dbg := pr.dbgCapture("messages-openai", true, anthroReq.Model)
 	defer dbg.finish()
@@ -51,17 +44,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	dbg.writeJSON("1_original_request.json", anthroReq)
 	dbg.writeJSON("2_translated_request.json", openAIReq)
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.ChatCompletionsURL(), bytes.NewReader(body))
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to create upstream request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
-
-	log.Printf("-> %s %s (streaming)", req.Method, rp.ChatCompletionsURL())
-
-	resp, err := pr.client.Do(req)
+	resp, err := pr.postChatCompletionsBody(r.Context(), rp.ChatCompletionsURL(), openAIReq, rp, " (streaming)")
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		WriteAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -111,6 +94,13 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 	streamErrored := false
 
 	prevChunkHasThinking := false
+	// Accumulate the completed assistant turn (text, tool-call identities and
+	// reasoning) so thinking_replay.go can restore it on a later request that
+	// lost it; a Chat Completions upstream carries no signature, so the
+	// reasoning text is the only replayable state here.
+	var assistantText strings.Builder
+	replayThinking := strings.Builder{}
+	var replayCalls []OpenAIToolCall
 	// Track the active tool call by its stable provider identity. Some
 	// OpenAI-compatible servers repeat the id on every delta, while others
 	// only send it on the first delta and rely on index thereafter.
@@ -192,6 +182,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 		if currentChunkHasThinking {
 			liveOutputTokens++
 			stats.Global.AddTokens(1)
+			replayThinking.WriteString(reasoningText)
 			if !state.thinkingBlockOpen {
 				state.openThinkingBlock()
 			}
@@ -254,6 +245,10 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 					if tc.Index != nil {
 						activeToolIndex = fmt.Sprintf("index:%d", *tc.Index)
 					}
+					// Remember the call's identity for the replay cache below; the id
+					// may arrive on a later continuation delta, so update the last
+					// entry when it does.
+					replayCalls = append(replayCalls, OpenAIToolCall{ID: tc.ID, Type: "function", Function: OpenAIToolCallFunc{Name: tc.Function.Name}})
 					continue
 				}
 
@@ -266,6 +261,9 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 				}
 
 				args := tc.Function.Arguments
+				if tc.ID != "" && len(replayCalls) > 0 && replayCalls[len(replayCalls)-1].ID == "" {
+					replayCalls[len(replayCalls)-1].ID = tc.ID
+				}
 				if state.toolUseBlockOpen {
 					// Already-opened active call: stream args incrementally.
 					if args != "" {
@@ -291,6 +289,7 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			activeToolIndex = ""
+			assistantText.WriteString(*choice.Delta.Content)
 			liveOutputTokens++
 			stats.Global.AddTokens(1)
 			// Emit any buffered tool call (and close an open tool_use block)
@@ -343,6 +342,19 @@ func (pr *ProviderRouter) handleOpenAIStreaming(w http.ResponseWriter, r *http.R
 
 	if streamErrored {
 		return
+	}
+
+	// Remember this turn's reasoning so a later request that lost it can replay
+	// it (see thinking_replay.go). A Chat Completions upstream carries no
+	// signature, so the reasoning text plus the turn's identity is all there is.
+	// Only worth storing when this model replays reasoning at all.
+	if replayThinking.Len() > 0 && pr.preserveReasoningContent(anthroReq.Model, rp.ProviderID) {
+		reasoning := replayThinking.String()
+		cacheThinkingReplayFromMessage(
+			claudeCodeSessionID(r, anthroReq.Metadata),
+			thinkingReplayFamily(rp, anthroReq.Model),
+			OpenAIChatMessage{Role: "assistant", Content: assistantText.String(), ToolCalls: replayCalls, ReasoningContent: &reasoning},
+		)
 	}
 
 	// Terminate the SSE stream. If finish_reason was seen we deferred the

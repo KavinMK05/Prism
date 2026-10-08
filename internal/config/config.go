@@ -89,6 +89,13 @@ type Config struct {
 	Search            *search.Config           `json:"search,omitempty"`
 	MCP               *MCPConfig               `json:"mcp,omitempty"`
 
+	// UncoalesceTurns restores one assistant message per tool round when a
+	// client (Claude Code) packs every round of a single user prompt into one
+	// assistant message. A chat upstream otherwise reads the whole loop as a
+	// single unfinished turn and keeps re-narrating its own closing line.
+	// Defaults to true; set false to forward the client's shape untouched.
+	UncoalesceTurns *bool `json:"uncoalesce_turns,omitempty"`
+
 	// AnalyticsOptOut records an explicit decision to disable anonymous usage
 	// telemetry (a single daily heartbeat to PostHog EU). Telemetry is on by
 	// default; this flag turns it off. The PRISM_ANALYTICS_DISABLED environment
@@ -104,6 +111,16 @@ type Config struct {
 	// AnalyticsOptOut / AnalyticsNoticeSeen instead.
 	AnalyticsOptIn    bool `json:"analytics_opt_in,omitempty"`
 	AnalyticsPrompted bool `json:"analytics_prompted,omitempty"`
+}
+
+// UncoalesceTurnsEnabled reports whether the proxy may split a client-coalesced
+// assistant turn back into one message per tool round (see
+// internal/proxy/uncoalesce.go). Defaults to true.
+func (c *Config) UncoalesceTurnsEnabled() bool {
+	if c == nil || c.UncoalesceTurns == nil {
+		return true
+	}
+	return *c.UncoalesceTurns
 }
 
 // EnsureAgentIntegrations initializes the agent integration section and its
@@ -178,14 +195,21 @@ type ModelCapabilities struct {
 
 // ModelEntry represents a known model with its associated provider and capabilities
 type ModelEntry struct {
-	ID              string             `json:"id"`
-	Provider        string             `json:"provider"`
-	Reasoning       bool               `json:"reasoning,omitempty"`
-	ReasoningEffort []string           `json:"reasoning_effort,omitempty"`
-	ContextLength   int                `json:"context_length,omitempty"`
-	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
-	Capabilities    *ModelCapabilities `json:"capabilities,omitempty"`
-	API             string             `json:"api,omitempty"` // "chat_completions" (default) or "responses"
+	ID              string   `json:"id"`
+	Provider        string   `json:"provider"`
+	Reasoning       bool     `json:"reasoning,omitempty"`
+	ReasoningEffort []string `json:"reasoning_effort,omitempty"`
+	// ReasoningPreservation controls whether a model's thinking history is
+	// replayed to the upstream as reasoning_content. Empty (the default)
+	// infers it from the model name (DeepSeek/Kimi/MiMo-style endpoints
+	// require non-empty reasoning_content on assistant tool-call history);
+	// "always" replays it for any model; "never" drops it even for the
+	// vendors that normally require it.
+	ReasoningPreservation string             `json:"reasoning_preservation,omitempty"`
+	ContextLength         int                `json:"context_length,omitempty"`
+	MaxOutputTokens       int                `json:"max_output_tokens,omitempty"`
+	Capabilities          *ModelCapabilities `json:"capabilities,omitempty"`
+	API                   string             `json:"api,omitempty"` // "chat_completions" (default) or "responses"
 }
 
 // ModelRouteKey returns the provider-qualified model identifier used by

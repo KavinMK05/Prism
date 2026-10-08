@@ -29,6 +29,10 @@ func (pr *ProviderRouter) handleGenericResponsesForAnthropic(w http.ResponseWrit
 	reqStart := time.Now()
 
 	openAIReq := translateToOpenAIForResponses(anthroReq)
+	// Restore reasoning signatures the client could not carry back (Claude Code
+	// rewrites historical thinking to redacted_thinking on compaction, which
+	// drops the signature); see thinking_replay.go.
+	restoreThinkingReplayForAnthropic(r, anthroReq, rp, openAIReq, true, false)
 	// Mirror handleOpenAIStreaming/handleOpenAINonStreaming: strip the effort
 	// for non-reasoning models and clamp invalid values before the request is
 	// translated to the Responses body.
@@ -78,6 +82,12 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicJSON(w http.Respon
 	chatResp, inputTokens, outputTokens, cachedTokens := collectCodexResponsesSSE(resp, anthroReq.Model)
 	stats.Global.RecordRequest(anthroReq.Model, rp.ProviderID, client, inputTokens, outputTokens, cachedTokens, time.Since(reqStart))
 
+	// Remember the turn's reasoning signature so a later request can replay it;
+	// see thinking_replay.go.
+	if len(chatResp.Choices) > 0 {
+		cacheThinkingReplayFromMessage(claudeCodeSessionID(r, anthroReq.Metadata), thinkingReplayFamily(rp, anthroReq.Model), chatResp.Choices[0].Message)
+	}
+
 	anthroResp := translateFromOpenAI(&chatResp, anthroReq)
 	if len(anthroResp.Content) == 0 {
 		anthroResp.Content = []interface{}{AnthropicTextBlock{Type: "text", Text: ""}}
@@ -101,6 +111,12 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 	msgID := "msg_" + sanitizeMessageIDFragment(anthroReq.Model)
 
 	state := newStreamState(w, flusher, canFlush, msgID, 0)
+
+	// Accumulate the completed assistant turn so its reasoning signature can be
+	// replayed on a later request; see thinking_replay.go.
+	var replayText strings.Builder
+	var replayCalls []OpenAIToolCall
+	var replaySignature string
 
 	var inputTokens, outputTokens, liveOutputTokens int
 	defer func() {
@@ -159,6 +175,7 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 			if delta == "" {
 				continue
 			}
+			replayText.WriteString(delta)
 			liveOutputTokens++
 			stats.Global.AddTokens(1)
 			if state.thinkingBlockOpen {
@@ -205,6 +222,7 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 			if itemType, _ := item["type"].(string); itemType == "function_call" {
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)
+				replayCalls = append(replayCalls, OpenAIToolCall{ID: callID, Type: "function", Function: OpenAIToolCallFunc{Name: name}})
 				// Responses names every function_call item up front (call_id +
 				// name), so the tool_use block can open immediately with the
 				// upstream ID; no pending-call buffering is needed.
@@ -234,6 +252,7 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 				if strings.TrimSpace(sig) == "" {
 					continue
 				}
+				replaySignature = sig
 				state.thinkingSignature = sig
 				if !state.thinkingBlockOpen && !state.hasContentBlock {
 					// No reasoning summary was streamed (Codex only emits one when
@@ -273,6 +292,7 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 							if t, _ := itemMap["type"].(string); t == "reasoning" {
 								if sig, _ := itemMap["encrypted_content"].(string); strings.TrimSpace(sig) != "" {
 									state.thinkingSignature = sig
+									replaySignature = sig
 									state.openThinkingBlock()
 								}
 							}
@@ -317,6 +337,18 @@ func (pr *ProviderRouter) translateGenericResponsesToAnthropicStream(w http.Resp
 
 	if streamErrored {
 		return
+	}
+
+	// Remember this turn's reasoning signature so a later request can replay it
+	// (see thinking_replay.go). A Chat Completions client has no field to echo a
+	// Responses reasoning item back in, so this cache is its only carrier; the
+	// plain assistant text alone is not worth caching.
+	if replaySignature != "" {
+		cacheThinkingReplayFromMessage(
+			claudeCodeSessionID(r, anthroReq.Metadata),
+			thinkingReplayFamily(rp, anthroReq.Model),
+			OpenAIChatMessage{Role: "assistant", Content: replayText.String(), ToolCalls: replayCalls, ReasoningSignatures: responseReasoningSignatures(replaySignature)},
+		)
 	}
 
 	// Terminate the SSE stream even if response.completed never arrived

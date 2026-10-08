@@ -305,6 +305,139 @@ func TestTranslateContentBlocks_ToolResultImageAndError(t *testing.T) {
 	}
 }
 
+// TestTranslateContentBlocks_OpenAIToolResultImage verifies which turn carries a
+// tool result's images. Chat Completions keeps them off the tool message:
+// ChatCompletionToolMessageParam.content is `string |
+// Array<ChatCompletionContentPartText>` — text parts only — so the image rides in
+// the following user turn (what the CLIProxyAPI reference does). A Responses
+// upstream accepts input_image in function_call_output.output, so there the image
+// stays on the tool message.
+func TestTranslateContentBlocks_OpenAIToolResultImage(t *testing.T) {
+	const dataURL = "data:image/png;base64,IMGDATA"
+
+	blocks := func(content []interface{}) []interface{} {
+		return []interface{}{map[string]interface{}{
+			"type":        "tool_result",
+			"tool_use_id": "toolu_img",
+			"content":     content,
+		}}
+	}
+	imagePart := map[string]interface{}{
+		"type": "image",
+		"source": map[string]interface{}{
+			"type":       "base64",
+			"media_type": "image/png",
+			"data":       "IMGDATA",
+		},
+	}
+	textPart := map[string]interface{}{"type": "text", "text": "screenshot"}
+
+	// sawImageURL reports whether a content value carries the image part.
+	sawImageURL := func(content interface{}) bool {
+		t.Helper()
+		parts, ok := content.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, p := range parts {
+			pm, _ := p.(map[string]interface{})
+			if pm["type"] != "image_url" {
+				continue
+			}
+			url, _ := pm["image_url"].(map[string]interface{})
+			if url["url"] == dataURL {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("chat_completions_relays_the_image", func(t *testing.T) {
+		msgs := translateContentBlocksToOpenAI("user", blocks([]interface{}{textPart, imagePart}))
+		if len(msgs) != 2 {
+			t.Fatalf("expected tool + user message, got %d: %#v", len(msgs), msgs)
+		}
+		if msgs[0].Role != "tool" || msgs[0].ToolID != "toolu_img" {
+			t.Fatalf("role/id = %q/%q, want tool/toolu_img", msgs[0].Role, msgs[0].ToolID)
+		}
+		if got, ok := msgs[0].Content.(string); !ok || got != "screenshot" {
+			t.Errorf("tool content = %#v, want the plain string \"screenshot\" (images are not legal on a tool message)", msgs[0].Content)
+		}
+		if msgs[1].Role != "user" || !sawImageURL(msgs[1].Content) {
+			t.Errorf("following user message = %#v, want the relayed image part", msgs[1].Content)
+		}
+	})
+
+	t.Run("chat_completions_image_only_tool_gets_text", func(t *testing.T) {
+		msgs := translateContentBlocksToOpenAI("user", blocks([]interface{}{imagePart}))
+		text, _ := msgs[0].Content.(string)
+		if strings.TrimSpace(text) == "" {
+			t.Error("image-only tool result produced an empty tool message")
+		}
+		if !sawImageURL(msgs[1].Content) {
+			t.Errorf("user message = %#v, want the relayed image part", msgs[1].Content)
+		}
+	})
+
+	t.Run("chat_completions_text_only_unchanged", func(t *testing.T) {
+		msgs := translateContentBlocksToOpenAI("user", blocks([]interface{}{textPart}))
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d: %#v", len(msgs), msgs)
+		}
+		if got, ok := msgs[0].Content.(string); !ok || got != "screenshot" {
+			t.Errorf("content = %#v, want the plain string \"screenshot\"", msgs[0].Content)
+		}
+	})
+
+	t.Run("responses_keeps_the_image_on_the_tool_message", func(t *testing.T) {
+		req := translateToOpenAIForResponses(&AnthropicRequest{
+			Model: "test",
+			Messages: []AnthropicMessage{
+				rmsg(t, `{"role":"user","content":"go"}`),
+				rmsg(t, `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_img","name":"screenshot","input":{}}]}`),
+				rmsg(t, `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_img","content":[
+					{"type":"text","text":"screenshot"},
+					{"type":"image","source":{"type":"base64","media_type":"image/png","data":"IMGDATA"}}]}]}`),
+			},
+		})
+		var toolMsg *OpenAIChatMessage
+		for i := range req.Messages {
+			if req.Messages[i].Role == "tool" {
+				toolMsg = &req.Messages[i]
+			}
+		}
+		if toolMsg == nil {
+			t.Fatalf("no tool message in %#v", req.Messages)
+		}
+		if !sawImageURL(toolMsg.Content) {
+			t.Errorf("tool content = %#v, want the image inline for a Responses upstream", toolMsg.Content)
+		}
+
+		// End to end: the inline image has to survive into the request body as an
+		// input_image part on the matching function_call_output.
+		body := translateChatCompletionsToCodexResponses(req, true)
+		var output interface{}
+		for _, raw := range body["input"].([]interface{}) {
+			item, _ := raw.(map[string]interface{})
+			if item["type"] == "function_call_output" {
+				output = item["output"]
+			}
+		}
+		if output == nil {
+			t.Fatalf("no function_call_output in %#v", body["input"])
+		}
+		var sawInputImage bool
+		for _, p := range output.([]map[string]interface{}) {
+			if p["type"] == "input_image" && p["image_url"] == dataURL {
+				sawInputImage = true
+			}
+		}
+		if !sawInputImage {
+			t.Errorf("function_call_output.output = %#v, want an input_image part", output)
+		}
+	})
+}
+
 // TestTranslateRequest_ThinkingDisabled verifies the Ollama path does not
 // enable thinking when thinking.type == "disabled".
 func TestTranslateRequest_ThinkingDisabled(t *testing.T) {

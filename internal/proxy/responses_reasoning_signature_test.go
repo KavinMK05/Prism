@@ -21,9 +21,9 @@ func TestTranslateChatCompletionsToResponses_ReasoningReplay(t *testing.T) {
 		Messages: []OpenAIChatMessage{
 			{Role: "user", Content: "hi"},
 			{
-				Role:               "assistant",
-				Content:            "",
-				ReasoningSignature: testReasoningSignature,
+				Role:                "assistant",
+				Content:             "",
+				ReasoningSignatures: []ReasoningSignature{{Signature: testReasoningSignature}},
 				ToolCalls: []OpenAIToolCall{{
 					ID:   "call_1",
 					Type: "function",
@@ -97,7 +97,7 @@ func TestTranslateToOpenAIForResponses_CapturesThinkingSignature(t *testing.T) {
 	if len(responsesReq.Messages) != 1 {
 		t.Fatalf("responses translation messages = %#v", responsesReq.Messages)
 	}
-	if got := responsesReq.Messages[0].ReasoningSignature; got != testReasoningSignature {
+	if got := firstReasoningSignature(responsesReq.Messages[0].ReasoningSignatures); got != testReasoningSignature {
 		t.Fatalf("responses translation signature = %q, want %q", got, testReasoningSignature)
 	}
 
@@ -106,7 +106,7 @@ func TestTranslateToOpenAIForResponses_CapturesThinkingSignature(t *testing.T) {
 		t.Fatalf("chat translation messages = %#v", chatReq.Messages)
 	}
 	msg := chatReq.Messages[0]
-	if msg.ReasoningSignature != "" || msg.ReasoningContent != nil {
+	if len(msg.ReasoningSignatures) != 0 || msg.ReasoningContent != nil {
 		t.Fatalf("chat translation leaked reasoning: %#v", msg)
 	}
 }

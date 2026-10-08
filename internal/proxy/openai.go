@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,14 +10,46 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ollama-proxy/internal/config"
 	"ollama-proxy/internal/stats"
 	"ollama-proxy/internal/util"
 )
 
+// toolImageMode selects where a tool result's image parts are carried in the
+// translated request. The two downstream protocols disagree, and the official
+// OpenAI type decides it: ChatCompletionToolMessageParam.content is
+// `string | Array<ChatCompletionContentPartText>` — text parts only — so an
+// image part on a `role:"tool"` message is off-spec and a strict upstream
+// rejects the whole request. The Responses API's function_call_output.output
+// does accept input_image, so there the images stay attached to their own call.
+type toolImageMode int
+
+const (
+	// toolImagesRelayed moves a tool's images into the user turn that follows the
+	// tool messages. This is what the CLIProxyAPI reference does for its
+	// Claude -> Chat Completions translator, and it is the only spec-legal option.
+	toolImagesRelayed toolImageMode = iota
+	// toolImagesInline keeps them on the tool message itself, for a Responses
+	// upstream whose function_call_output.output accepts input_image parts.
+	toolImagesInline
+)
+
+// Reasoning-replay caps. A long agentic turn accumulates one thinking block
+// per tool round trip, and Claude Code echoes every one of them back on each
+// subsequent request, so an unbounded replay grows linearly with the turn.
+// These bounds mirror CLIProxyAPI's claude/kimi thinking replay cache
+// (512 blocks per turn, 256 KiB of reasoning per session entry) so a
+// pathological turn cannot balloon the upstream request. Oldest blocks are
+// dropped first: the model's most recent plan is the one worth replaying.
+const (
+	maxReasoningBlocksPerTurn = 512
+	maxReasoningContentBytes  = 256 << 10
+)
+
 func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
-	return translateToOpenAIWithOptions(anthroReq, false)
+	return translateToOpenAIWithPreservation(anthroReq, false, toolImagesRelayed, isReasoningVendorModel(anthroReq.Model))
 }
 
 // translateToOpenAIForResponses is translateToOpenAI for a Responses API
@@ -25,12 +58,20 @@ func translateToOpenAI(anthroReq *AnthropicRequest) *OpenAIChatRequest {
 // replay it as a reasoning input item — without it the model loses its own
 // chain of thought between turns and re-derives work it already did.
 func translateToOpenAIForResponses(anthroReq *AnthropicRequest) *OpenAIChatRequest {
-	return translateToOpenAIWithOptions(anthroReq, true)
+	return translateToOpenAIWithPreservation(anthroReq, true, toolImagesInline, isReasoningVendorModel(anthroReq.Model))
 }
 
-func translateToOpenAIWithOptions(anthroReq *AnthropicRequest, preserveReasoningSignature bool) *OpenAIChatRequest {
+func translateToOpenAIWithOptions(anthroReq *AnthropicRequest, preserveReasoningSignature bool, toolImages toolImageMode) *OpenAIChatRequest {
+	return translateToOpenAIWithPreservation(anthroReq, preserveReasoningSignature, toolImages, isReasoningVendorModel(anthroReq.Model))
+}
+
+// translateToOpenAIWithPreservation is the translation entry point that lets
+// the caller decide reasoning preservation explicitly (see
+// ProviderRouter.preserveReasoningContent, which honors the per-model
+// reasoning_preservation setting before falling back to vendor-name
+// inference).
+func translateToOpenAIWithPreservation(anthroReq *AnthropicRequest, preserveReasoningSignature bool, toolImages toolImageMode, preserveReasoningContent bool) *OpenAIChatRequest {
 	messages := []OpenAIChatMessage{}
-	preserveReasoningContent := isReasoningVendorModel(anthroReq.Model)
 
 	if anthroReq.System != nil {
 		sysContent := stripLeadingAnthropicBillingHeader(systemToString(anthroReq.System))
@@ -43,7 +84,7 @@ func translateToOpenAIWithOptions(anthroReq *AnthropicRequest, preserveReasoning
 	}
 
 	for _, msg := range anthroReq.Messages {
-		translated := translateMessageToOpenAIWithReasoning(msg, preserveReasoningContent, preserveReasoningSignature)
+		translated := translateMessageToOpenAIWithReasoning(msg, preserveReasoningContent, preserveReasoningSignature, toolImages)
 		messages = append(messages, translated...)
 	}
 	// OpenAI Chat implementations commonly support only one system message at
@@ -51,6 +92,9 @@ func translateToOpenAIWithOptions(anthroReq *AnthropicRequest, preserveReasoning
 	// hoist and merge every system message after translating the full history.
 	// This mirrors CC Switch's Anthropic -> OpenAI normalization.
 	messages = normalizeOpenAISystemMessages(messages)
+	// Bound the replayed reasoning state before it is marshaled upstream; see
+	// maxReasoningBlocksPerTurn.
+	messages = capReasoningHistory(messages, anthroReq.Model)
 
 	req := &OpenAIChatRequest{
 		Model:       anthroReq.Model,
@@ -156,10 +200,10 @@ func (pr *ProviderRouter) upstreamOpenAIChat(chatReq *OpenAIChatRequest, rp *con
 }
 
 func translateMessageToOpenAI(msg AnthropicMessage) []OpenAIChatMessage {
-	return translateMessageToOpenAIWithReasoning(msg, false, false)
+	return translateMessageToOpenAIWithReasoning(msg, false, false, toolImagesRelayed)
 }
 
-func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoningContent, preserveReasoningSignature bool) []OpenAIChatMessage {
+func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoningContent, preserveReasoningSignature bool, toolImages toolImageMode) []OpenAIChatMessage {
 	// Anthropic allows system messages inside the messages array (e.g. Claude
 	// Code's "The user sent a new message while you were working" reminders,
 	// or the "Available agent types" notice). Hoisting these to the front
@@ -192,7 +236,7 @@ func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoni
 			Content: content,
 		}}
 	case []interface{}:
-		return translateContentBlocksToOpenAIWithReasoning(msg.Role, content, preserveReasoningContent, preserveReasoningSignature)
+		return translateContentBlocksToOpenAIWithReasoning(msg.Role, content, preserveReasoningContent, preserveReasoningSignature, toolImages)
 	default:
 		return []OpenAIChatMessage{{
 			Role:    msg.Role,
@@ -202,18 +246,26 @@ func translateMessageToOpenAIWithReasoning(msg AnthropicMessage, preserveReasoni
 }
 
 func translateContentBlocksToOpenAI(role string, blocks []interface{}) []OpenAIChatMessage {
-	return translateContentBlocksToOpenAIWithReasoning(role, blocks, false, false)
+	return translateContentBlocksToOpenAIWithReasoning(role, blocks, false, false, toolImagesRelayed)
 }
 
-func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface{}, preserveReasoningContent, preserveReasoningSignature bool) []OpenAIChatMessage {
+func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface{}, preserveReasoningContent, preserveReasoningSignature bool, toolImages toolImageMode) []OpenAIChatMessage {
 	textParts := []string{}
 	imageParts := []interface{}{}
 	toolCalls := []OpenAIToolCall{}
 	var reasoningParts []string
-	var reasoningSignature string
+	// sawRealThinking distinguishes real thinking history from the placeholder
+	// text a redacted_thinking block contributes, so the replay cache knows a
+	// turn whose plan the client no longer has is worth replacing.
+	sawRealThinking := false
+	var reasoningSignatures []ReasoningSignature
 	type toolResult struct {
 		id      string
 		content string
+		// images holds data/http URLs for image parts returned by the tool, so a
+		// screenshot or chart tool's output reaches the model instead of being
+		// dropped. Where they ride is decided by toolImageMode.
+		images []string
 	}
 	var toolResults []toolResult
 
@@ -240,12 +292,22 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 			if role == "assistant" {
 				if preserveReasoningSignature {
 					if sig, ok := blockMap["signature"].(string); ok && strings.TrimSpace(sig) != "" {
-						reasoningSignature = sig
+						// Tag the signature with how many of this turn's tool calls
+						// preceded it so the Responses translator can replay it in
+						// front of the call it produced. Keep every block: a coalesced
+						// assistant turn carries one thinking block per original turn,
+						// and overwriting here kept only the last, leaving every
+						// earlier call with no chain of thought to replay.
+						reasoningSignatures = append(reasoningSignatures, ReasoningSignature{
+							Signature: sig,
+							CallIndex: len(toolCalls),
+						})
 					}
 				}
 				if preserveReasoningContent {
 					if thinking, ok := blockMap["thinking"].(string); ok && strings.TrimSpace(thinking) != "" {
 						reasoningParts = append(reasoningParts, thinking)
+						sawRealThinking = true
 					}
 				}
 			}
@@ -282,14 +344,22 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 				tr.content = c
 			} else if c, ok := blockMap["content"].([]interface{}); ok {
 				for _, item := range c {
-					if m, ok := item.(map[string]interface{}); ok {
-						if t, ok := m["text"].(string); ok {
-							tr.content += t
+					m, ok := item.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if t, ok := m["text"].(string); ok {
+						tr.content += t
+					}
+					// A tool that returns images (a screenshot, a rendered chart, a
+					// diagram) must reach the model. Where they travel depends on the
+					// downstream protocol — see toolImageMode.
+					if t, _ := m["type"].(string); t == "image" {
+						if source, ok := m["source"].(map[string]interface{}); ok {
+							if url := anthropicImageSourceURL(source); url != "" {
+								tr.images = append(tr.images, url)
+							}
 						}
-						// OpenAI tool messages only accept string content, so
-						// image parts in Anthropic tool_result blocks have no
-						// native representation in the OpenAI tool role and are
-						// intentionally dropped here (text is preserved).
 					}
 				}
 			}
@@ -308,16 +378,10 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 			toolResults = append(toolResults, tr)
 		case "image":
 			if source, ok := blockMap["source"].(map[string]interface{}); ok {
-				if data, ok := source["data"].(string); ok {
-					mediaType, _ := source["media_type"].(string)
-					if mediaType == "" {
-						mediaType = "image/png"
-					}
+				if url := anthropicImageSourceURL(source); url != "" {
 					imageParts = append(imageParts, map[string]interface{}{
-						"type": "image_url",
-						"image_url": map[string]interface{}{
-							"url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
-						},
+						"type":      "image_url",
+						"image_url": map[string]interface{}{"url": url},
 					})
 				}
 			}
@@ -330,16 +394,22 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 			content = util.JoinStrings(textParts)
 		}
 		msg := OpenAIChatMessage{
-			Role:               "assistant",
-			Content:            content,
-			ToolCalls:          toolCalls,
-			ReasoningSignature: reasoningSignature,
+			Role:                "assistant",
+			Content:             content,
+			ToolCalls:           toolCalls,
+			ReasoningSignatures: reasoningSignatures,
 		}
 		if preserveReasoningContent && role == "assistant" && len(toolCalls) > 0 {
 			reasoning := "tool call"
 			if len(reasoningParts) > 0 {
 				reasoning = util.JoinStrings(reasoningParts)
 			}
+			// A placeholder satisfies DeepSeek/Kimi-style validation, but it is not
+			// the model's plan: mark it (the text stays identical) so the replay
+			// cache can substitute the real reasoning this session cached earlier.
+			// That is the norm after Claude Code compacts, when every historical
+			// thinking block has become redacted_thinking.
+			msg.ReasoningPlaceholder = !sawRealThinking
 			msg.ReasoningContent = &reasoning
 		}
 		return []OpenAIChatMessage{msg}
@@ -347,12 +417,44 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 
 	if len(toolResults) > 0 {
 		var messages []OpenAIChatMessage
+		// relayParts collects the images moved off the tool messages, kept for the
+		// user turn emitted below (see toolImageMode).
+		var relayParts []interface{}
 		for _, tr := range toolResults {
+			content := interface{}(tr.content)
+			switch {
+			case toolImages == toolImagesInline:
+				content = anthropicToolResultChatContent(tr.content, tr.images)
+			case len(tr.images) > 0:
+				relayParts = append(relayParts, anthropicImageURLParts(tr.images)...)
+				if strings.TrimSpace(tr.content) == "" {
+					// The tool message still has to carry text; the images follow.
+					content = anthropicImageOnlyToolText(len(tr.images))
+				}
+			}
 			messages = append(messages, OpenAIChatMessage{
 				Role:    "tool",
-				Content: tr.content,
+				Content: content,
 				ToolID:  tr.id,
 			})
+		}
+		if len(relayParts) > 0 {
+			relay := []interface{}{
+				map[string]interface{}{"type": "text", "text": toolResultImageRelayNotice},
+			}
+			relay = append(relay, relayParts...)
+			// Fold the turn's own text in rather than emitting a second user
+			// message, so the request keeps a single user turn.
+			switch tc := openAITextContent(textParts).(type) {
+			case string:
+				if tc != "" {
+					relay = append(relay, map[string]interface{}{"type": "text", "text": tc})
+				}
+			case []interface{}:
+				relay = append(relay, tc...)
+			}
+			messages = append(messages, OpenAIChatMessage{Role: "user", Content: relay})
+			return messages
 		}
 		if len(textParts) > 0 {
 			messages = append(messages, OpenAIChatMessage{
@@ -382,16 +484,16 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 	// Do not send an empty assistant turn after removing stale thinking. This
 	// matches CLIProxyAPI and avoids giving the upstream a fake continuation.
 	if role == "assistant" && len(textParts) == 0 && len(imageParts) == 0 {
-		if reasoningSignature == "" {
+		if len(reasoningSignatures) == 0 {
 			return nil
 		}
 		// A Responses API reasoning item stands on its own, so a signature-only
 		// assistant turn is still worth replaying (the Responses translator
-		// emits just the reasoning item and skips the empty message).
+		// emits just the reasoning items and skips the empty message).
 		return []OpenAIChatMessage{{
-			Role:               role,
-			Content:            "",
-			ReasoningSignature: reasoningSignature,
+			Role:                role,
+			Content:             "",
+			ReasoningSignatures: reasoningSignatures,
 		}}
 	}
 
@@ -400,9 +502,71 @@ func translateContentBlocksToOpenAIWithReasoning(role string, blocks []interface
 		Content: openAITextContent(textParts),
 	}
 	if role == "assistant" {
-		final.ReasoningSignature = reasoningSignature
+		final.ReasoningSignatures = reasoningSignatures
 	}
 	return []OpenAIChatMessage{final}
+}
+
+// anthropicImageSourceURL converts an Anthropic image block's `source` object
+// into a URL an OpenAI-compatible upstream accepts: a data URL for inline
+// base64, or the referenced URL as-is. Returns "" when the source carries
+// neither, so a malformed block is skipped rather than sent empty.
+func anthropicImageSourceURL(source map[string]interface{}) string {
+	if url, _ := source["url"].(string); strings.TrimSpace(url) != "" {
+		return url
+	}
+	data, _ := source["data"].(string)
+	if data == "" {
+		return ""
+	}
+	mediaType, _ := source["media_type"].(string)
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+}
+
+// toolResultImageRelayNotice labels the user turn that carries a tool result's
+// images when they cannot ride on the tool message itself. Mirrors CLIProxyAPI,
+// which relays them for its Claude -> Chat Completions translator.
+const toolResultImageRelayNotice = "Images returned by the preceding tool call(s):"
+
+// anthropicImageURLParts renders image URLs as OpenAI chat content parts.
+func anthropicImageURLParts(images []string) []interface{} {
+	parts := make([]interface{}, 0, len(images))
+	for _, url := range images {
+		parts = append(parts, map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]interface{}{"url": url},
+		})
+	}
+	return parts
+}
+
+// anthropicImageOnlyToolText is the stand-in text for a tool result that carried
+// images and no text. A tool message must say something; "" reads as "the tool
+// returned nothing", which is how the missing-image bug presented.
+func anthropicImageOnlyToolText(imageCount int) string {
+	return fmt.Sprintf("[tool output contained %d image(s); see the attached image data]", imageCount)
+}
+
+// anthropicToolResultChatContent builds the chat-completions `content` value for
+// an Anthropic tool_result whose images stay on the tool message: a plain string
+// when the tool returned only text, or a multimodal parts array when it returned
+// images. Only legal for a Responses upstream (toolImagesInline); see
+// toolImageMode. Mirrors responsesToolOutputChatContent for the reverse
+// direction, and keeps the plain-string shape for text-only results.
+func anthropicToolResultChatContent(text string, images []string) interface{} {
+	if len(images) == 0 {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		text = anthropicImageOnlyToolText(len(images))
+	}
+	parts := []interface{}{
+		map[string]interface{}{"type": "text", "text": text},
+	}
+	return append(parts, anthropicImageURLParts(images)...)
 }
 
 func isReasoningVendorModel(model string) bool {
@@ -413,6 +577,145 @@ func isReasoningVendorModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// preserveReasoningContent decides whether a model's thinking history is
+// replayed to a Chat Completions upstream as reasoning_content. A per-model
+// reasoning_preservation setting wins over name inference: "always" replays
+// thinking for any model, "never" drops it even for vendors whose endpoints
+// normally require non-empty reasoning_content, and the empty default keeps
+// the vendor-name inference (DeepSeek/Kimi/MiMo-style endpoints reject an
+// assistant tool-call turn without reasoning_content, most others reject the
+// field itself). Mirrors CLIProxyAPI's per-model is-compat flag, which serves
+// the same purpose: preserving thinking blocks is a per-endpoint contract, not
+// a global one.
+func (pr *ProviderRouter) preserveReasoningContent(model, providerID string) bool {
+	if entry := pr.getModelEntry(model, providerID); entry != nil {
+		switch strings.ToLower(strings.TrimSpace(entry.ReasoningPreservation)) {
+		case "always":
+			return true
+		case "never":
+			return false
+		}
+	}
+	return isReasoningVendorModel(model)
+}
+
+// capReasoningHistory bounds the reasoning state replayed from one translated
+// request: at most maxReasoningBlocksPerTurn signatures per assistant turn and
+// maxReasoningContentBytes of reasoning_content per assistant message. Oldest
+// entries are dropped first, because the model's latest plan is the one worth
+// replaying. Returns messages unchanged (and logs nothing) when within bounds.
+func capReasoningHistory(messages []OpenAIChatMessage, model string) []OpenAIChatMessage {
+	droppedBlocks := 0
+	droppedBytes := 0
+	for i := range messages {
+		msg := &messages[i]
+		if len(msg.ReasoningSignatures) > maxReasoningBlocksPerTurn {
+			droppedBlocks += len(msg.ReasoningSignatures) - maxReasoningBlocksPerTurn
+			msg.ReasoningSignatures = msg.ReasoningSignatures[len(msg.ReasoningSignatures)-maxReasoningBlocksPerTurn:]
+		}
+		if msg.ReasoningContent != nil && len(*msg.ReasoningContent) > maxReasoningContentBytes {
+			trimmed := trimReasoningTail(*msg.ReasoningContent, maxReasoningContentBytes)
+			droppedBytes += len(*msg.ReasoningContent) - len(trimmed)
+			msg.ReasoningContent = &trimmed
+		}
+	}
+	if droppedBlocks > 0 || droppedBytes > 0 {
+		log.Printf("[Proxy] capped replayed reasoning for %s: dropped %d oldest thinking block(s) and %d reasoning bytes", model, droppedBlocks, droppedBytes)
+	}
+	return messages
+}
+
+// trimReasoningTail keeps the last maxBytes of s, moving the cut forward to a
+// rune boundary so the result is valid UTF-8 (reasoning text routinely carries
+// non-ASCII, and a cut mid-rune would produce a string the upstream cannot
+// decode).
+func trimReasoningTail(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := len(s) - maxBytes
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return s[cut:]
+}
+
+// stripChatReasoning returns a copy of req with every replayed reasoning field
+// removed, for the retry after an upstream rejects the reasoning replay. The
+// original request is left untouched so the caller's debug capture still shows
+// what was sent first.
+func stripChatReasoning(req *OpenAIChatRequest) *OpenAIChatRequest {
+	clone := *req
+	clone.Messages = make([]OpenAIChatMessage, len(req.Messages))
+	copy(clone.Messages, req.Messages)
+	for i := range clone.Messages {
+		clone.Messages[i].ReasoningContent = nil
+		clone.Messages[i].Reasoning = nil
+		clone.Messages[i].ReasoningSignatures = nil
+	}
+	return &clone
+}
+
+// hasReplayedReasoning reports whether any message carries replayed reasoning
+// state. The retry after a reasoning rejection is only worth attempting when
+// there is something to strip.
+func hasReplayedReasoning(req *OpenAIChatRequest) bool {
+	for _, m := range req.Messages {
+		if m.ReasoningContent != nil || m.Reasoning != nil || len(m.ReasoningSignatures) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// postChatCompletionsBody sends a Chat Completions request. When the upstream
+// rejects the replayed reasoning state with a 400 (a stale or foreign
+// reasoning_content/signature, e.g. a Codex signature replayed to a plain
+// OpenAI-compatible endpoint), it retries once with every reasoning field
+// stripped, so reasoning replay can never turn an otherwise working provider
+// into a hard failure. Mirrors postResponsesBody for the Responses direction
+// and CLIProxyAPI's rejection handling.
+func (pr *ProviderRouter) postChatCompletionsBody(ctx context.Context, upstreamURL string, openAIReq *OpenAIChatRequest, rp *config.ResolvedProvider, logTag string) (*http.Response, error) {
+	send := func(reqBody *OpenAIChatRequest) (*http.Response, error) {
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+rp.APIKey)
+		log.Printf("-> %s %s%s", req.Method, upstreamURL, logTag)
+		return pr.client.Do(req)
+	}
+
+	resp, err := send(openAIReq)
+	if err != nil || resp.StatusCode != http.StatusBadRequest || !hasReplayedReasoning(openAIReq) {
+		return resp, err
+	}
+	rejection, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !isReasoningRejection(rejection) {
+		resp.Body = io.NopCloser(bytes.NewReader(rejection))
+		return resp, nil
+	}
+	log.Printf("[WARN] upstream rejected replayed reasoning, retrying without it: %s", string(rejection))
+	return send(stripChatReasoning(openAIReq))
+}
+
+// firstReasoningSignature returns the signature a response-direction message
+// carries, or "" when it has none. A response carries at most one: the
+// translation takes the last reasoning item's encrypted_content, so there is no
+// position to preserve.
+func firstReasoningSignature(signatures []ReasoningSignature) string {
+	if len(signatures) == 0 {
+		return ""
+	}
+	return signatures[0].Signature
 }
 
 func stripLeadingAnthropicBillingHeader(text string) string {
@@ -547,11 +850,11 @@ func translateFromOpenAI(resp *OpenAIChatResponse, anthroReq *AnthropicRequest) 
 	if reasoning == "" && choice.Message.Reasoning != nil {
 		reasoning = *choice.Message.Reasoning
 	}
-	if reasoning != "" || choice.Message.ReasoningSignature != "" {
+	if reasoning != "" || len(choice.Message.ReasoningSignatures) > 0 {
 		content = append(content, AnthropicThinkingBlock{
 			Type:      "thinking",
 			Thinking:  reasoning,
-			Signature: choice.Message.ReasoningSignature,
+			Signature: firstReasoningSignature(choice.Message.ReasoningSignatures),
 		})
 	}
 
@@ -637,7 +940,11 @@ func (pr *ProviderRouter) HandleOpenAIMessages(w http.ResponseWriter, r *http.Re
 	stats.Global.StartRequest(anthroReq.Model, rp.ProviderID, client)
 	defer stats.Global.EndRequest()
 
-	openAIReq := translateToOpenAI(anthroReq)
+	preserveReasoning := pr.preserveReasoningContent(anthroReq.Model, rp.ProviderID)
+	openAIReq := translateToOpenAIWithPreservation(anthroReq, false, toolImagesRelayed, preserveReasoning)
+	// Restore reasoning state the client could not carry back (thinking blocks
+	// dropped on context compaction, or a model switch that rewrote the turn).
+	restoreThinkingReplayForAnthropic(r, anthroReq, rp, openAIReq, false, preserveReasoning)
 
 	if anthroReq.Stream {
 		pr.handleOpenAIStreaming(w, r, openAIReq, anthroReq, rp)
@@ -653,12 +960,6 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	// Validate reasoning_effort for the model
 	openAIReq.ReasoningEffort = pr.validateReasoningEffort(openAIReq.Model, openAIReq.ReasoningEffort)
 
-	body, err := json.Marshal(openAIReq)
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to marshal OpenAI request")
-		return
-	}
-
 	// Capture the complete Anthropic -> OpenAI-compatible translation hop.
 	dbg := pr.dbgCapture("messages-openai", false, anthroReq.Model)
 	defer dbg.finish()
@@ -666,17 +967,7 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	dbg.writeJSON("1_original_request.json", anthroReq)
 	dbg.writeJSON("2_translated_request.json", openAIReq)
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, rp.ChatCompletionsURL(), bytes.NewReader(body))
-	if err != nil {
-		WriteAnthropicError(w, 500, "api_error", "Failed to create upstream request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+rp.APIKey)
-
-	log.Printf("-> %s %s", req.Method, rp.ChatCompletionsURL())
-
-	resp, err := pr.client.Do(req)
+	resp, err := pr.postChatCompletionsBody(r.Context(), rp.ChatCompletionsURL(), openAIReq, rp, "")
 	if err != nil {
 		log.Printf("[ERR] Upstream request failed: %v", err)
 		WriteAnthropicError(w, 502, "api_error", fmt.Sprintf("Upstream request failed: %v", err))
@@ -700,6 +991,17 @@ func (pr *ProviderRouter) handleOpenAINonStreaming(w http.ResponseWriter, r *htt
 	}
 
 	anthroResp := translateFromOpenAI(&openAIResp, anthroReq)
+
+	// Remember this turn's reasoning so a later request that lost it (client
+	// compaction, model switch) can replay it; see thinking_replay.go. Only worth
+	// storing when this model replays reasoning at all.
+	if len(openAIResp.Choices) > 0 && pr.preserveReasoningContent(anthroReq.Model, rp.ProviderID) {
+		cacheThinkingReplayFromMessage(
+			claudeCodeSessionID(r, anthroReq.Metadata),
+			thinkingReplayFamily(rp, anthroReq.Model),
+			openAIResp.Choices[0].Message,
+		)
+	}
 
 	var cachedPromptTokens int
 	if openAIResp.Usage.PromptTokensDetails != nil {
