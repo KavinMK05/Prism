@@ -138,7 +138,7 @@ func TestSplitCoalescedTurnsPairsEveryRoundWithItsResults(t *testing.T) {
 		{Role: "system", Content: "env"},
 	}}
 
-	turns, rounds := splitCoalescedTurns(&req)
+	turns, rounds, _ := splitCoalescedTurns(&req, nil)
 	if turns != 1 || rounds != 3 {
 		t.Fatalf("splitCoalescedTurns = (%d, %d), want (1, 3)", turns, rounds)
 	}
@@ -171,7 +171,7 @@ func TestSplitCoalescedTurnsLeavesOneRoundPerMessageAlone(t *testing.T) {
 	}}
 	before, _ := json.Marshal(req.Messages)
 
-	if turns, rounds := splitCoalescedTurns(&req); turns != 0 || rounds != 0 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 0 || rounds != 0 {
 		t.Fatalf("splitCoalescedTurns = (%d, %d), want no-op", turns, rounds)
 	}
 	after, _ := json.Marshal(req.Messages)
@@ -186,11 +186,11 @@ func TestSplitCoalescedTurnsIsIdempotent(t *testing.T) {
 		coalescedTurn(4),
 		coalescedResults(4, "still there?"),
 	}}
-	if turns, rounds := splitCoalescedTurns(&req); turns != 1 || rounds != 4 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 1 || rounds != 4 {
 		t.Fatalf("first pass = (%d, %d), want (1, 4)", turns, rounds)
 	}
 	once, _ := json.Marshal(req.Messages)
-	if turns, rounds := splitCoalescedTurns(&req); turns != 0 || rounds != 0 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 0 || rounds != 0 {
 		t.Fatalf("second pass = (%d, %d), want no-op: %s", turns, rounds, describe(req.Messages))
 	}
 	twice, _ := json.Marshal(req.Messages)
@@ -219,7 +219,7 @@ func TestSplitCoalescedTurnsKeepsParallelCallsTogether(t *testing.T) {
 		}},
 	}}
 
-	if turns, rounds := splitCoalescedTurns(&req); turns != 1 || rounds != 2 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 1 || rounds != 2 {
 		t.Fatalf("splitCoalescedTurns = (%d, %d), want (1, 2): %s", turns, rounds, describe(req.Messages))
 	}
 	if got, want := describe(req.Messages),
@@ -248,7 +248,7 @@ func TestSplitCoalescedTurnsKeepsUnmatchedBlocks(t *testing.T) {
 	}}
 
 	before := blockCount(req.Messages)
-	if turns, _ := splitCoalescedTurns(&req); turns != 1 {
+	if turns, _, _ := splitCoalescedTurns(&req, nil); turns != 1 {
 		t.Fatalf("splitCoalescedTurns = %d turns, want 1: %s", turns, describe(req.Messages))
 	}
 	if after := blockCount(req.Messages); after != before {
@@ -268,7 +268,7 @@ func TestSplitCoalescedTurnsLeavesTurnWithoutResultsAlone(t *testing.T) {
 	}}
 	before, _ := json.Marshal(req.Messages)
 
-	if turns, rounds := splitCoalescedTurns(&req); turns != 0 || rounds != 0 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 0 || rounds != 0 {
 		t.Fatalf("splitCoalescedTurns = (%d, %d), want no-op", turns, rounds)
 	}
 	after, _ := json.Marshal(req.Messages)
@@ -288,7 +288,7 @@ func TestSplitCoalescedTurnsPoolsConsecutiveResultMessages(t *testing.T) {
 		{Role: "user", Content: "then what?"},
 	}}
 
-	if turns, rounds := splitCoalescedTurns(&req); turns != 1 || rounds != 3 {
+	if turns, rounds, _ := splitCoalescedTurns(&req, nil); turns != 1 || rounds != 3 {
 		t.Fatalf("splitCoalescedTurns = (%d, %d), want (1, 3): %s", turns, rounds, describe(req.Messages))
 	}
 	if got, want := describe(req.Messages),
@@ -322,7 +322,7 @@ func TestSplitCoalescedTurnsTranslationStopsConcatenatingRounds(t *testing.T) {
 		coalescedResults(3, ""),
 	}}
 	split := AnthropicRequest{Messages: append([]AnthropicMessage(nil), coalesced.Messages...)}
-	if turns, _ := splitCoalescedTurns(&split); turns != 1 {
+	if turns, _, _ := splitCoalescedTurns(&split, nil); turns != 1 {
 		t.Fatalf("splitCoalescedTurns = %d turns, want 1", turns)
 	}
 

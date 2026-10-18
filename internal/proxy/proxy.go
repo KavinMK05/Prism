@@ -372,8 +372,15 @@ func (pr *ProviderRouter) HandleMessages(w http.ResponseWriter, r *http.Request)
 	// unfinished turn that keeps re-narrating its own closing line. Restore the
 	// per-round transcript before anything translates it (see uncoalesce.go).
 	if pr.getConfig().UncoalesceTurnsEnabled() {
-		if turns, rounds := splitCoalescedTurns(&anthroReq); turns > 0 {
+		sessionKey := claudeCodeSessionID(r, anthroReq.Metadata)
+		turns, rounds, lines := splitCoalescedTurns(&anthroReq, func(text string, rounds int) int {
+			return placeMidLoopText(sessionKey, text, rounds)
+		})
+		if turns > 0 {
 			log.Printf("[Proxy] un-coalesced %d assistant turn(s) into %d tool rounds for %s", turns, rounds, resolvedModel)
+			// A mid-loop line is only remembered while the loop it arrived in is
+			// still being re-sent; the rest belong to finished turns.
+			retainMidLoopTexts(sessionKey, lines)
 		}
 	}
 

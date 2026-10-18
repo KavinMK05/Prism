@@ -1,5 +1,7 @@
 package proxy
 
+import "strings"
+
 // Claude Code packs every tool round of one user prompt into a single assistant
 // message — N x (thinking, text, tool_use) — followed by one user message that
 // carries all N tool_results, with any text the user typed mid-loop pinned at
@@ -110,14 +112,19 @@ func hasToolResult(blocks []interface{}) bool {
 }
 
 // splitCoalescedTurns rewrites every client-coalesced assistant turn in req. It
-// returns the number of assistant turns expanded and the number of tool rounds
-// recovered (0, 0 when the transcript already has one round per message).
-func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
+// returns the number of assistant turns expanded, the number of tool rounds
+// recovered, and the mid-loop user lines it took out of the client's tail
+// placement (0, 0, nil when the transcript already has one round per message).
+//
+// place, when non-nil, decides which round a mid-loop user line belongs to; see
+// midloop_text.go. With a nil place every line stays where the client put it.
+func splitCoalescedTurns(req *AnthropicRequest, place midLoopTextPlacement) (int, int, []string) {
 	if req == nil || len(req.Messages) < 2 {
-		return 0, 0
+		return 0, 0, nil
 	}
 	out := make([]AnthropicMessage, 0, len(req.Messages)+8)
 	expanded, recovered := 0, 0
+	var lines []string
 	for i := 0; i < len(req.Messages); i++ {
 		rounds, ok := assistantRounds(req.Messages[i].Content)
 		if !ok || req.Messages[i].Role != "assistant" {
@@ -133,9 +140,11 @@ func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
 		}
 
 		// Claim the results that answer this turn's calls; everything else the
-		// user turn carried (a result for an unknown call, a duplicate, the
-		// mid-loop user text Claude Code pins at the tail) is kept in source
-		// order and re-attached after the last round's results.
+		// user turn carried is kept, and re-attached where it belongs. Results
+		// for a call this turn does not contain, and unknown block types, stay in
+		// source order at the end of the loop; a mid-loop user line goes back to
+		// the round it interrupted (see midloop_text.go), which is where the
+		// client had it before the loop grew past it.
 		known := map[string]bool{}
 		for _, round := range rounds {
 			for _, id := range round.calls {
@@ -144,6 +153,7 @@ func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
 		}
 		byID := map[string]interface{}{}
 		var extra []interface{}
+		var tail []midLoopLine
 		for _, raw := range results {
 			block, _ := raw.(map[string]interface{})
 			id, _ := block["tool_use_id"].(string)
@@ -153,7 +163,25 @@ func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
 					continue
 				}
 			}
+			if blockType, _ := block["type"].(string); blockType == "text" && place != nil {
+				if text := strings.TrimSpace(stringField(block, "text")); text != "" {
+					tail = append(tail, midLoopLine{text: text, raw: raw})
+					lines = append(lines, text)
+					continue
+				}
+			}
 			extra = append(extra, raw)
+		}
+		placed := map[int][]interface{}{}
+		for _, line := range tail {
+			after := place(line.text, len(rounds))
+			if after < 0 {
+				after = 0
+			}
+			if after > len(rounds) {
+				after = len(rounds)
+			}
+			placed[after] = append(placed[after], line.raw)
 		}
 
 		lastRoundPaired := false
@@ -166,11 +194,17 @@ func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
 					delete(byID, id)
 				}
 			}
+			// A line that arrived after this round joins its results, which is the
+			// message the client would have put it in at the time.
+			claimed = append(claimed, placed[ri+1]...)
 			lastRoundPaired = ri == len(rounds)-1 && len(claimed) > 0
 			if len(claimed) > 0 {
 				out = append(out, AnthropicMessage{Role: "user", Content: claimed})
 			}
 		}
+		// An orphaned result and an unknown block keep the position the client chose
+		// for them. A line that is still the newest one was already emitted with the
+		// last round, so it is not collected here.
 		// Leftover results keep their source order too.
 		for _, raw := range results {
 			block, _ := raw.(map[string]interface{})
@@ -194,5 +228,19 @@ func splitCoalescedTurns(req *AnthropicRequest) (int, int) {
 		recovered += len(rounds)
 	}
 	req.Messages = out
-	return expanded, recovered
+	return expanded, recovered, lines
+}
+
+// stringField reads one string field of a parsed content block.
+func stringField(block map[string]interface{}, name string) string {
+	v, _ := block[name].(string)
+	return v
+}
+
+// midLoopLine is a mid-loop user line with the block it arrived as, so
+// re-placing it never rewrites what the client sent (a cache_control marker on
+// the last block, for one).
+type midLoopLine struct {
+	text string
+	raw  interface{}
 }
