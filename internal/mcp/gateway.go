@@ -220,19 +220,15 @@ func gatewayInstructions() string {
 		"call to the upstream server with its own credentials."
 }
 
+// handleToolsList lists the tools of every server this endpoint may reach. It
+// deliberately never starts a sign-in: listing is what every MCP client does
+// when it connects and again after the ttlMs we advertise, so it is not
+// evidence that anyone wants to use a server. Only tools/call is, which is why
+// the auto-sign-in lives there; a server that needs authorization shows up here
+// with no tools and its status says needs_auth for the admin UI.
 func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent string) rpcResponse {
 	servers := g.serversForAgent(agent)
-	tools, statuses := g.mgr.ToolsForServers(ctx, servers)
-	for _, st := range statuses {
-		if st.State != config.MCPStateNeedsAuth {
-			continue
-		}
-		if s := g.findServerForAgent(agent, st.ID); s != nil && g.mgr.autoConnectEligible(s) {
-			// tools/list runs under toolListTimeout, far short of a human
-			// approving: open the window and let the agent retry.
-			go g.mgr.triggerAutoAuthorize(context.WithoutCancel(ctx), st.ID, false)
-		}
-	}
+	tools, _ := g.mgr.ToolsForServers(ctx, servers)
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolMap(t))

@@ -109,11 +109,17 @@ type oauthFlow struct {
 
 // finishFlow marks the flow terminal and wakes anyone waiting on it. The first
 // caller wins, so a callback and the TTL reaper cannot both decide the outcome.
+// A failed, denied or abandoned (expired) window arms the auto-connect cooldown:
+// otherwise the next trigger finds no pending flow and immediately opens a
+// second browser, which makes an ignored tab reappear forever.
 func (f *oauthFlow) finishFlow(err error) {
 	f.once.Do(func() {
 		f.flowErr = err
 		f.endedAt = time.Now()
 		close(f.done)
+		if err != nil {
+			markAutoConnectFailed(f.serverID)
+		}
 	})
 }
 

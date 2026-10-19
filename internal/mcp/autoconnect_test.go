@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,11 +13,24 @@ import (
 	"ollama-proxy/internal/config"
 )
 
+// resetAutoConnectState clears the process-wide failure and start-lock maps so a
+// test does not inherit another test's cooldown for the same server id.
+func resetAutoConnectState(t *testing.T) {
+	t.Helper()
+	autoMu.Lock()
+	autoFailed = map[string]time.Time{}
+	autoMu.Unlock()
+	autoStartMu.Lock()
+	autoStartLocks = map[string]*sync.Mutex{}
+	autoStartMu.Unlock()
+}
+
 // autoConnectFixture publishes a config holding one OAuth-marked server that
 // has no token, and returns the manager plus the live config.
 func autoConnectFixture(t *testing.T) (*Manager, *config.Config) {
 	t.Helper()
 	isolateMCPConfig(t)
+	resetAutoConnectState(t)
 	as := newFakeAS(t)
 	_, resBase := newFakeResource(t, as.URL, protectedResourcePath+"/mcp", true)
 
@@ -135,8 +149,66 @@ func TestAutoAuthorizeSkipsWithRefreshToken(t *testing.T) {
 	}
 }
 
-// A second trigger while the window is open joins the pending flow instead of
-// opening a second browser.
+// Concurrent triggers for one server must produce exactly one browser tab: the
+// check for a pending flow and the start of a new one are serialized per server.
+func TestAutoAuthorizeStartsOneFlowPerServer(t *testing.T) {
+	old := openAuthURL
+	t.Cleanup(func() { openAuthURL = old })
+
+	mgr, _ := autoConnectFixture(t)
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	var calls int32
+	openAuthURL = func(rawURL string) error {
+		atomic.AddInt32(&calls, 1)
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return err
+		}
+		q := u.Query()
+		resp, err := http.Get(q.Get("redirect_uri") + "?code=test-code&state=" + url.QueryEscape(q.Get("state")))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	const triggers = 6
+	errs := make(chan error, triggers)
+	for i := 0; i < triggers; i++ {
+		go func() { errs <- mgr.AutoAuthorize(context.Background(), "fake", true) }()
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no sign-in was started")
+	}
+	time.Sleep(250 * time.Millisecond) // let the other triggers queue on the start lock
+	close(release)
+
+	for i := 0; i < triggers; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Errorf("trigger %d: %v", i, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a trigger never returned")
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("opener ran %d times, want 1 (one flow per server)", got)
+	}
+}
+
+// A trigger that arrives while another one is still starting the flow joins it
+// rather than reporting a failure, so the caller can retry its tool call.
 func TestAutoAuthorizeJoinsPendingFlow(t *testing.T) {
 	old := openAuthURL
 	t.Cleanup(func() { openAuthURL = old })
