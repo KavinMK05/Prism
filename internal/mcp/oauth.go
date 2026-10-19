@@ -100,7 +100,7 @@ type oauthFlow struct {
 	createdAt    time.Time
 	server       *http.Server
 
-	authURL string    // reused when a trigger joins a pending flow
+	authURL string // reused when a trigger joins a pending flow
 	done    chan struct{}
 	once    sync.Once
 	flowErr error     // nil once the token was persisted

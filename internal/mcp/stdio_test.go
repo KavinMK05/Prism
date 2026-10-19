@@ -111,7 +111,7 @@ func TestStdioLifecycle(t *testing.T) {
 	}
 
 	tools, statuses := mgr.ToolsForServers(ctx, []*config.MCPServerConfig{srv})
-	if len(tools) != 1 || tools[0].Name != "mcp__helper__echo" {
+	if len(tools) != 1 || tools[0].Name != "mcp_helper_echo" {
 		t.Fatalf("tools = %+v", tools)
 	}
 	if len(statuses) != 1 || statuses[0].State != config.MCPStateReady {
