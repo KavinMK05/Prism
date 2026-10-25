@@ -22,9 +22,19 @@ const (
 const ServerName = "prism"
 
 // ToolNamePrefix is the namespace Prism puts in front of every upstream tool
-// name: mcp__<server>__<tool>. It matches the convention the proxy already
-// normalizes in Responses API tool names.
-const ToolNamePrefix = "mcp__"
+// name: mcp_<server>_<tool>. The separators are single underscores on purpose:
+// agents that qualify MCP tools as server__tool (Grok Build, Codex) reject a
+// tool name that itself contains "__" as ambiguous and drop the tool entirely,
+// so a downstream name Prism emits must never contain one.
+const ToolNamePrefix = "mcp_"
+
+// toolNameSeparator joins the namespaced server id and the tool name.
+const toolNameSeparator = "_"
+
+// legacyToolNamePrefix is the mcp__<server>__<tool> shape Prism exposed before
+// the switch. Still accepted on tools/call, because an agent that cached a tool
+// list before an upgrade keeps calling the names it was given.
+const legacyToolNamePrefix = "mcp__"
 
 // JSON-RPC error codes.
 const (
@@ -127,17 +137,76 @@ func (e *RuntimeMissingError) Error() string {
 }
 
 // NamespacedToolName builds the downstream tool name for an upstream tool.
+// Both segments are narrowed to the [A-Za-z0-9_-] provider charset, so the
+// result is a valid function name for every client.
 func NamespacedToolName(serverID, tool string) string {
-	return ToolNamePrefix + serverID + "__" + tool
+	return ToolNamePrefix + toolNameSegment(serverID) + toolNameSeparator + toolNameSegment(tool)
 }
 
-// SplitNamespacedToolName reverses NamespacedToolName. Tool names may contain
-// "__" themselves, so only the first separator after the server id splits.
-func SplitNamespacedToolName(name string) (serverID, tool string, ok bool) {
+// toolNameSegment narrows one name for concatenation: characters outside
+// [A-Za-z0-9_-] become "-", and runs of "_" collapse to one. Together with the
+// edge trim that keeps the joined name free of "__", which downstream clients
+// reserve as their own server/tool delimiter.
+func toolNameSegment(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	lastUnderscore := false
+	for _, r := range name {
+		switch {
+		case r == '_':
+			if !lastUnderscore {
+				b.WriteRune('_')
+			}
+			lastUnderscore = true
+			continue
+		case r == '-', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		lastUnderscore = false
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+// SplitNamespacedToolName reverses NamespacedToolName against the server ids an
+// endpoint can reach; the longest matching id wins, so a server id that is a
+// prefix of another one still routes. Tool names may contain "_", so only the
+// separator after the server id splits.
+func SplitNamespacedToolName(name string, serverIDs []string) (serverID, tool string, ok bool) {
 	if !strings.HasPrefix(name, ToolNamePrefix) {
 		return "", "", false
 	}
-	rest := strings.TrimPrefix(name, ToolNamePrefix)
+	matched := 0
+	for _, id := range serverIDs {
+		segment := toolNameSegment(id)
+		if segment == "" {
+			continue
+		}
+		prefix := ToolNamePrefix + segment + toolNameSeparator
+		if len(prefix) > matched && strings.HasPrefix(name, prefix) {
+			matched = len(prefix)
+			serverID = id
+		}
+	}
+	if matched == 0 {
+		return "", "", false
+	}
+	tool = name[matched:]
+	if tool == "" {
+		return "", "", false
+	}
+	return serverID, tool, true
+}
+
+// SplitLegacyNamespacedToolName reverses the pre-switch mcp__<server>__<tool>
+// shape. Tool names may contain "__" themselves, so only the first separator
+// after the server id splits.
+func SplitLegacyNamespacedToolName(name string) (serverID, tool string, ok bool) {
+	if !strings.HasPrefix(name, legacyToolNamePrefix) {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(name, legacyToolNamePrefix)
 	idx := strings.Index(rest, "__")
 	if idx <= 0 {
 		return "", "", false

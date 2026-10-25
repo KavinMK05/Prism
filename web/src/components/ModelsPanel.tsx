@@ -56,7 +56,7 @@ export default function ModelsPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [newModel, setNewModel] = useState({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
+  const [newModel, setNewModel] = useState({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, preservation: '', infoStatus: '' });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newAliasFrom, setNewAliasFrom] = useState('');
   const [newAliasTo, setNewAliasTo] = useState('');
@@ -121,7 +121,7 @@ export default function ModelsPanel() {
     setExpandedRows(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s; });
     if (!editStates[i] && typeof knownModels[i] !== 'string') {
       const m = knownModels[i];
-      setEditStates(prev => ({ ...prev, [i]: { provider: m.provider || '', api: m.api || 'chat_completions', ctxLen: m.context_length || 0, maxOut: m.max_output_tokens || 0, effort: Array.isArray(m.reasoning_effort) ? m.reasoning_effort.join(',') : (m.reasoning_effort || ''), reasoning: m.reasoning || false, toolCall: m.capabilities?.tool_calling || false, struct: m.capabilities?.structured_outputs || false, vision: m.capabilities?.vision || false } }));
+      setEditStates(prev => ({ ...prev, [i]: { provider: m.provider || '', api: m.api || 'chat_completions', ctxLen: m.context_length || 0, maxOut: m.max_output_tokens || 0, effort: Array.isArray(m.reasoning_effort) ? m.reasoning_effort.join(',') : (m.reasoning_effort || ''), reasoning: m.reasoning || false, toolCall: m.capabilities?.tool_calling || false, struct: m.capabilities?.structured_outputs || false, vision: m.capabilities?.vision || false, preservation: m.reasoning_preservation || '' } }));
     }
   };
 
@@ -134,6 +134,9 @@ export default function ModelsPanel() {
     models[i] = {
       id, provider: es.provider, api: es.api || 'chat_completions', context_length: parseInt(es.ctxLen) || 0, max_output_tokens: parseInt(es.maxOut) || 0,
       reasoning: es.reasoning, reasoning_effort: es.effort ? es.effort.split(',').map((s: string) => s.trim()).filter((s: string) => s) : [],
+      // 'always'/'never' override the vendor-name inference that decides whether
+      // thinking history is replayed as reasoning_content; '' keeps the inference.
+      reasoning_preservation: es.preservation || '',
       capabilities: { tool_calling: es.toolCall, structured_outputs: es.struct, vision: es.vision },
     };
     const updated = { ...remap, known_models: models };
@@ -196,12 +199,13 @@ export default function ModelsPanel() {
     models.push({
       id: newModel.id.trim(), provider: selectedProvider, api: newModel.api || 'chat_completions',
       reasoning: newModel.reasoning, context_length: parseInt(newModel.ctxLen) || 0, max_output_tokens: parseInt(newModel.maxOut) || 0,
-      reasoning_effort: effortArr, capabilities: { tool_calling: newModel.toolCall, structured_outputs: newModel.struct, vision: newModel.vision },
+      reasoning_effort: effortArr, reasoning_preservation: newModel.preservation || '',
+      capabilities: { tool_calling: newModel.toolCall, structured_outputs: newModel.struct, vision: newModel.vision },
     });
     const updated = { ...remap, known_models: models };
     setRemap(updated);
     saveRemap(updated);
-    setNewModel({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, infoStatus: '' });
+    setNewModel({ id: '', provider: '', api: 'chat_completions', ctxLen: '', maxOut: '', effort: '', reasoning: false, toolCall: false, struct: false, vision: false, preservation: '', infoStatus: '' });
     setSearchQuery('');
   };
 
@@ -294,6 +298,17 @@ export default function ModelsPanel() {
                   <div><Label className="text-xs text-muted-foreground mb-0.5">Context Length</Label><Input type="number" placeholder="e.g. 128000" value={newModel.ctxLen} onChange={e => setNewModel(prev => ({ ...prev, ctxLen: e.target.value }))} /></div>
                   <div><Label className="text-xs text-muted-foreground mb-0.5">Max Output Tokens</Label><Input type="number" placeholder="e.g. 16384" value={newModel.maxOut} onChange={e => setNewModel(prev => ({ ...prev, maxOut: e.target.value }))} /></div>
                   <div className="col-span-2"><Label className="text-xs text-muted-foreground mb-0.5">Reasoning Effort Levels</Label><Input type="text" placeholder="low,medium,high" value={newModel.effort} onChange={e => setNewModel(prev => ({ ...prev, effort: e.target.value }))} /></div>
+                  <div className="col-span-2">
+                    <Label className="text-xs text-muted-foreground mb-0.5">Reasoning Preservation</Label>
+                    <Select value={newModel.preservation || 'auto'} onValueChange={(val) => setNewModel(prev => ({ ...prev, preservation: val === 'auto' ? '' : val }))}>
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto (infer from model name)</SelectItem>
+                        <SelectItem value="always">Always replay thinking history</SelectItem>
+                        <SelectItem value="never">Never replay thinking history</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-4 mt-3">
                   <Label title="Reasoning model" className="flex items-center gap-1 cursor-pointer text-xs">
@@ -360,6 +375,17 @@ export default function ModelsPanel() {
                           <SelectContent>
                             <SelectItem value="chat_completions">Chat Completions</SelectItem>
                             <SelectItem value="responses">Responses</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1">Reasoning Preservation</Label>
+                        <Select value={es.preservation || 'auto'} onValueChange={(val) => setEditStates(prev => ({ ...prev, [i]: { ...prev[i], preservation: val === 'auto' ? '' : val } }))}>
+                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto (vendor)</SelectItem>
+                            <SelectItem value="always">Always replay</SelectItem>
+                            <SelectItem value="never">Never replay</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>

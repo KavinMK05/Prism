@@ -19,6 +19,9 @@ type fakeUpstream struct {
 	lastTool string
 	lastArgs json.RawMessage
 	requests int
+	// extraTools are appended to the advertised tool list, for tests that need
+	// an upstream name outside the default pair.
+	extraTools []string
 }
 
 func (f *fakeUpstream) handler(w http.ResponseWriter, r *http.Request) {
@@ -49,19 +52,21 @@ func (f *fakeUpstream) handler(w http.ResponseWriter, r *http.Request) {
 			"serverInfo":      map[string]interface{}{"name": "fake", "version": "1.0.0"},
 		})
 	case "tools/list":
-		writeResult(map[string]interface{}{
-			"tools": []map[string]interface{}{
-				{
-					"name":        "search",
-					"description": "Search notes",
-					"inputSchema": map[string]interface{}{
-						"type":       "object",
-						"properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
-					},
+		list := []map[string]interface{}{
+			{
+				"name":        "search",
+				"description": "Search notes",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
 				},
-				{"name": "list_notes"},
 			},
-		})
+			{"name": "list_notes"},
+		}
+		for _, name := range f.extraTools {
+			list = append(list, map[string]interface{}{"name": name})
+		}
+		writeResult(map[string]interface{}{"tools": list})
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -208,7 +213,7 @@ func TestGatewayToolsListNamespacing(t *testing.T) {
 		tool := raw.(map[string]interface{})
 		names[tool["name"].(string)] = tool
 	}
-	search, ok := names["mcp__notes__search"]
+	search, ok := names["mcp_notes_search"]
 	if !ok {
 		t.Fatalf("namespaced tool missing, got %v", names)
 	}
@@ -218,8 +223,13 @@ func TestGatewayToolsListNamespacing(t *testing.T) {
 	if _, ok := search["inputSchema"]; !ok {
 		t.Error("inputSchema not relayed")
 	}
-	if _, ok := names["mcp__notes__list_notes"]; !ok {
+	if _, ok := names["mcp_notes_list_notes"]; !ok {
 		t.Errorf("second tool missing: %v", names)
+	}
+	for name := range names {
+		if strings.Contains(name, "__") {
+			t.Errorf("tool %q contains \"__\", which clients that qualify as server__tool drop as ambiguous", name)
+		}
 	}
 }
 
@@ -262,6 +272,59 @@ func TestGatewayToolsCallRouting(t *testing.T) {
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mcp__ghost__search"}}`)
 	if resp := decodeRPC(t, rec); resp.Error == nil {
 		t.Error("unknown server should be rejected")
+	}
+}
+
+// An upstream tool whose own name contains "__" must still be listable and
+// callable: the exposed name collapses the run, and the call maps back to the
+// exact upstream spelling through the server's tool list.
+func TestGatewayRoutesSanitizedToolNames(t *testing.T) {
+	f, url := startFakeUpstream(t)
+	f.extraTools = []string{"group__action"}
+	g := newTestGateway(newTestConfig(testServer("notes", url)))
+
+	rec := postRPC(g, "/mcp", "application/json", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	result := resultObject(t, decodeRPC(t, rec))
+	tools, _ := result["tools"].([]interface{})
+	exposed := false
+	for _, raw := range tools {
+		name := raw.(map[string]interface{})["name"].(string)
+		if strings.Contains(name, "__") {
+			t.Errorf("tool %q contains \"__\"", name)
+		}
+		if name == "mcp_notes_group_action" {
+			exposed = true
+		}
+	}
+	if !exposed {
+		t.Fatalf("sanitized tool missing from %v", tools)
+	}
+
+	rec = postRPC(g, "/mcp", "application/json",
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mcp_notes_group_action"}}`)
+	if resp := decodeRPC(t, rec); resp.Error != nil {
+		t.Fatalf("call failed: %v", resp.Error)
+	}
+	f.mu.Lock()
+	gotTool := f.lastTool
+	f.mu.Unlock()
+	if gotTool != "group__action" {
+		t.Errorf("upstream saw tool %q, want the original spelling %q", gotTool, "group__action")
+	}
+
+	// A cold manager (Prism restarted, agent kept the name it was given) must
+	// still resolve: the name is matched after loading the server's list once.
+	cold := newTestGateway(newTestConfig(testServer("notes", url)))
+	rec = postRPC(cold, "/mcp", "application/json",
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mcp_notes_group_action"}}`)
+	if resp := decodeRPC(t, rec); resp.Error != nil {
+		t.Fatalf("cold call failed: %v", resp.Error)
+	}
+	f.mu.Lock()
+	gotTool = f.lastTool
+	f.mu.Unlock()
+	if gotTool != "group__action" {
+		t.Errorf("cold upstream saw tool %q, want %q", gotTool, "group__action")
 	}
 }
 
@@ -308,7 +371,7 @@ func TestGatewaySSEAndNotifications(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "event: message") || !strings.Contains(body, "mcp__notes__search") {
+	if !strings.Contains(body, "event: message") || !strings.Contains(body, "mcp_notes_search") {
 		t.Errorf("SSE body missing the reply: %s", body)
 	}
 

@@ -284,10 +284,36 @@ type OpenAIChatRequest struct {
 	ResponseFormat    interface{}          `json:"response_format,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
 	StreamOptions     *OpenAIStreamOptions `json:"stream_options,omitempty"`
+	// PromptCacheKey is the opt-in session identity of an OpenAI-protocol
+	// client (Codex CLI sends it). Prism uses it to scope reasoning replay so a
+	// later turn of the same session can reclaim reasoning state the OpenAI
+	// protocol itself cannot carry; see thinking_replay.go. Forwarded upstream
+	// unchanged, as OpenAI-compatible providers expect.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// User is the legacy OpenAI end-user identifier and the fallback session
+	// identity when no prompt_cache_key is present.
+	User string `json:"user,omitempty"`
 }
 
 type OpenAIStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// ReasoningSignature is one opaque reasoning signature captured from an
+// assistant turn's thinking block: a Responses-API reasoning item's
+// encrypted_content. It is internal-only, never serialized into a Chat
+// Completions body.
+//
+// CallIndex records how many of the turn's tool calls preceded this thinking
+// block, so the Responses translator can replay one reasoning item per block
+// at the position it belongs to. Claude Code concatenates consecutive
+// assistant turns into a single message, so one message routinely carries
+// several blocks; the position is what keeps each reasoning item paired with
+// the calls it produced. A response-direction signature has no calls to be
+// positioned against and leaves it at 0.
+type ReasoningSignature struct {
+	Signature string
+	CallIndex int
 }
 
 type OpenAIChatMessage struct {
@@ -297,16 +323,25 @@ type OpenAIChatMessage struct {
 	ToolID           string           `json:"tool_call_id,omitempty"`
 	Name             string           `json:"name,omitempty"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	// ReasoningPlaceholder marks a reasoning_content value the translator
+	// synthesized ("tool call") only to satisfy DeepSeek/Kimi/MiMo-style
+	// endpoints that reject an assistant tool-call turn without reasoning.
+	// The replay cache replaces a placeholder with the turn's real reasoning
+	// when it has one; it is never serialized.
+	ReasoningPlaceholder bool `json:"-"`
 	// Reasoning is emitted by some OpenAI-compatible providers, including
 	// OpenRouter, instead of reasoning_content.
 	Reasoning *string `json:"reasoning,omitempty"`
-	// ReasoningSignature carries an upstream Responses-API reasoning item's
-	// encrypted_content through the Chat Completions intermediate shape. It is
-	// internal-only (`json:"-"`), so it is never serialized into a Chat
-	// Completions body: the Responses translator replays it as a reasoning
-	// input item, and the Anthropic translator re-emits it as a thinking-block
-	// signature so the client round-trips the model's reasoning.
-	ReasoningSignature string `json:"-"`
+	// ReasoningSignatures carries an assistant turn's reasoning signatures in
+	// block order. The Responses translator replays each as a reasoning input
+	// item, and the Anthropic translator re-emits them as thinking-block
+	// signatures so the client round-trips the model's reasoning.
+	//
+	// This was a single string, which silently kept only the last signature of a
+	// coalesced assistant turn: every earlier tool call then reached the
+	// upstream with its chain of thought missing, and re-deriving it is what
+	// reads as repeating work already done.
+	ReasoningSignatures []ReasoningSignature `json:"-"`
 }
 
 type OpenAIToolCall struct {

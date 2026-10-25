@@ -216,23 +216,19 @@ func (g *Gateway) discoverResult() map[string]interface{} {
 
 func gatewayInstructions() string {
 	return "Prism aggregates MCP servers for you. Tool names are namespaced as " +
-		"mcp__<server>__<tool>; call them exactly as listed, and Prism routes each " +
+		"mcp_<server>_<tool>; call them exactly as listed, and Prism routes each " +
 		"call to the upstream server with its own credentials."
 }
 
+// handleToolsList lists the tools of every server this endpoint may reach. It
+// deliberately never starts a sign-in: listing is what every MCP client does
+// when it connects and again after the ttlMs we advertise, so it is not
+// evidence that anyone wants to use a server. Only tools/call is, which is why
+// the auto-sign-in lives there; a server that needs authorization shows up here
+// with no tools and its status says needs_auth for the admin UI.
 func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent string) rpcResponse {
 	servers := g.serversForAgent(agent)
-	tools, statuses := g.mgr.ToolsForServers(ctx, servers)
-	for _, st := range statuses {
-		if st.State != config.MCPStateNeedsAuth {
-			continue
-		}
-		if s := g.findServerForAgent(agent, st.ID); s != nil && g.mgr.autoConnectEligible(s) {
-			// tools/list runs under toolListTimeout, far short of a human
-			// approving: open the window and let the agent retry.
-			go g.mgr.triggerAutoAuthorize(context.WithoutCancel(ctx), st.ID, false)
-		}
-	}
+	tools, _ := g.mgr.ToolsForServers(ctx, servers)
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolMap(t))
@@ -255,27 +251,21 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id json.RawMessage, agent
 	if p.Name == "" {
 		return errorResponse(id, rpcErrorf(CodeInvalidParams, "tools/call requires a tool name"))
 	}
-	serverID, tool, ok := SplitNamespacedToolName(p.Name)
-	if !ok {
-		return errorResponse(id, rpcErrorf(CodeInvalidParams,
-			"tool %q is not namespaced; use the mcp__<server>__<tool> names from tools/list", p.Name))
-	}
-	server := g.findServerForAgent(agent, serverID)
-	if server == nil {
-		return errorResponse(id, rpcErrorf(CodeInvalidParams,
-			"server %q is not enabled for this endpoint", serverID))
+	server, tool, rerr := g.resolveToolName(ctx, agent, p.Name)
+	if rerr != nil {
+		return errorResponse(id, rerr)
 	}
 	raw, err := g.mgr.CallTool(ctx, server, tool, p.Arguments)
 	if err != nil && isAuthError(err) && g.mgr.autoConnectEligible(server) {
 		// tools/call has toolCallTimeout (10 min), so waiting is worthwhile here.
-		if aerr := g.mgr.triggerAutoAuthorize(ctx, serverID, true); aerr == nil {
+		if aerr := g.mgr.triggerAutoAuthorize(ctx, server.ID, true); aerr == nil {
 			// The flow stored a token and marked the server OAuth-authenticated;
 			// drop the transport that carried the rejected credential and
 			// re-resolve the server from the live config.
-			g.mgr.Restart(serverID)
+			g.mgr.Restart(server.ID)
 			fresh := server
 			if cfg := g.cfg(); cfg != nil {
-				if fs := cfg.FindMCPServer(serverID); fs != nil {
+				if fs := cfg.FindMCPServer(server.ID); fs != nil {
 					fresh = fs
 				}
 			}
@@ -283,12 +273,71 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id json.RawMessage, agent
 		}
 	}
 	if err != nil {
-		return errorResponse(id, errorFromUpstream(err, serverID))
+		return errorResponse(id, errorFromUpstream(err, server.ID))
 	}
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{"content":[]}`)
 	}
 	return rpcResponse{JSONRPC: "2.0", ID: id, Result: raw}
+}
+
+// resolveToolName maps a downstream tool name back to its server and the exact
+// upstream tool name. Both shapes are accepted: the current
+// mcp_<server>_<tool>, and the legacy mcp__<server>__<tool> an agent may still
+// have cached from before an upgrade.
+func (g *Gateway) resolveToolName(ctx context.Context, agent, name string) (*config.MCPServerConfig, string, *rpcError) {
+	servers := g.serversForAgent(agent)
+	unsupported := rpcErrorf(CodeInvalidParams,
+		"tool %q is not namespaced; use the mcp_<server>_<tool> names from tools/list", name)
+	notEnabled := func(serverID string) *rpcError {
+		return rpcErrorf(CodeInvalidParams, "server %q is not enabled for this endpoint", serverID)
+	}
+
+	if serverID, tool, ok := SplitLegacyNamespacedToolName(name); ok {
+		if s := serverForID(servers, serverID); s != nil {
+			return s, tool, nil
+		}
+		return nil, "", notEnabled(serverID)
+	}
+	// An exposed name Prism emitted is exactly reproducible from the server's
+	// tool list, which is also what resolves the two cases text alone cannot: an
+	// upstream tool whose own name was narrowed, and a server id that is another
+	// id plus "_". Only the list a call normally follows (tools/list, cached for
+	// toolCacheTTL) is consulted here, so the common path stays network-free.
+	for _, s := range servers {
+		if raw, ok := g.mgr.cachedToolName(s, name); ok {
+			return s, raw, nil
+		}
+	}
+	ids := make([]string, 0, len(servers))
+	for _, s := range servers {
+		ids = append(ids, s.ID)
+	}
+	serverID, tool, ok := SplitNamespacedToolName(name, ids)
+	if !ok {
+		return nil, "", unsupported
+	}
+	s := serverForID(servers, serverID)
+	if s == nil {
+		return nil, "", notEnabled(serverID)
+	}
+	// The exposed name is narrowed to the provider charset, so a tool whose own
+	// name contained "__" only maps back through the server's tool list; load it
+	// when this process has not listed yet.
+	if raw, ok := g.mgr.upstreamToolName(ctx, s, name); ok {
+		return s, raw, nil
+	}
+	return s, tool, nil
+}
+
+// serverForID returns the reachable server with this id, if any.
+func serverForID(servers []*config.MCPServerConfig, id string) *config.MCPServerConfig {
+	for _, s := range servers {
+		if s != nil && s.ID == id {
+			return s
+		}
+	}
+	return nil
 }
 
 // serversForAgent returns the servers an endpoint may reach.
@@ -301,17 +350,6 @@ func (g *Gateway) serversForAgent(agent string) []*config.MCPServerConfig {
 		return cfg.EnabledMCPServers()
 	}
 	return cfg.MCPServersForAgent(agent)
-}
-
-// findServerForAgent returns the server when (and only when) it is reachable
-// from this endpoint.
-func (g *Gateway) findServerForAgent(agent, serverID string) *config.MCPServerConfig {
-	for _, s := range g.serversForAgent(agent) {
-		if s.ID == serverID {
-			return s
-		}
-	}
-	return nil
 }
 
 // ServeStatus reports the health of every configured server. The admin UI

@@ -529,6 +529,41 @@ func (m *Manager) toolSchemasMissing(id string) bool {
 	return rt.tools == nil
 }
 
+// upstreamToolName returns the upstream spelling of a tool from the name Prism
+// exposes. The exposed name is narrowed to the provider charset (underscore runs
+// collapse, so it never contains "__"), so a tool whose own name had "__" or a
+// character outside that charset only maps back here, through the server's tool
+// list. The list is loaded once when this process has not listed yet; CallTool
+// needs it anyway for x-mcp-header mirroring.
+func (m *Manager) upstreamToolName(ctx context.Context, s *config.MCPServerConfig, exposed string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if m.toolSchemasMissing(s.ID) {
+		lctx, cancel := context.WithTimeout(ctx, toolListTimeout)
+		_, _ = m.listTools(lctx, s)
+		cancel()
+	}
+	return m.cachedToolName(s, exposed)
+}
+
+// cachedToolName resolves an exposed name against the tool list this process
+// already holds, without touching the network.
+func (m *Manager) cachedToolName(s *config.MCPServerConfig, exposed string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	rt := m.runtimeFor(s.ID)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, t := range rt.tools {
+		if NamespacedToolName(s.ID, t.Name) == exposed {
+			return t.Name, true
+		}
+	}
+	return "", false
+}
+
 // ServerStatus is the health snapshot the admin UI renders.
 type ServerStatus struct {
 	ID         string   `json:"id"`

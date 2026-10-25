@@ -61,11 +61,12 @@ func startAuthFakeUpstream(t *testing.T, token string) (*fakeUpstream, string) {
 	return f, ts.URL
 }
 
-// TestToolsListTriggersAutoConnectWithoutWaiting pins the tools/list half of
-// the contract: the trigger fires, but the listing itself never blocks on a
-// human approving.
-func TestToolsListTriggersAutoConnectWithoutWaiting(t *testing.T) {
+// TestToolsListNeverStartsAutoConnect pins the contract that listing is not use:
+// every MCP client lists tools when it connects (and again after the ttlMs we
+// advertise), so a listing must never open a browser for a server nobody called.
+func TestToolsListNeverStartsAutoConnect(t *testing.T) {
 	isolateMCPConfig(t)
+	resetAutoConnectState(t)
 	as := newFakeAS(t)
 	_, resBase := newFakeResource(t, as.URL, protectedResourcePath+"/mcp", true)
 
@@ -80,8 +81,7 @@ func TestToolsListTriggersAutoConnectWithoutWaiting(t *testing.T) {
 
 	mgr := NewManager(config.Current)
 	t.Cleanup(mgr.Stop)
-	rec := &triggerRecorder{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	defer close(rec.release)
+	rec := &triggerRecorder{entered: make(chan struct{}, 1)}
 	mgr.SetAutoAuthorize(rec.fn)
 
 	g := NewGateway(mgr, config.Current)
@@ -94,18 +94,13 @@ func TestToolsListTriggersAutoConnectWithoutWaiting(t *testing.T) {
 		t.Errorf("unauthorized server exposed %d tools", len(tools))
 	}
 
-	// The trigger has to have fired before the listing returned.
 	select {
 	case <-rec.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("tools/list never triggered the sign-in")
+		t.Fatal("tools/list started a sign-in")
+	case <-time.After(500 * time.Millisecond):
 	}
-	calls, waits := rec.snapshot()
-	if len(calls) != 1 || calls[0] != "fake" {
-		t.Errorf("trigger calls = %v", calls)
-	}
-	if len(waits) != 1 || waits[0] {
-		t.Errorf("tools/list must not wait for the approval, waits = %v", waits)
+	if calls, _ := rec.snapshot(); len(calls) != 0 {
+		t.Errorf("tools/list triggered %v, want none", calls)
 	}
 	if status, ok := mgr.Status("fake"); !ok || status.State != config.MCPStateNeedsAuth {
 		t.Errorf("status = %+v, want needs_auth", status)
@@ -116,6 +111,7 @@ func TestToolsListTriggersAutoConnectWithoutWaiting(t *testing.T) {
 // the approval and is retried once with the stored token.
 func TestToolsCallWaitsAndRetries(t *testing.T) {
 	isolateMCPConfig(t)
+	resetAutoConnectState(t)
 	_, upstreamURL := startAuthFakeUpstream(t, "at-1")
 
 	cfg := &config.Config{DefaultProvider: "ollama_cloud"}
