@@ -89,9 +89,10 @@ func TestToolsListNeverStartsAutoConnect(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d", resp.Code)
 	}
-	result := resultObject(t, decodeRPC(t, resp))
-	if tools, _ := result["tools"].([]interface{}); len(tools) != 0 {
-		t.Errorf("unauthorized server exposed %d tools", len(tools))
+	// The unauthorized server is reported as a listing error, not as a
+	// successful empty list; either way no sign-in may start.
+	if errObj := decodeRPC(t, resp).Error; errObj == nil || errObj.Code != CodeInternalError {
+		t.Fatalf("tools/list error = %+v, want code %d", errObj, CodeInternalError)
 	}
 
 	select {

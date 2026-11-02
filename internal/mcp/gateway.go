@@ -224,11 +224,21 @@ func gatewayInstructions() string {
 // deliberately never starts a sign-in: listing is what every MCP client does
 // when it connects and again after the ttlMs we advertise, so it is not
 // evidence that anyone wants to use a server. Only tools/call is, which is why
-// the auto-sign-in lives there; a server that needs authorization shows up here
-// with no tools and its status says needs_auth for the admin UI.
+// the auto-sign-in lives there. A server that needs authorization is reported
+// as a listing failure, so the agent can say why rather than showing an empty
+// tool set.
 func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent string) rpcResponse {
 	servers := g.serversForAgent(agent)
-	tools, _ := g.mgr.ToolsForServers(ctx, servers)
+	tools, statuses := g.mgr.ToolsForServers(ctx, servers)
+	// An empty array is a valid answer only when every server listed its tools
+	// successfully. Folding a failed listing into "no tools" tells the client
+	// the gateway has nothing to offer, which it caches for ttlMs and starts
+	// the session with, so report the failure instead.
+	if len(tools) == 0 {
+		if rerr := listingFailure(statuses); rerr != nil {
+			return errorResponse(id, rerr)
+		}
+	}
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolMap(t))
@@ -238,6 +248,24 @@ func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent
 		"ttlMs":      int(toolCacheTTL / time.Millisecond),
 		"cacheScope": "private",
 	})
+}
+
+// listingFailure turns the first failed server in a listing into a protocol
+// error. Only called when the listing produced no tools at all: partial
+// results are still useful, so a single broken server never hides the healthy
+// ones.
+func listingFailure(statuses []ServerStatus) *rpcError {
+	for _, st := range statuses {
+		switch st.State {
+		case config.MCPStateError, config.MCPStateNeedsAuth, config.MCPStateRuntimeMissing:
+			msg := "tools/list failed for " + st.ID
+			if st.LastError != "" {
+				msg += ": " + st.LastError
+			}
+			return rpcErrorf(CodeInternalError, "%s", msg)
+		}
+	}
+	return nil
 }
 
 func (g *Gateway) handleToolsCall(ctx context.Context, id json.RawMessage, agent string, params json.RawMessage) rpcResponse {

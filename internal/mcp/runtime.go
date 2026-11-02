@@ -379,7 +379,10 @@ func (m *Manager) ToolsForServers(ctx context.Context, servers []*config.MCPServ
 		wg.Add(1)
 		go func(i int, s *config.MCPServerConfig) {
 			defer wg.Done()
-			sctx, cancel := context.WithTimeout(ctx, toolListTimeout)
+			// The handshake and the listing have separate budgets inside
+			// listTools; the outer deadline just keeps a hung server from
+			// outliving both.
+			sctx, cancel := context.WithTimeout(ctx, handshakeTimeout+toolListTimeout)
 			defer cancel()
 			tools, err := m.listTools(sctx, s)
 			results[i] = result{s: s, tools: tools, status: m.StatusFor(s, err)}
@@ -400,7 +403,10 @@ func (m *Manager) ToolsForServers(ctx context.Context, servers []*config.MCPServ
 	return out, statuses
 }
 
-// listTools returns a server's tool list, cached briefly.
+// listTools returns a server's tool list, cached briefly. Connecting gets its
+// own handshakeTimeout budget: a cold process or an OAuth token refresh can
+// take longer than one tools/list request, and canceling that work at the
+// listing deadline only makes the next attempt start over.
 func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]Tool, error) {
 	rt := m.runtimeFor(s.ID)
 	rt.mu.Lock()
@@ -411,16 +417,21 @@ func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]T
 	}
 	rt.mu.Unlock()
 
-	tr, err := m.ensureConn(ctx, s)
+	connCtx, cancelConn := context.WithTimeout(ctx, handshakeTimeout)
+	tr, err := m.ensureConn(connCtx, s)
+	cancelConn()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := tr.RoundTrip(ctx, "tools/list", map[string]interface{}{})
+
+	listCtx, cancelList := context.WithTimeout(ctx, toolListTimeout)
+	defer cancelList()
+	raw, err := tr.RoundTrip(listCtx, "tools/list", map[string]interface{}{})
 	if err != nil {
 		if !isAuthError(err) && !isMethodNotFound(err) {
 			// A dead process should be replaced once before reporting failure.
-			if refreshed, rerr := m.retryAfterCrash(ctx, s, err); rerr == nil && refreshed != nil {
-				raw, err = refreshed.RoundTrip(ctx, "tools/list", map[string]interface{}{})
+			if refreshed, rerr := m.retryAfterCrash(listCtx, s, err); rerr == nil && refreshed != nil {
+				raw, err = refreshed.RoundTrip(listCtx, "tools/list", map[string]interface{}{})
 			}
 		}
 		if err != nil {
@@ -451,6 +462,10 @@ func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]T
 	rt.tools = tools
 	rt.toolsAt = time.Now()
 	rt.lastUsed = time.Now()
+	// A successful listing clears a failure recorded by an earlier attempt;
+	// the status API and the gateway's empty-listing check both read this.
+	rt.state = config.MCPStateReady
+	rt.lastErr = ""
 	rt.mu.Unlock()
 	return tools, nil
 }
