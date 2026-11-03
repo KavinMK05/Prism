@@ -376,6 +376,10 @@ jobs:
         run: |
           mkdir -p Prism.AppDir/usr/bin Prism.AppDir/usr/share/icons/hicolor/256x256/apps
           cp prism Prism.AppDir/usr/bin/prism
+          # Every AppDir needs an executable AppRun. appimagetool build 368
+          # (2026-11-01) rejects an AppDir without one; earlier builds accepted
+          # it, which is why this went unnoticed.
+          ln -sf usr/bin/prism Prism.AppDir/AppRun
           cp packaging/linux/prism.desktop Prism.AppDir/prism.desktop
           # Only the AppDir copy is stamped: the tracked desktop file stays
           # version-free, and the AppImage is the one artifact with no other way

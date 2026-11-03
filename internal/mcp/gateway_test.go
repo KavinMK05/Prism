@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,51 @@ func TestGatewayToolsListNamespacing(t *testing.T) {
 	}
 }
 
+func TestGatewayToolsListReportsUpstreamFailure(t *testing.T) {
+	// A closed port fails the handshake fast and deterministically.
+	cfg := newTestConfig(testServer("down", "http://127.0.0.1:1"))
+	g := newTestGateway(cfg)
+
+	rec := postRPC(g, "/mcp", "application/json", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	resp := decodeRPC(t, rec)
+	if resp.Error == nil {
+		t.Fatalf("expected a listing error, got result %s", resp.Result)
+	}
+	if resp.Error.Code != CodeInternalError {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeInternalError)
+	}
+	if !strings.Contains(resp.Error.Message, "down") {
+		t.Errorf("error message %q does not name the failed server", resp.Error.Message)
+	}
+}
+
+func TestGatewayToolsListKeepsHealthyServers(t *testing.T) {
+	_, url := startFakeUpstream(t)
+	// One unreachable server must not hide the tools of a healthy one.
+	cfg := newTestConfig(testServer("notes", url), testServer("down", "http://127.0.0.1:1"))
+	g := newTestGateway(cfg)
+
+	rec := postRPC(g, "/mcp", "application/json", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	result := resultObject(t, decodeRPC(t, rec))
+	tools, _ := result["tools"].([]interface{})
+	if len(tools) != 2 {
+		t.Fatalf("expected the healthy server's 2 tools, got %d: %v", len(tools), tools)
+	}
+}
+
+func TestListingFailureCapsUpstreamText(t *testing.T) {
+	rerr := listingFailure([]ServerStatus{{
+		ID:  "upstream",
+		err: errors.New(strings.Repeat("x", 4*listingErrorMessageLimit)),
+	}})
+	if rerr == nil {
+		t.Fatal("expected a listing error")
+	}
+	if got := len([]rune(rerr.Message)); got > listingErrorMessageLimit+1 {
+		t.Errorf("message length = %d runes, want at most %d", got, listingErrorMessageLimit+1)
+	}
+}
+
 func TestGatewayToolsCallRouting(t *testing.T) {
 	f, url := startFakeUpstream(t)
 	g := newTestGateway(newTestConfig(testServer("notes", url)))
@@ -446,11 +492,21 @@ func TestGatewayErrorMapping(t *testing.T) {
 		t.Errorf("reason = %v, want runtime_missing (error %v)", data["reason"], errObj)
 	}
 
-	// tools/list reports failures per server instead of failing outright.
+	// tools/list reports a failed listing as a protocol error instead of an
+	// empty success, so the client retries rather than caching "no tools".
 	rec = postRPC(g, "/mcp", "application/json", `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
-	result := resultObject(t, decodeRPC(t, rec))
-	if tools, _ := result["tools"].([]interface{}); len(tools) != 0 {
-		t.Errorf("broken server exposed %d tools", len(tools))
+	errObj = decodeRPC(t, rec).Error
+	if errObj == nil {
+		t.Fatal("expected a listing error for a missing runtime")
+	}
+	if errObj.Code != CodeInternalError {
+		t.Errorf("listing error code = %d, want %d", errObj.Code, CodeInternalError)
+	}
+	// The listing error carries the same reason tools/call reports, so a
+	// client can act on the failure instead of parsing the message.
+	data, _ = errObj.Data.(map[string]interface{})
+	if data["reason"] != "runtime_missing" {
+		t.Errorf("listing reason = %v, want runtime_missing (error %v)", data["reason"], errObj)
 	}
 }
 

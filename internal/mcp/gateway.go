@@ -224,11 +224,21 @@ func gatewayInstructions() string {
 // deliberately never starts a sign-in: listing is what every MCP client does
 // when it connects and again after the ttlMs we advertise, so it is not
 // evidence that anyone wants to use a server. Only tools/call is, which is why
-// the auto-sign-in lives there; a server that needs authorization shows up here
-// with no tools and its status says needs_auth for the admin UI.
+// the auto-sign-in lives there. A server that needs authorization is reported
+// as a listing failure carrying the same needs_auth reason tools/call uses, so
+// the agent can say why rather than showing an empty tool set.
 func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent string) rpcResponse {
 	servers := g.serversForAgent(agent)
-	tools, _ := g.mgr.ToolsForServers(ctx, servers)
+	tools, statuses := g.mgr.ToolsForServers(ctx, servers)
+	// An empty array is a valid answer only when every server listed its tools
+	// successfully. Folding a failed listing into "no tools" tells the client
+	// the gateway has nothing to offer, which it caches for ttlMs and starts
+	// the session with, so report the failure instead.
+	if len(tools) == 0 {
+		if rerr := listingFailure(statuses); rerr != nil {
+			return errorResponse(id, rerr)
+		}
+	}
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolMap(t))
@@ -238,6 +248,32 @@ func (g *Gateway) handleToolsList(ctx context.Context, id json.RawMessage, agent
 		"ttlMs":      int(toolCacheTTL / time.Millisecond),
 		"cacheScope": "private",
 	})
+}
+
+// listingErrorMessageLimit caps the upstream text copied into a tools/list
+// error. errorFromUpstream already rewrites the actionable cases; this keeps a
+// generic upstream body (an HTML error page, for example) from becoming a
+// large, unactionable prompt in the agent's context.
+const listingErrorMessageLimit = 1024
+
+// listingFailure turns the first failed server in a listing into the same
+// protocol error tools/call reports: errorFromUpstream keeps needs_auth and
+// runtime_missing actionable and their data.reason consistent across both
+// methods.
+// Only called when the listing produced no tools at all: partial results are
+// still useful, so a single broken server never hides the healthy ones.
+func listingFailure(statuses []ServerStatus) *rpcError {
+	for _, st := range statuses {
+		if st.err == nil {
+			continue
+		}
+		rerr := *errorFromUpstream(st.err, st.ID)
+		if runes := []rune(rerr.Message); len(runes) > listingErrorMessageLimit {
+			rerr.Message = string(runes[:listingErrorMessageLimit]) + "…"
+		}
+		return &rerr
+	}
+	return nil
 }
 
 func (g *Gateway) handleToolsCall(ctx context.Context, id json.RawMessage, agent string, params json.RawMessage) rpcResponse {
@@ -388,9 +424,6 @@ func (g *Gateway) ServeControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-
 	switch req.Action {
 	case "status":
 		encodeGatewayJSON(w, map[string]interface{}{"statuses": orEmptyStatuses(g.mgr.Statuses())})
@@ -402,14 +435,18 @@ func (g *Gateway) ServeControl(w http.ResponseWriter, r *http.Request) {
 		}
 		encodeGatewayJSON(w, map[string]interface{}{"status": "ok"})
 	case "probe":
+		// A probe may be the first use of a cold server, so it gets the full
+		// listTools budget instead of the control endpoint's shorter cap.
+		pctx, cancelProbe := context.WithTimeout(r.Context(), listToolsBudget)
+		defer cancelProbe()
 		// No server id means "warm every enabled server": the admin UI uses
 		// that when the MCP panel opens so tool lists are ready to show.
 		if req.Server == "" {
-			statuses := g.mgr.ProbeAll(ctx)
+			statuses := g.mgr.ProbeAll(pctx)
 			encodeGatewayJSON(w, map[string]interface{}{"statuses": orEmptyStatuses(statuses)})
 			return
 		}
-		status, err := g.mgr.Probe(ctx, req.Server)
+		status, err := g.mgr.Probe(pctx, req.Server)
 		payload := map[string]interface{}{"status": status}
 		if err != nil {
 			payload["error"] = err.Error()
