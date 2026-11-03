@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -21,6 +22,11 @@ const (
 	toolCallTimeout = 10 * time.Minute
 	// handshakeTimeout bounds process startup and the initialize handshake.
 	handshakeTimeout = 60 * time.Second
+	// listToolsBudget bounds one listTools attempt: the initial connect+list
+	// cycle plus the single crash retry, each phase with its own budget.
+	// Callers pass a parent deadline at least this wide, otherwise listTools
+	// cannot spend handshakeTimeout and toolListTimeout separately.
+	listToolsBudget = 2 * (handshakeTimeout + toolListTimeout)
 	// toolCacheTTL is how long a tools/list result is reused. The stateless
 	// revision lets servers advertise their own TTL; this is the floor.
 	toolCacheTTL = 30 * time.Second
@@ -380,9 +386,9 @@ func (m *Manager) ToolsForServers(ctx context.Context, servers []*config.MCPServ
 		go func(i int, s *config.MCPServerConfig) {
 			defer wg.Done()
 			// The handshake and the listing have separate budgets inside
-			// listTools; the outer deadline just keeps a hung server from
-			// outliving both.
-			sctx, cancel := context.WithTimeout(ctx, handshakeTimeout+toolListTimeout)
+			// listTools, and a crash retry adds a second connect+list cycle.
+			// The outer deadline is the backstop for all of them.
+			sctx, cancel := context.WithTimeout(ctx, listToolsBudget)
 			defer cancel()
 			tools, err := m.listTools(sctx, s)
 			results[i] = result{s: s, tools: tools, status: m.StatusFor(s, err)}
@@ -406,7 +412,9 @@ func (m *Manager) ToolsForServers(ctx context.Context, servers []*config.MCPServ
 // listTools returns a server's tool list, cached briefly. Connecting gets its
 // own handshakeTimeout budget: a cold process or an OAuth token refresh can
 // take longer than one tools/list request, and canceling that work at the
-// listing deadline only makes the next attempt start over.
+// listing deadline only makes the next attempt start over. The single crash
+// retry reconnects, so it gets a fresh handshake budget and then a fresh
+// listing budget as well.
 func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]Tool, error) {
 	rt := m.runtimeFor(s.ID)
 	rt.mu.Lock()
@@ -425,18 +433,24 @@ func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]T
 	}
 
 	listCtx, cancelList := context.WithTimeout(ctx, toolListTimeout)
-	defer cancelList()
 	raw, err := tr.RoundTrip(listCtx, "tools/list", map[string]interface{}{})
+	cancelList()
+	if err != nil && !isAuthError(err) && !isMethodNotFound(err) && !budgetExhausted(err) {
+		// A dead process should be replaced once before reporting failure.
+		// The reconnect is a fresh handshake, so it gets its own budget
+		// instead of whatever is left of the listing deadline; the retried
+		// listing then gets a full listing budget of its own.
+		retryConnCtx, cancelRetryConn := context.WithTimeout(ctx, handshakeTimeout)
+		refreshed, rerr := m.retryAfterCrash(retryConnCtx, s, err)
+		cancelRetryConn()
+		if rerr == nil && refreshed != nil {
+			retryListCtx, cancelRetryList := context.WithTimeout(ctx, toolListTimeout)
+			raw, err = refreshed.RoundTrip(retryListCtx, "tools/list", map[string]interface{}{})
+			cancelRetryList()
+		}
+	}
 	if err != nil {
-		if !isAuthError(err) && !isMethodNotFound(err) {
-			// A dead process should be replaced once before reporting failure.
-			if refreshed, rerr := m.retryAfterCrash(listCtx, s, err); rerr == nil && refreshed != nil {
-				raw, err = refreshed.RoundTrip(listCtx, "tools/list", map[string]interface{}{})
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	tools, err := parseToolList(raw)
 	if err != nil {
@@ -468,6 +482,13 @@ func (m *Manager) listTools(ctx context.Context, s *config.MCPServerConfig) ([]T
 	rt.lastErr = ""
 	rt.mu.Unlock()
 	return tools, nil
+}
+
+// budgetExhausted reports whether err came from this process's own deadline or
+// cancellation rather than from the server. Restarting the server cannot fix
+// that, and a retry would only spend a second budget on the same wait.
+func budgetExhausted(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // retryAfterCrash restarts a server once after a transport-level failure and
@@ -593,6 +614,10 @@ type ServerStatus struct {
 	Tools      []string `json:"tools,omitempty"`
 	LastUsed   int64    `json:"last_used,omitempty"`
 	Authorized bool     `json:"authorized"`
+	// err is the failure from the current probe or listing. It is unexported
+	// so the admin API stays a snapshot; the gateway uses it to build the same
+	// protocol error tools/call reports.
+	err error `json:"-"`
 }
 
 // StatusFor builds a snapshot for one server, folding in the runtime state.
@@ -636,6 +661,7 @@ func (m *Manager) StatusFor(s *config.MCPServerConfig, err error) ServerStatus {
 		Enabled:    s.Enabled,
 		State:      state,
 		LastError:  lastErr,
+		err:        err,
 		ToolCount:  toolCount,
 		Tools:      tools,
 		LastUsed:   lastUsed.Unix(),
@@ -688,7 +714,9 @@ func (m *Manager) Probe(ctx context.Context, id string) (ServerStatus, error) {
 	rt.tools = nil
 	rt.toolsAt = time.Time{}
 	rt.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, toolListTimeout)
+	// A probe may be the first use of a cold server, so it gets the same
+	// budget listTools itself is allowed to spend.
+	ctx, cancel := context.WithTimeout(ctx, listToolsBudget)
 	defer cancel()
 	_, err := m.listTools(ctx, s)
 	return m.StatusFor(s, err), err

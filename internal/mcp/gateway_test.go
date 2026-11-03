@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -265,6 +266,19 @@ func TestGatewayToolsListKeepsHealthyServers(t *testing.T) {
 	}
 }
 
+func TestListingFailureCapsUpstreamText(t *testing.T) {
+	rerr := listingFailure([]ServerStatus{{
+		ID:  "upstream",
+		err: errors.New(strings.Repeat("x", 4*listingErrorMessageLimit)),
+	}})
+	if rerr == nil {
+		t.Fatal("expected a listing error")
+	}
+	if got := len([]rune(rerr.Message)); got > listingErrorMessageLimit+1 {
+		t.Errorf("message length = %d runes, want at most %d", got, listingErrorMessageLimit+1)
+	}
+}
+
 func TestGatewayToolsCallRouting(t *testing.T) {
 	f, url := startFakeUpstream(t)
 	g := newTestGateway(newTestConfig(testServer("notes", url)))
@@ -487,6 +501,12 @@ func TestGatewayErrorMapping(t *testing.T) {
 	}
 	if errObj.Code != CodeInternalError {
 		t.Errorf("listing error code = %d, want %d", errObj.Code, CodeInternalError)
+	}
+	// The listing error carries the same reason tools/call reports, so a
+	// client can act on the failure instead of parsing the message.
+	data, _ = errObj.Data.(map[string]interface{})
+	if data["reason"] != "runtime_missing" {
+		t.Errorf("listing reason = %v, want runtime_missing (error %v)", data["reason"], errObj)
 	}
 }
 
