@@ -129,20 +129,19 @@ func handleAgentSetup(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cfg := config.Load()
-		if cfg.AgentIntegrations == nil {
-			cfg.AgentIntegrations = &config.AgentIntegrationsConfig{ClaudeCodeTiers: map[string]string{}}
-		}
-		if cfg.AgentIntegrations.ClaudeCodeTiers == nil {
-			cfg.AgentIntegrations.ClaudeCodeTiers = map[string]string{}
-		}
 		if len(body.Tiers) > 0 {
-			for k, v := range body.Tiers {
-				cfg.AgentIntegrations.ClaudeCodeTiers[k] = v
-			}
-			if err := config.Save(cfg); err != nil {
+			updated, err := config.Update(func(fresh *config.Config) error {
+				integrations := fresh.EnsureAgentIntegrations()
+				for k, v := range body.Tiers {
+					integrations.ClaudeCodeTiers[k] = v
+				}
+				return nil
+			})
+			if err != nil {
 				writeJSONError(w, "failed to save config: "+err.Error(), 500)
 				return
 			}
+			cfg = updated
 		}
 		// Keep the in-memory adminConfig in sync. Background handlers (OAuth
 		// token exchange, background usage refresh) and the Provider panel's

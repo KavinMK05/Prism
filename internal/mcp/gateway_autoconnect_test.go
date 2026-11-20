@@ -144,7 +144,7 @@ func TestToolsCallWaitsAndRetries(t *testing.T) {
 			return err
 		}
 		// Stand in for the finished sign-in: the callback persists the token.
-		return saveServerToken(serverID, &config.MCPOAuthToken{AccessToken: "at-1", ExpiresAt: time.Now().Add(time.Hour).Unix()})
+		return saveServerToken(serverID, "", &config.MCPOAuthToken{AccessToken: "at-1", ExpiresAt: time.Now().Add(time.Hour).Unix()})
 	})
 
 	g := NewGateway(mgr, config.Current)

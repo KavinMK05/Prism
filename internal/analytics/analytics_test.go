@@ -20,8 +20,9 @@ import (
 func useTempConfigDir(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("APPDATA", dir) // Windows
-	t.Setenv("HOME", dir)    // macOS: <home>/Library/Application Support/prism
+	t.Setenv("APPDATA", dir)         // Windows
+	t.Setenv("HOME", dir)            // macOS: <home>/Library/Application Support/prism
+	t.Setenv("XDG_CONFIG_HOME", dir) // Linux
 }
 
 // syncBuffer is a goroutine-safe log sink. The heartbeat is delivered from its

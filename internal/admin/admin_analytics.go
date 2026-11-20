@@ -37,10 +37,11 @@ func handleAdminAnalyticsSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, err.Error(), 400)
 			return
 		}
-		c := config.Load()
-		c.AnalyticsOptOut = body.OptOut
-		c.AnalyticsNoticeSeen = body.NoticeSeen
-		if err := config.Save(c); err != nil {
+		if _, err := config.Update(func(fresh *config.Config) error {
+			fresh.AnalyticsOptOut = body.OptOut
+			fresh.AnalyticsNoticeSeen = body.NoticeSeen
+			return nil
+		}); err != nil {
 			writeJSONError(w, "failed to save config: "+err.Error(), 500)
 			return
 		}

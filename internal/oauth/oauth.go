@@ -312,11 +312,12 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[OAuth] Token exchange successful, account=%s email=%s", account.ID, account.Email)
 
-	// Save to config (clone to avoid data race on shared adminConfig)
-	cfg := config.Current().Clone()
-
-	cfg.OAuthAccounts = append(cfg.OAuthAccounts, account)
-	if err := config.Save(cfg); err != nil {
+	// Read-modify-write through config.Update: a whole-config save from the
+	// tray can otherwise overwrite tokens the proxy refreshed meanwhile.
+	if _, err := config.Update(func(cfg *config.Config) error {
+		cfg.OAuthAccounts = append(cfg.OAuthAccounts, account)
+		return nil
+	}); err != nil {
 		log.Printf("[OAuth] Failed to save config: %v", err)
 		w.WriteHeader(500)
 		renderOAuthPage(w, "Failed to Save Account", "Could not save the connected account: "+err.Error(), "error")
@@ -337,24 +338,22 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 // RemoveOAuthAccount removes an OAuth account by ID
 func RemoveOAuthAccount(id string) error {
-	cfg := config.Current().Clone()
-
-	found := false
-	newAccounts := []*config.OAuthAccount{}
-	for _, a := range cfg.OAuthAccounts {
-		if a.ID == id {
-			found = true
-			continue
+	if _, err := config.Update(func(cfg *config.Config) error {
+		found := false
+		newAccounts := []*config.OAuthAccount{}
+		for _, a := range cfg.OAuthAccounts {
+			if a.ID == id {
+				found = true
+				continue
+			}
+			newAccounts = append(newAccounts, a)
 		}
-		newAccounts = append(newAccounts, a)
-	}
-
-	if !found {
-		return fmt.Errorf("account not found: %s", id)
-	}
-
-	cfg.OAuthAccounts = newAccounts
-	if err := config.Save(cfg); err != nil {
+		if !found {
+			return fmt.Errorf("account not found: %s", id)
+		}
+		cfg.OAuthAccounts = newAccounts
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -370,26 +369,23 @@ func RemoveOAuthAccount(id string) error {
 
 // SetActiveOAuthAccount sets an OAuth account as the active provider
 func SetActiveOAuthAccount(id string) error {
-	cfg := config.Current().Clone()
-
-	found := false
-	for _, a := range cfg.OAuthAccounts {
-		if a.ID == id {
-			a.Active = true
-			found = true
-		} else {
-			a.Active = false
+	if _, err := config.Update(func(cfg *config.Config) error {
+		found := false
+		for _, a := range cfg.OAuthAccounts {
+			if a.ID == id {
+				a.Active = true
+				found = true
+			} else {
+				a.Active = false
+			}
 		}
-	}
-
-	if !found {
-		return fmt.Errorf("account not found: %s", id)
-	}
-
-	// Set default provider to this account
-	cfg.DefaultProvider = id
-
-	if err := config.Save(cfg); err != nil {
+		if !found {
+			return fmt.Errorf("account not found: %s", id)
+		}
+		// Set default provider to this account
+		cfg.DefaultProvider = id
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -445,17 +441,19 @@ func GetValidAccessToken(account *config.OAuthAccount) (string, error) {
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
 
-	// Save updated token
-	cfg := config.Current().Clone()
-
-	for _, a := range cfg.OAuthAccounts {
-		if a.ID == account.ID {
-			a.AccessToken = account.AccessToken
-			a.RefreshToken = account.RefreshToken
-			a.ExpiresAt = account.ExpiresAt
+	// Save updated token without replacing fields another process changed.
+	if _, err := config.Update(func(cfg *config.Config) error {
+		for _, a := range cfg.OAuthAccounts {
+			if a.ID == account.ID {
+				a.AccessToken = account.AccessToken
+				a.RefreshToken = account.RefreshToken
+				a.ExpiresAt = account.ExpiresAt
+			}
 		}
+		return nil
+	}); err != nil {
+		log.Printf("[OAuth] failed to save refreshed token for %s: %v", account.Email, err)
 	}
-	config.Save(cfg)
 
 	return account.AccessToken, nil
 }

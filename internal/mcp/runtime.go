@@ -48,9 +48,31 @@ type Manager struct {
 	mu      sync.Mutex
 	servers map[string]*serverRuntime
 
+	// refreshLocks serializes OAuth refreshes per server. Providers such as
+	// Notion rotate the refresh token on every use and revoke the grant when an
+	// old one is replayed, so two goroutines refreshing the same server at once
+	// is a correctness bug, not just a wasted request.
+	refreshMu    sync.Mutex
+	refreshLocks map[string]*sync.Mutex
+
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+}
+
+// refreshLock returns the mutex that serializes token refreshes for one server.
+func (m *Manager) refreshLock(serverID string) *sync.Mutex {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	if m.refreshLocks == nil {
+		m.refreshLocks = map[string]*sync.Mutex{}
+	}
+	lock, ok := m.refreshLocks[serverID]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.refreshLocks[serverID] = lock
+	}
+	return lock
 }
 
 // SetAutoAuthorize installs the callback the Gateway uses to sign in when an
@@ -83,9 +105,10 @@ func NewManager(cfgFn func() *config.Config) *Manager {
 		cfgFn = config.Current
 	}
 	return &Manager{
-		cfg:     cfgFn,
-		servers: map[string]*serverRuntime{},
-		stopCh:  make(chan struct{}),
+		cfg:          cfgFn,
+		servers:      map[string]*serverRuntime{},
+		refreshLocks: map[string]*sync.Mutex{},
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -267,6 +290,9 @@ func (m *Manager) connect(ctx context.Context, s *config.MCPServerConfig) (trans
 	if err != nil {
 		return nil, err
 	}
+	if ht, ok := tr.(*httpTransport); ok {
+		ht.setAuthRetry(m.authRetryFor(s))
+	}
 	if err := handshake(hctx, tr); err != nil {
 		_ = tr.Close()
 		return nil, err
@@ -349,6 +375,19 @@ func (m *Manager) dynamicHeadersFor(s *config.MCPServerConfig) dynamicHeaders {
 			return nil, err
 		}
 		return map[string]string{"Authorization": "Bearer " + token}, nil
+	}
+}
+
+// authRetryFor returns the 401 handler for an OAuth server. The transport uses
+// it to refresh once and replay the request, which covers a server-side
+// invalidation or a clock that disagrees with the token's expiry.
+func (m *Manager) authRetryFor(s *config.MCPServerConfig) authRetryFunc {
+	if s.AuthMode != config.MCPAuthOAuth {
+		return nil
+	}
+	serverID := s.ID
+	return func(ctx context.Context, rejected string) (string, error) {
+		return m.refreshTokenAfterAuthError(ctx, serverID, rejected)
 	}
 }
 

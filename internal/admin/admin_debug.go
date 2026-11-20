@@ -27,9 +27,10 @@ func handleAdminDebugLogs(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, err.Error(), 400)
 			return
 		}
-		c := config.Load()
-		c.DebugLogs = body.Enabled
-		if err := config.Save(c); err != nil {
+		if _, err := config.Update(func(fresh *config.Config) error {
+			fresh.DebugLogs = body.Enabled
+			return nil
+		}); err != nil {
 			writeJSONError(w, "failed to save config: "+err.Error(), 500)
 			return
 		}

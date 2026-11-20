@@ -208,18 +208,24 @@ export default function MCPPanel() {
   const [editing, setEditing] = useState<MCPServer | null>(null);
   const [pendingRemove, setPendingRemove] = useState<MCPServer | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [authPending, setAuthPending] = useState<string | null>(null);
 
   // Only warm the servers once per visit. An explicit refresh stays available
   // for a single server and a new request can refresh every enabled server.
   const warmed = useRef(false);
+  const authPollRef = useRef<number | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { quiet?: boolean }): Promise<MCPConfig | null> => {
     try {
-      const next = await api('/mcp/config');
+      const next: MCPConfig = await api('/mcp/config');
       setData(next);
       setLoadError('');
+      return next;
     } catch (error) {
-      setLoadError((error as Error).message);
+      // Background refreshes must not flash an error while the proxy is
+      // restarting; keep the last good data on screen instead.
+      if (!opts?.quiet) setLoadError((error as Error).message);
+      return null;
     } finally {
       setInitialLoading(false);
     }
@@ -227,6 +233,68 @@ export default function MCPPanel() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // The OAuth callback lands in another window, so nothing in this component
+  // knows when it finishes. Poll until the server reports authorized.
+  const stopAuthPolling = useCallback(() => {
+    if (authPollRef.current !== null) {
+      window.clearTimeout(authPollRef.current);
+      authPollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopAuthPolling, [stopAuthPolling]);
+
+  const waitForAuthorization = useCallback(
+    (serverId: string) => {
+      stopAuthPolling();
+      setAuthPending(serverId);
+      const deadline = Date.now() + 2 * 60 * 1000;
+      const tick = async () => {
+        const next = await load({ quiet: true });
+        const entry = next?.servers.find((item) => item.server.id === serverId);
+        if (entry?.status?.authorized || entry?.status?.state === 'ready') {
+          setAuthPending(null);
+          authPollRef.current = null;
+          toast.add({ title: 'Connected. Tools are ready.', type: 'success' });
+          return;
+        }
+        if (Date.now() >= deadline) {
+          setAuthPending(null);
+          authPollRef.current = null;
+          return;
+        }
+        authPollRef.current = window.setTimeout(tick, 2000);
+      };
+      authPollRef.current = window.setTimeout(tick, 1500);
+    },
+    [load, stopAuthPolling],
+  );
+
+  // Server status changes outside this panel too: an auto-connect finishing,
+  // a proxy restart, or another admin tab. Keep it live while it is visible.
+  // Poll even while the proxy reports stopped: this is how a restart after an
+  // action is noticed, and a stopped proxy answers the config request cheaply.
+  const hasData = data !== null;
+  useEffect(() => {
+    if (!hasData) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load({ quiet: true });
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [hasData, load]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void load({ quiet: true });
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, [load]);
 
   // Opening the panel should not require a click per server before tool names
@@ -303,7 +371,10 @@ export default function MCPPanel() {
       const res = await apiPost('/mcp/auth/login', { id: server.id });
       if (res.authorizeUrl) window.open(res.authorizeUrl, '_blank', 'width=520,height=680');
       toast.add({ title: 'Complete the sign-in in the window that just opened.' });
+      waitForAuthorization(server.id);
     } catch (error) {
+      stopAuthPolling();
+      setAuthPending(null);
       toast.add({
         title: 'Could not start sign-in: ' + (error as Error).message,
         type: 'error',
@@ -313,12 +384,15 @@ export default function MCPPanel() {
     }
   };
 
-  const disconnect = (server: MCPServer) =>
-    act(
+  const disconnect = (server: MCPServer) => {
+    stopAuthPolling();
+    setAuthPending(null);
+    return act(
       `logout:${server.id}`,
       () => apiPost('/mcp/auth/logout', { id: server.id }),
       'Credentials cleared',
     );
+  };
 
   const setAgentServers = (agent: string, ids: string[]) =>
     act(
@@ -476,6 +550,7 @@ export default function MCPPanel() {
                     const toolCount = status?.tool_count || 0;
                     const hasOAuth =
                       server.transport !== 'stdio' && server.auth_mode === 'oauth';
+                    const authWaiting = authPending === server.id;
 
                     return (
                       <div
@@ -525,15 +600,15 @@ export default function MCPPanel() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={busy === `auth:${server.id}`}
+                                disabled={busy === `auth:${server.id}` || authWaiting}
                                 onClick={() => connect(server)}
                               >
-                                {busy === `auth:${server.id}` ? (
+                                {busy === `auth:${server.id}` || authWaiting ? (
                                   <LoaderCircleIcon className="animate-spin" />
                                 ) : (
                                   <PlugIcon />
                                 )}
-                                Connect
+                                {authWaiting ? 'Waiting for sign-in...' : 'Connect'}
                               </Button>
                             )}
                             <Switch
@@ -631,13 +706,20 @@ export default function MCPPanel() {
       ) : null}
 
       {addOpen && (
-        <AddServerDrawer onClose={() => setAddOpen(false)} onAdded={load} />
+        <AddServerDrawer
+          onClose={() => setAddOpen(false)}
+          onAdded={async () => {
+            await load();
+          }}
+        />
       )}
       {editing && (
         <EditServerDrawer
           server={editing}
           onClose={() => setEditing(null)}
-          onSaved={load}
+          onSaved={async () => {
+            await load();
+          }}
         />
       )}
       {pendingRemove && (
@@ -1277,9 +1359,18 @@ function RegistrySearch({ onAdded }: { onAdded: () => Promise<void> }) {
           env: { ...env, ...(installed.env || {}) },
         };
       }
-      await apiPost('/mcp/servers', server);
+      const added = await apiPost('/mcp/servers', server);
+      // The backend probes remotes the registry did not label, so tell the
+      // user which sign-in the server will need before they open it.
+      const authMode = added?.auth_mode || server.auth_mode;
+      const authNote =
+        authMode === 'oauth'
+          ? ' - OAuth sign-in required'
+          : authMode === 'static'
+            ? ' - API key required'
+            : '';
       toast.add({
-        title: item.title || item.name + ' added',
+        title: (item.title || item.name) + ' added' + authNote,
         type: 'success',
       });
       await onAdded();
