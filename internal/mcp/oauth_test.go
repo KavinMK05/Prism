@@ -27,6 +27,9 @@ func isolateMCPConfig(t *testing.T) {
 	t.Setenv("APPDATA", tmp)
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	// Linux reads XDG_CONFIG_HOME first. Without this, tests would write to
+	// the developer's real ~/.config/prism/config.json.
+	t.Setenv("XDG_CONFIG_HOME", tmp)
 }
 
 // fakeAS is a minimal OAuth 2.1 authorization server: metadata, dynamic client
@@ -183,6 +186,42 @@ func oauthTestServer(urlStr string) *config.MCPServerConfig {
 		URL:       urlStr,
 		Enabled:   true,
 		AuthMode:  config.MCPAuthOAuth,
+	}
+}
+
+// A registry entry carries no auth field, so an unlabelled remote is
+// classified from its own OAuth discovery. Static headers and stdio are known
+// without a probe.
+func TestDetectAuthMode(t *testing.T) {
+	as := newFakeAS(t)
+	_, resBase := newFakeResource(t, as.URL, protectedResourcePath+"/mcp", true)
+
+	oauth := oauthTestServer(resBase + "/mcp")
+	oauth.AuthMode = ""
+	if got := DetectAuthMode(context.Background(), oauth); got != config.MCPAuthOAuth {
+		t.Errorf("OAuth remote = %q, want %q", got, config.MCPAuthOAuth)
+	}
+
+	public := &config.MCPServerConfig{
+		Transport: config.MCPTransportHTTP,
+		URL:       "http://127.0.0.1:1/mcp",
+	}
+	if got := DetectAuthMode(context.Background(), public); got != "" {
+		t.Errorf("unreachable remote = %q, want empty (caller default)", got)
+	}
+
+	static := &config.MCPServerConfig{
+		Transport: config.MCPTransportHTTP,
+		URL:       "http://127.0.0.1:1/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer key"},
+	}
+	if got := DetectAuthMode(context.Background(), static); got != config.MCPAuthStatic {
+		t.Errorf("static remote = %q, want %q", got, config.MCPAuthStatic)
+	}
+
+	stdio := &config.MCPServerConfig{Transport: config.MCPTransportStdio, Command: "npx"}
+	if got := DetectAuthMode(context.Background(), stdio); got != "" {
+		t.Errorf("stdio server = %q, want empty", got)
 	}
 }
 

@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +10,52 @@ import (
 
 	"ollama-proxy/internal/config"
 )
+
+func isolateAdminConfig(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("APPDATA", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Cleanup(func() { config.SetCurrent(nil) })
+}
+
+// fakeOAuthRemote is an MCP endpoint that requires OAuth and publishes the
+// protected-resource and authorization-server metadata that Notion serves.
+func fakeOAuthRemote(t *testing.T) string {
+	t.Helper()
+	var base string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			w.Header().Set("WWW-Authenticate",
+				`Bearer realm="OAuth", resource_metadata="`+base+`/.well-known/oauth-protected-resource"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/.well-known/oauth-protected-resource":
+			writeJSONTest(w, map[string]interface{}{
+				"resource":              base,
+				"authorization_servers": []string{base},
+			})
+		case "/.well-known/oauth-authorization-server":
+			writeJSONTest(w, map[string]interface{}{
+				"issuer":                 base,
+				"authorization_endpoint": base + "/authorize",
+				"token_endpoint":         base + "/token",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	base = ts.URL
+	t.Cleanup(ts.Close)
+	return base
+}
+
+func writeJSONTest(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
 
 func mcpFixture() *config.Config {
 	cfg := &config.Config{}
@@ -28,6 +76,7 @@ func mcpFixture() *config.Config {
 			Issuer:           "https://mcp.notion.com",
 			RegistrationMode: "dcr",
 			ExpiresAt:        2000000000,
+			IssuedAt:         1900000000,
 			Resource:         "https://mcp.notion.com",
 		},
 		Headers: map[string]string{"Authorization": "Bearer static-secret"},
@@ -45,6 +94,64 @@ func mcpFixture() *config.Config {
 
 // The admin UI reads a redacted config and PUTs it back, so the secret-bearing
 // fields it echoed as masked values must not overwrite what is stored.
+// A marketplace entry like com.notion/mcp has no auth mode in server.json, so
+// adding it must discover OAuth instead of silently saving auth_mode=none.
+func TestMCPServerAddDetectsOAuthFromRegistryRemote(t *testing.T) {
+	isolateAdminConfig(t)
+	remote := fakeOAuthRemote(t)
+	body := fmt.Sprintf(
+		`{"name":"Notion","transport":"http","url":%q,"source":"registry"}`,
+		remote+"/mcp",
+	)
+
+	rec := httptest.NewRecorder()
+	handleMCPServerAdd(rec, httptest.NewRequest(http.MethodPost, "/admin/mcp/servers", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		AuthMode string `json:"auth_mode"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.AuthMode != config.MCPAuthOAuth {
+		t.Errorf("response auth_mode = %q, want %q", resp.AuthMode, config.MCPAuthOAuth)
+	}
+	stored := config.Load().FindMCPServer("notion")
+	if stored == nil {
+		t.Fatal("server was not saved")
+	}
+	if stored.AuthMode != config.MCPAuthOAuth {
+		t.Errorf("stored auth_mode = %q, want %q", stored.AuthMode, config.MCPAuthOAuth)
+	}
+}
+
+// A public remote answers no OAuth discovery, so the probe must not turn every
+// reachable endpoint into an OAuth server.
+func TestMCPServerAddLeavesPublicRemoteWithoutAuth(t *testing.T) {
+	isolateAdminConfig(t)
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	body := fmt.Sprintf(
+		`{"name":"Public","transport":"http","url":%q,"source":"registry"}`,
+		ts.URL+"/mcp",
+	)
+
+	rec := httptest.NewRecorder()
+	handleMCPServerAdd(rec, httptest.NewRequest(http.MethodPost, "/admin/mcp/servers", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add status = %d: %s", rec.Code, rec.Body.String())
+	}
+	stored := config.Load().FindMCPServer("public")
+	if stored == nil {
+		t.Fatal("server was not saved")
+	}
+	if stored.AuthMode != config.MCPAuthNone {
+		t.Errorf("stored auth_mode = %q, want %q", stored.AuthMode, config.MCPAuthNone)
+	}
+}
+
 func TestPreserveMCPSecrets(t *testing.T) {
 	cur := mcpFixture()
 
@@ -67,6 +174,9 @@ func TestPreserveMCPSecrets(t *testing.T) {
 	}
 	if srv.OAuth.ClientID != "client-1" || srv.OAuth.ASURL == "" || srv.OAuth.RegistrationMode != "dcr" {
 		t.Errorf("registration metadata lost: %+v", srv.OAuth)
+	}
+	if srv.OAuth.IssuedAt != 1900000000 {
+		t.Errorf("issued_at lost: %+v", srv.OAuth)
 	}
 	if srv.Headers["Authorization"] != "Bearer static-secret" {
 		t.Errorf("header secret = %q", srv.Headers["Authorization"])
@@ -221,6 +331,7 @@ func TestAutoConnectSettingRoundTrip(t *testing.T) {
 	t.Setenv("APPDATA", tmp)
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Cleanup(func() { config.SetCurrent(nil) })
 
 	on := true

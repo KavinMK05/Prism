@@ -27,6 +27,7 @@ type httpTransport struct {
 	url       string
 	static    map[string]string
 	dyn       dynamicHeaders
+	authRetry authRetryFunc
 	params    toolParamsFunc
 	legacySSE bool
 	client    *http.Client
@@ -186,8 +187,17 @@ func (t *httpTransport) rememberProtocolVersion(method string, result json.RawMe
 	t.protoMu.Unlock()
 }
 
+// setAuthRetry installs the 401 handler for OAuth servers.
+func (t *httpTransport) setAuthRetry(fn authRetryFunc) {
+	t.authRetry = fn
+}
+
 // do sends one JSON-RPC message and returns the raw reply payload.
 func (t *httpTransport) do(ctx context.Context, msg rpcRequest) (json.RawMessage, error) {
+	return t.doAttempt(ctx, msg, true)
+}
+
+func (t *httpTransport) doAttempt(ctx context.Context, msg rpcRequest, allowAuthRetry bool) (json.RawMessage, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
@@ -199,16 +209,28 @@ func (t *httpTransport) do(ctx context.Context, msg rpcRequest) (json.RawMessage
 	if err := t.applyHeaders(ctx, req); err != nil {
 		return nil, err
 	}
+	authHeader := req.Header.Get("Authorization")
 	t.applyRequestMetadata(req, msg)
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if err := t.checkAuth(resp); err != nil {
+		resp.Body.Close()
+		if allowAuthRetry && t.authRetry != nil {
+			if rejected := strings.TrimPrefix(authHeader, "Bearer "); rejected != "" && rejected != authHeader {
+				if token, rerr := t.authRetry(ctx, rejected); rerr == nil && token != "" && token != rejected {
+					// A 401 means the server did not act on the request, so
+					// replaying it once with the refreshed token is safe.
+					return t.doAttempt(ctx, msg, false)
+				}
+			}
+		}
 		return nil, err
 	}
+	defer resp.Body.Close()
+
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.sessMu.Lock()
 		t.sessionID = sid

@@ -23,6 +23,11 @@ type transport interface {
 // expired OAuth token is refreshed without rebuilding the transport.
 type dynamicHeaders func(ctx context.Context) (map[string]string, error)
 
+// authRetryFunc refreshes an OAuth token after an upstream 401/403. rejected is
+// the bearer token the request used; the callback returns the replacement, or
+// the same token when another caller already refreshed it.
+type authRetryFunc func(ctx context.Context, rejected string) (string, error)
+
 // toolParamsFunc supplies the x-mcp-header mapping (parameter path -> header
 // name) of one tool, learned from its tools/list schema, so a tools/call can
 // mirror those arguments into Mcp-Param-* headers.

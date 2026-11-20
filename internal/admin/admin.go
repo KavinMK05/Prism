@@ -396,8 +396,10 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Preserve API keys if not provided (empty string = don't overwrite)
-		cur := config.Current()
+		// Preserve API keys if not provided (empty string = don't overwrite).
+		// Load fresh: the tray's in-memory copy can be older than a token the
+		// proxy refreshed, and this handler writes the whole config.
+		cur := config.Load()
 		if cur != nil && cur.AgentIntegrations != nil {
 			// Older clients may omit the agent integration fields from a
 			// full-config PUT. Never let that round-trip erase the user's
@@ -448,7 +450,18 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 
 		removedProviders := removedProviderIDs(cur, &newCfg)
-		if err := config.Save(&newCfg); err != nil {
+		if _, err := config.Update(func(fresh *config.Config) error {
+			// Merge MCP credentials from the state under the write lock, so a
+			// token the proxy refreshed between the read above and this write
+			// is not rolled back to an older, already-rotated token.
+			if newCfg.MCP == nil {
+				newCfg.MCP = fresh.MCP
+			} else {
+				preserveMCPSecrets(fresh, &newCfg)
+			}
+			*fresh = newCfg
+			return nil
+		}); err != nil {
 			http.Error(w, "save failed: "+err.Error(), 500)
 			return
 		}

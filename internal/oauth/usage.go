@@ -103,26 +103,52 @@ func RefreshUsageForAccount(account *config.OAuthAccount) (*UsageInfo, error) {
 	usageCache[account.ID] = info
 	usageMu.Unlock()
 
-	// Update account in config
-	cfg := config.Current()
-
-	for _, a := range cfg.OAuthAccounts {
-		if a.ID == account.ID {
-			a.PlanTier = info.PlanTier
-			a.SessionPercent = info.SessionPercent
-			a.SessionResetAt = info.SessionResetAt
-			a.WeeklyPercent = info.WeeklyPercent
-			a.WeeklyResetAt = info.WeeklyResetAt
-			a.ReviewPercent = info.ReviewPercent
-			a.CreditsBalance = info.CreditsBalance
-			a.RateLimitResets = info.RateLimitResets
-			a.PercentUsed = info.PercentUsed
-			a.LastUsageCheck = info.LastUpdated
+	// Update account in config. Read-modify-write through config.Update so this
+	// background loop cannot clobber an MCP OAuth token the proxy refreshed
+	// since the tray loaded its config.
+	if _, err := config.Update(func(cfg *config.Config) error {
+		for _, a := range cfg.OAuthAccounts {
+			if a.ID == account.ID {
+				applyUsageToAccount(a, info)
+			}
 		}
+		return nil
+	}); err != nil {
+		log.Printf("[Usage] failed to save usage for %s: %v", account.Email, err)
 	}
-	config.Save(cfg)
+
+	// Keep the tray's in-memory copy in sync for the admin UI without firing
+	// the change hook (which would restart the proxy).
+	config.UpdateCurrent(func(cur *config.Config) {
+		if cur == nil {
+			return
+		}
+		for _, a := range cur.OAuthAccounts {
+			if a.ID == account.ID {
+				applyUsageToAccount(a, info)
+			}
+		}
+	})
 
 	return info, nil
+}
+
+// applyUsageToAccount copies the fields the usage API refreshed onto one
+// account. Callers apply it to both the on-disk config and the live copy.
+func applyUsageToAccount(a *config.OAuthAccount, info *UsageInfo) {
+	if a == nil || info == nil {
+		return
+	}
+	a.PlanTier = info.PlanTier
+	a.SessionPercent = info.SessionPercent
+	a.SessionResetAt = info.SessionResetAt
+	a.WeeklyPercent = info.WeeklyPercent
+	a.WeeklyResetAt = info.WeeklyResetAt
+	a.ReviewPercent = info.ReviewPercent
+	a.CreditsBalance = info.CreditsBalance
+	a.RateLimitResets = info.RateLimitResets
+	a.PercentUsed = info.PercentUsed
+	a.LastUsageCheck = info.LastUpdated
 }
 
 // isForbidden checks if an error is a 403 Forbidden response
@@ -334,7 +360,9 @@ func StartUsageRefreshLoop() {
 		defer ticker.Stop()
 
 		for range ticker.C {
-			cfg := config.Current()
+			// Load fresh so an account added in the tray or a token refreshed by
+			// the proxy is seen by this loop.
+			cfg := config.Load()
 
 			for _, account := range cfg.OAuthAccounts {
 				if account.Provider == "codex" && account.AccessToken != "" {

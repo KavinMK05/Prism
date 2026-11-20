@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"ollama-proxy/internal/platform"
@@ -354,15 +355,39 @@ type rawConfig struct {
 
 // Load reads config.json from the config dir, migrating legacy fields.
 func Load() *Config {
+	cfg, needsSave, err := loadConfigFile()
+	if err != nil {
+		cfg := defaultConfig()
+		normalizeConfig(cfg)
+		return cfg
+	}
+	if needsSave {
+		// Re-load under the write lock instead of saving the snapshot above:
+		// another process may have refreshed a token since this read.
+		_, _ = Update(func(*Config) error { return nil })
+	}
+	return cfg
+}
+
+// loadConfigFile reads and normalizes config.json. It reports whether the
+// migrations changed anything, so Load can persist them. A missing file yields
+// defaults; an unreadable or malformed file yields an error, which Update
+// treats as a hard failure instead of overwriting the user's config with
+// defaults.
+func loadConfigFile() (*Config, bool, error) {
 	cfg := defaultConfig()
 	data, err := os.ReadFile(getConfigPath())
 	if err != nil {
-		return cfg
+		if os.IsNotExist(err) {
+			normalizeConfig(cfg)
+			return cfg, false, nil
+		}
+		return nil, false, err
 	}
 
 	// First try to unmarshal into the new format
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return defaultConfig()
+		return nil, false, fmt.Errorf("invalid config.json: %w", err)
 	}
 
 	// Migration: if old "active_provider" field exists and "default_provider" is empty, migrate it
@@ -405,10 +430,13 @@ func Load() *Config {
 		needsSave = true
 	}
 
-	if needsSave {
-		Save(cfg)
-	}
+	normalizeConfig(cfg)
+	return cfg, needsSave, nil
+}
 
+// normalizeConfig fills in the defaults every reader relies on. Load and Update
+// both call it, so an in-memory Config handed to a caller is always complete.
+func normalizeConfig(cfg *Config) {
 	// Ensure IDs on built-in providers
 	if cfg.OllamaCloud != nil {
 		cfg.OllamaCloud.ID = "ollama_cloud"
@@ -439,11 +467,81 @@ func Load() *Config {
 	} else {
 		cfg.Search = search.MergeConfig(cfg.Search)
 	}
-	return cfg
 }
 
-// Save writes config.json to the config dir.
+// Save writes config.json to the config dir. Writes are serialized in this
+// process and across processes (config.json.lock), and the file is replaced by
+// rename so a crash can never leave a truncated config behind.
 func Save(cfg *Config) error {
+	configSaveMu.Lock()
+	defer configSaveMu.Unlock()
+
+	unlock, err := lockConfigFile()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	return writeConfigAtomic(cfg)
+}
+
+// Update applies fn to the freshest config.json and writes the result under the
+// same cross-process lock. Use it for read-modify-write changes instead of
+// Save(cfg) on a snapshot, which can clobber a field another process changed in
+// the meantime. fn must not call Load or Save: both would re-enter the lock.
+func Update(fn func(*Config) error) (*Config, error) {
+	configSaveMu.Lock()
+	defer configSaveMu.Unlock()
+
+	unlock, err := lockConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	cfg, _, err := loadConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(cfg); err != nil {
+		return nil, err
+	}
+	if err := writeConfigAtomic(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// configSaveMu serializes writers inside this process. The lock file serializes
+// writers across processes, which matters because the tray and the --serve
+// proxy both persist config.json.
+var configSaveMu sync.Mutex
+
+// lockConfigFile takes an exclusive lock on config.json.lock and returns the
+// release function. The lock lives beside config.json so it follows the same
+// platform-specific config directory.
+func lockConfigFile() (func(), error) {
+	dir := platform.ConfigDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "config.json.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockHandle(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = unlockHandle(f)
+		_ = f.Close()
+	}, nil
+}
+
+// writeConfigAtomic replaces config.json by rename. Callers hold configSaveMu
+// and the config file lock.
+func writeConfigAtomic(cfg *Config) error {
 	dir := platform.ConfigDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -452,7 +550,30 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(getConfigPath(), data, 0600)
+
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, getConfigPath())
 }
 
 func defaultConfig() *Config {

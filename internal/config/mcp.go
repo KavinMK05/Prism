@@ -98,6 +98,10 @@ type MCPOAuthToken struct {
 	Issuer           string   `json:"issuer,omitempty"`
 	RegistrationMode string   `json:"registration_mode,omitempty"` // preregistered | cimd | dcr
 	AuthorizedAt     int64    `json:"authorized_at,omitempty"`
+	// IssuedAt is when the current access token was issued. It lets Prism
+	// refresh ahead by the shorter of five minutes and half the token's
+	// lifetime, so a short-lived token is not refreshed the moment it arrives.
+	IssuedAt int64 `json:"issued_at,omitempty"`
 }
 
 // IsExpired reports whether the access token is expired, with a 60s buffer.
@@ -109,6 +113,27 @@ func (t *MCPOAuthToken) IsExpired() bool {
 		return false // no expiry advertised; assume it is valid until a 401 says otherwise
 	}
 	return time.Now().Unix() > t.ExpiresAt-60
+}
+
+// NeedsRefresh reports whether the access token is close enough to expiry to
+// refresh before the next request. Providers that rotate refresh tokens (Notion
+// does on every refresh) revoke the grant when the same token is replayed, so
+// refreshing in the middle of a parallel burst is risky: get ahead of it.
+//
+// The window is five minutes, or half the token's lifetime when that is
+// shorter. Tokens without an expiry are left alone until a 401 forces a
+// refresh, because guessing would spend a rotating token for no reason.
+func (t *MCPOAuthToken) NeedsRefresh() bool {
+	if t == nil || t.AccessToken == "" || t.RefreshToken == "" || t.ExpiresAt == 0 {
+		return false
+	}
+	window := int64(5 * 60)
+	if t.IssuedAt > 0 {
+		if lifetime := t.ExpiresAt - t.IssuedAt; lifetime > 0 && lifetime/2 < window {
+			window = lifetime / 2
+		}
+	}
+	return time.Now().Unix() >= t.ExpiresAt-window
 }
 
 // MCPServerConfig describes one upstream MCP server Prism connects to.

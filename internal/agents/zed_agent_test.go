@@ -79,12 +79,16 @@ func TestBuildZedModels(t *testing.T) {
 }
 
 func TestInstallZedConfigLifecycle(t *testing.T) {
-	tmp := setTestHomeAndConfigDir(t)
+	setTestHomeAndConfigDir(t)
 	writePrismConfig(t, `{"default_provider":"ollama_cloud","oauth_accounts":[{"id":"codex-1","provider":"codex"}]}`)
 
 	// Pre-existing user settings in JSONC form: comments, a custom provider,
-	// and a top-level key Prism must preserve.
-	settingsPath := filepath.Join(tmp, "Zed", "settings.json")
+	// and a top-level key Prism must preserve. Use the production path helper
+	// so the test follows the platform-specific Zed location.
+	settingsPath := zedConfigPath()
+	if settingsPath == "" {
+		t.Fatal("cannot determine the Zed settings path")
+	}
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
 		t.Fatal(err)
 	}

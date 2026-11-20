@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -211,9 +212,6 @@ func handleMCPServerAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	mcpCfg := cfg.EnsureMCP()
-
 	srv := &config.MCPServerConfig{
 		Name:             strings.TrimSpace(req.Name),
 		Source:           firstNonEmptyString(req.Source, config.MCPSourceManual),
@@ -249,24 +247,38 @@ func handleMCPServerAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), 400)
 		return
 	}
-	srv.ID = cfg.UniqueMCPID(config.MCPIDFromName(srv.Name))
 	if srv.AuthMode == "" {
 		if len(srv.Headers) > 0 {
 			srv.AuthMode = config.MCPAuthStatic
+		} else if srv.Transport != config.MCPTransportStdio && srv.URL != "" {
+			// Registry entries do not carry an auth mode, so ask the endpoint
+			// itself. Keep the probe short: a public server must still add
+			// quickly when it does not answer OAuth discovery.
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			srv.AuthMode = mcp.DetectAuthMode(ctx, srv)
+			cancel()
+			if srv.AuthMode == "" {
+				srv.AuthMode = config.MCPAuthNone
+			}
 		} else {
 			srv.AuthMode = config.MCPAuthNone
 		}
 	}
-	mcpCfg.Servers = append(mcpCfg.Servers, srv)
 
-	if err := config.Save(cfg); err != nil {
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		srv.ID = fresh.UniqueMCPID(config.MCPIDFromName(srv.Name))
+		m := fresh.EnsureMCP()
+		m.Servers = append(m.Servers, srv)
+		return nil
+	})
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
 	// Swap the live config in this process; the proxy picks the server up on
 	// its next restart, and the change hook performs that restart.
 	config.SetCurrent(cfg)
-	encodeJSON(w, map[string]interface{}{"status": "ok", "id": srv.ID})
+	encodeJSON(w, map[string]interface{}{"status": "ok", "id": srv.ID, "auth_mode": srv.AuthMode})
 }
 
 func handleMCPServerUpdate(w http.ResponseWriter, r *http.Request) {
@@ -279,87 +291,103 @@ func handleMCPServerUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	srv := cfg.FindMCPServer(req.ID)
-	if srv == nil {
+	apply := func(srv *config.MCPServerConfig) error {
+		if name := strings.TrimSpace(req.Name); name != "" {
+			srv.Name = name
+		}
+		if req.Transport != "" {
+			srv.Transport = req.Transport
+		}
+		if req.Command != "" {
+			srv.Command = strings.TrimSpace(req.Command)
+		}
+		if req.Args != nil {
+			srv.Args = req.Args
+		}
+		if req.Env != nil {
+			srv.Env = mergeSecretMaps(srv.Env, req.Env)
+		}
+		if req.Cwd != "" {
+			srv.Cwd = strings.TrimSpace(req.Cwd)
+		}
+		if req.URL != "" {
+			srv.URL = strings.TrimSpace(req.URL)
+		}
+		if req.Headers != nil {
+			srv.Headers = mergeSecretMaps(srv.Headers, req.Headers)
+		}
+		if req.AuthMode != "" {
+			srv.AuthMode = req.AuthMode
+		}
+		if req.ToolAllowlist != nil {
+			srv.ToolAllowlist = req.ToolAllowlist
+		}
+		if req.SecretEnv != nil {
+			srv.SecretEnv = req.SecretEnv
+		}
+		if req.RegistrySourceID != "" {
+			srv.RegistrySourceID = req.RegistrySourceID
+		}
+		if req.RegistryVersion != "" {
+			srv.RegistryVersion = req.RegistryVersion
+		}
+		if req.RegistryName != "" {
+			srv.RegistryName = req.RegistryName
+		}
+		if req.Publisher != "" {
+			srv.Publisher = req.Publisher
+		}
+		if req.Repository != "" {
+			srv.Repository = req.Repository
+		}
+		if req.IntegritySHA256 != "" {
+			srv.IntegritySHA256 = req.IntegritySHA256
+		}
+		if req.Verified != nil {
+			srv.Verified = *req.Verified
+		}
+		if req.Enabled != nil {
+			srv.Enabled = *req.Enabled
+		}
+		if req.OAuthClientID != "" {
+			if srv.OAuth == nil {
+				srv.OAuth = &config.MCPOAuthToken{}
+			}
+			srv.OAuth.ClientID = req.OAuthClientID
+			srv.OAuth.RegistrationMode = "preregistered"
+		}
+		if req.OAuthClientSecret != "" && !looksMaskedSecret(req.OAuthClientSecret) {
+			if srv.OAuth == nil {
+				srv.OAuth = &config.MCPOAuthToken{}
+			}
+			srv.OAuth.ClientSecret = req.OAuthClientSecret
+		}
+		return config.ValidateMCPServer(srv)
+	}
+
+	var validationErr error
+	notFound := false
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		srv := fresh.FindMCPServer(req.ID)
+		if srv == nil {
+			notFound = true
+			return errors.New("unknown MCP server")
+		}
+		if err := apply(srv); err != nil {
+			validationErr = err
+			return err
+		}
+		return nil
+	})
+	if notFound {
 		writeJSONError(w, "unknown MCP server", 404)
 		return
 	}
-	if name := strings.TrimSpace(req.Name); name != "" {
-		srv.Name = name
-	}
-	if req.Transport != "" {
-		srv.Transport = req.Transport
-	}
-	if req.Command != "" {
-		srv.Command = strings.TrimSpace(req.Command)
-	}
-	if req.Args != nil {
-		srv.Args = req.Args
-	}
-	if req.Env != nil {
-		srv.Env = mergeSecretMaps(srv.Env, req.Env)
-	}
-	if req.Cwd != "" {
-		srv.Cwd = strings.TrimSpace(req.Cwd)
-	}
-	if req.URL != "" {
-		srv.URL = strings.TrimSpace(req.URL)
-	}
-	if req.Headers != nil {
-		srv.Headers = mergeSecretMaps(srv.Headers, req.Headers)
-	}
-	if req.AuthMode != "" {
-		srv.AuthMode = req.AuthMode
-	}
-	if req.ToolAllowlist != nil {
-		srv.ToolAllowlist = req.ToolAllowlist
-	}
-	if req.SecretEnv != nil {
-		srv.SecretEnv = req.SecretEnv
-	}
-	if req.RegistrySourceID != "" {
-		srv.RegistrySourceID = req.RegistrySourceID
-	}
-	if req.RegistryVersion != "" {
-		srv.RegistryVersion = req.RegistryVersion
-	}
-	if req.RegistryName != "" {
-		srv.RegistryName = req.RegistryName
-	}
-	if req.Publisher != "" {
-		srv.Publisher = req.Publisher
-	}
-	if req.Repository != "" {
-		srv.Repository = req.Repository
-	}
-	if req.IntegritySHA256 != "" {
-		srv.IntegritySHA256 = req.IntegritySHA256
-	}
-	if req.Verified != nil {
-		srv.Verified = *req.Verified
-	}
-	if req.Enabled != nil {
-		srv.Enabled = *req.Enabled
-	}
-	if req.OAuthClientID != "" {
-		if srv.OAuth == nil {
-			srv.OAuth = &config.MCPOAuthToken{}
-		}
-		srv.OAuth.ClientID = req.OAuthClientID
-		srv.OAuth.RegistrationMode = "preregistered"
-	}
-	if req.OAuthClientSecret != "" && !looksMaskedSecret(req.OAuthClientSecret) {
-		if srv.OAuth == nil {
-			srv.OAuth = &config.MCPOAuthToken{}
-		}
-		srv.OAuth.ClientSecret = req.OAuthClientSecret
-	}
-	if err := config.ValidateMCPServer(srv); err != nil {
-		writeJSONError(w, err.Error(), 400)
+	if validationErr != nil {
+		writeJSONError(w, validationErr.Error(), 400)
 		return
 	}
-	if err := config.Save(cfg); err != nil {
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
@@ -379,12 +407,19 @@ func handleMCPServerRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	if !cfg.RemoveMCPServer(req.ID) {
+	notFound := false
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		if !fresh.RemoveMCPServer(req.ID) {
+			notFound = true
+			return errors.New("unknown MCP server")
+		}
+		return nil
+	})
+	if notFound {
 		writeJSONError(w, "unknown MCP server", 404)
 		return
 	}
-	if err := config.Save(cfg); err != nil {
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
@@ -405,14 +440,21 @@ func handleMCPServerEnable(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	srv := cfg.FindMCPServer(req.ID)
-	if srv == nil {
+	notFound := false
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		srv := fresh.FindMCPServer(req.ID)
+		if srv == nil {
+			notFound = true
+			return errors.New("unknown MCP server")
+		}
+		srv.Enabled = req.Enabled
+		return nil
+	})
+	if notFound {
 		writeJSONError(w, "unknown MCP server", 404)
 		return
 	}
-	srv.Enabled = req.Enabled
-	if err := config.Save(cfg); err != nil {
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
@@ -627,12 +669,10 @@ func handleMCPRegistryCatalog(w http.ResponseWriter, r *http.Request) {
 
 // handleMCPRegistrySources lists, adds, updates, and enables registry sources.
 func handleMCPRegistrySources(w http.ResponseWriter, r *http.Request) {
-	cfg := config.Load()
-	mcpCfg := cfg.EnsureMCP()
-
 	switch r.Method {
 	case http.MethodGet:
-		encodeJSON(w, map[string]interface{}{"sources": registrySourceSummaries(mcpCfg.Registries)})
+		cfg := config.Load()
+		encodeJSON(w, map[string]interface{}{"sources": registrySourceSummaries(cfg.EnsureMCP().Registries)})
 	case http.MethodPost, http.MethodPut:
 		var req struct {
 			ID         string `json:"id"`
@@ -646,40 +686,55 @@ func handleMCPRegistrySources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.ID != "" || r.Method == http.MethodPut {
-			src := cfg.FindMCPRegistry(req.ID)
-			if src == nil {
+			var validationErr error
+			notFound := false
+			var srcID string
+			cfg, err := config.Update(func(fresh *config.Config) error {
+				src := fresh.FindMCPRegistry(req.ID)
+				if src == nil {
+					notFound = true
+					return errors.New("unknown registry source")
+				}
+				if req.Name != "" {
+					src.Name = strings.TrimSpace(req.Name)
+				}
+				if req.BaseURL != "" {
+					src.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+				}
+				if req.Enabled != nil {
+					src.Enabled = *req.Enabled
+					// The official registry is how a fresh install works at all.
+					if src.Builtin && !src.Enabled {
+						validationErr = errors.New("the official registry cannot be disabled")
+						return validationErr
+					}
+				}
+				if req.AuthHeader != "" && !looksMaskedAuthHeader(req.AuthHeader) {
+					src.AuthHeader = strings.TrimSpace(req.AuthHeader)
+				} else if req.AuthHeader == "" {
+					src.AuthHeader = ""
+				}
+				if err := config.ValidateMCPRegistrySource(src); err != nil {
+					validationErr = err
+					return err
+				}
+				srcID = src.ID
+				return nil
+			})
+			if notFound {
 				writeJSONError(w, "unknown registry source", 404)
 				return
 			}
-			if req.Name != "" {
-				src.Name = strings.TrimSpace(req.Name)
-			}
-			if req.BaseURL != "" {
-				src.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
-			}
-			if req.Enabled != nil {
-				src.Enabled = *req.Enabled
-				// The official registry is how a fresh install works at all.
-				if src.Builtin && !src.Enabled {
-					writeJSONError(w, "the official registry cannot be disabled", 400)
-					return
-				}
-			}
-			if req.AuthHeader != "" && !looksMaskedAuthHeader(req.AuthHeader) {
-				src.AuthHeader = strings.TrimSpace(req.AuthHeader)
-			} else if req.AuthHeader == "" {
-				src.AuthHeader = ""
-			}
-			if err := config.ValidateMCPRegistrySource(src); err != nil {
-				writeJSONError(w, err.Error(), 400)
+			if validationErr != nil {
+				writeJSONError(w, validationErr.Error(), 400)
 				return
 			}
-			if err := config.Save(cfg); err != nil {
+			if err != nil {
 				writeJSONError(w, "save failed: "+err.Error(), 500)
 				return
 			}
 			config.SetCurrent(cfg)
-			encodeJSON(w, map[string]interface{}{"status": "ok", "id": src.ID})
+			encodeJSON(w, map[string]interface{}{"status": "ok", "id": srcID})
 			return
 		}
 
@@ -697,9 +752,13 @@ func handleMCPRegistrySources(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, err.Error(), 400)
 			return
 		}
-		src.ID = cfg.UniqueMCPRegistryID(config.MCPIDFromName(src.Name))
-		mcpCfg.Registries = append(mcpCfg.Registries, src)
-		if err := config.Save(cfg); err != nil {
+		cfg, err := config.Update(func(fresh *config.Config) error {
+			src.ID = fresh.UniqueMCPRegistryID(config.MCPIDFromName(src.Name))
+			m := fresh.EnsureMCP()
+			m.Registries = append(m.Registries, src)
+			return nil
+		})
+		if err != nil {
 			writeJSONError(w, "save failed: "+err.Error(), 500)
 			return
 		}
@@ -723,19 +782,26 @@ func handleMCPRegistrySourceRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	if !cfg.RemoveMCPRegistry(req.ID) {
+	notFound := false
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		if !fresh.RemoveMCPRegistry(req.ID) {
+			notFound = true
+			return errors.New("unknown registry source")
+		}
+		return nil
+	})
+	if notFound {
 		writeJSONError(w, "unknown registry source, or the official registry cannot be removed", 404)
+		return
+	}
+	if err != nil {
+		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
 	// Drop the source's cached catalog too: keeping rows for a registry the
 	// user just removed would leave its servers searchable.
 	if err := db.ClearMCPCatalogSource(req.ID); err != nil {
 		log.Printf("[admin] failed to clear catalog for %s: %v", req.ID, err)
-	}
-	if err := config.Save(cfg); err != nil {
-		writeJSONError(w, "save failed: "+err.Error(), 500)
-		return
 	}
 	config.SetCurrent(cfg)
 	encodeJSON(w, map[string]interface{}{"status": "ok"})
@@ -951,9 +1017,14 @@ func handleMCPAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// Remember that this server is OAuth-protected even before the flow
 	// finishes, so the panel shows the right controls.
 	if srv := cfg.FindMCPServer(req.ID); srv != nil && srv.AuthMode != config.MCPAuthOAuth {
-		srv.AuthMode = config.MCPAuthOAuth
-		if err := config.Save(cfg); err == nil {
-			config.SetCurrent(cfg)
+		updated, err := config.Update(func(fresh *config.Config) error {
+			if s := fresh.FindMCPServer(req.ID); s != nil {
+				s.AuthMode = config.MCPAuthOAuth
+			}
+			return nil
+		})
+		if err == nil {
+			config.SetCurrent(updated)
 		}
 	}
 	encodeJSON(w, map[string]interface{}{
@@ -1004,9 +1075,11 @@ func handleMCPAgentServers(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "unknown agent", 400)
 		return
 	}
-	cfg := config.Load()
-	cfg.SetAgentMCPServers(req.Agent, req.Servers)
-	if err := config.Save(cfg); err != nil {
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		fresh.SetAgentMCPServers(req.Agent, req.Servers)
+		return nil
+	})
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
@@ -1069,29 +1142,31 @@ func handleMCPSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid JSON: "+err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	mcpCfg := cfg.EnsureMCP()
-	if req.IdleTimeoutSec != nil {
-		seconds := *req.IdleTimeoutSec
-		if seconds < 30 {
-			seconds = 30
-		}
-		if seconds > 86400 {
-			seconds = 86400
-		}
-		mcpCfg.IdleTimeoutSec = seconds
-	}
 	if req.ClientIDMetadataURL != "" {
 		if err := config.ValidateBaseURL(req.ClientIDMetadataURL); err != nil {
 			writeJSONError(w, "invalid client metadata URL: "+err.Error(), 400)
 			return
 		}
 	}
-	mcpCfg.ClientIDMetadataURL = req.ClientIDMetadataURL
-	if req.AutoConnect != nil {
-		mcpCfg.AutoConnect = req.AutoConnect
-	}
-	if err := config.Save(cfg); err != nil {
+	cfg, err := config.Update(func(fresh *config.Config) error {
+		mcpCfg := fresh.EnsureMCP()
+		if req.IdleTimeoutSec != nil {
+			seconds := *req.IdleTimeoutSec
+			if seconds < 30 {
+				seconds = 30
+			}
+			if seconds > 86400 {
+				seconds = 86400
+			}
+			mcpCfg.IdleTimeoutSec = seconds
+		}
+		mcpCfg.ClientIDMetadataURL = req.ClientIDMetadataURL
+		if req.AutoConnect != nil {
+			mcpCfg.AutoConnect = req.AutoConnect
+		}
+		return nil
+	})
+	if err != nil {
 		writeJSONError(w, "save failed: "+err.Error(), 500)
 		return
 	}
@@ -1201,6 +1276,9 @@ func preserveMCPSecrets(cur, next *config.Config) {
 			}
 			if srv.OAuth.ExpiresAt == 0 {
 				srv.OAuth.ExpiresAt = oldOAuth.ExpiresAt
+			}
+			if srv.OAuth.IssuedAt == 0 {
+				srv.OAuth.IssuedAt = oldOAuth.IssuedAt
 			}
 			if len(srv.OAuth.Scopes) == 0 {
 				srv.OAuth.Scopes = oldOAuth.Scopes

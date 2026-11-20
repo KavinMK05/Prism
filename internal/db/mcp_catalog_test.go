@@ -14,6 +14,7 @@ func initCatalogTestDB(t *testing.T) {
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
 	if err := os.MkdirAll(platform.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}

@@ -370,6 +370,7 @@ func TestMCPBInstallDirIsUnderConfig(t *testing.T) {
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
 	got := MCPBInstallDir("demo")
 	if !strings.Contains(got, filepath.Join("mcp", "bundles", "demo")) {
 		t.Errorf("unexpected install dir: %q", got)

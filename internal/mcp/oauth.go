@@ -234,9 +234,33 @@ func discoverProtectedResource(ctx context.Context, s *config.MCPServerConfig) (
 		lastErr = errors.New("no protected resource metadata found")
 	}
 	log.Printf("[MCP] %s: using resource origin as authorization server (%v)", s.ID, lastErr)
-	md := &ProtectedResourceMetadata{Resource: origin, AuthorizationServers: []string{origin}}
-	prmCache.Store(s.URL, cachedResourceMetadata{md: md, fetchedAt: time.Now()})
-	return md, nil
+	// Do not cache the guessed origin: it is only a fallback, and a failed
+	// probe must not pin a wrong authorization server for an hour. The real
+	// login path can retry discovery from scratch.
+	return &ProtectedResourceMetadata{Resource: origin, AuthorizationServers: []string{origin}}, nil
+}
+
+// DetectAuthMode classifies a remote endpoint that the registry did not label.
+// The official registry schema has no auth field: an entry like Notion's is
+// just a remote URL, so waiting for the user to press Connect is too late to
+// tell them the server needs OAuth. A successful RFC 9728/RFC 8414 discovery
+// is the only reliable signal, and it costs one unauthenticated probe.
+//
+// A stdio server authenticates through environment variables, and static
+// headers are already an explicit credential, so neither is probed. Callers
+// should bound ctx; a public endpoint that does not answer quickly still gets
+// added with the caller's default.
+func DetectAuthMode(ctx context.Context, s *config.MCPServerConfig) string {
+	if s == nil || s.Transport == config.MCPTransportStdio || strings.TrimSpace(s.URL) == "" {
+		return ""
+	}
+	if len(s.Headers) > 0 {
+		return config.MCPAuthStatic
+	}
+	if _, err := DiscoverAuth(ctx, s); err != nil {
+		return ""
+	}
+	return config.MCPAuthOAuth
 }
 
 // authChallenge performs an unauthenticated request to the MCP endpoint and
@@ -897,47 +921,51 @@ var errInvalidGrant = errors.New("authorization is no longer valid (invalid_gran
 
 // persistToken writes the token and its client registration into config.json.
 func persistToken(flow *oauthFlow, token *tokenResponse) error {
-	cfg := config.Load()
-	s := cfg.FindMCPServer(flow.serverID)
-	if s == nil {
-		return fmt.Errorf("server %q disappeared from the config", flow.serverID)
-	}
 	scopes := flow.scopes
 	if token.Scope != "" {
 		scopes = strings.Fields(token.Scope)
 	}
+	now := time.Now().Unix()
 	expiresAt := int64(0)
 	if token.ExpiresIn > 0 {
-		expiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix()
+		expiresAt = now + int64(token.ExpiresIn)
 	}
-	s.AuthMode = config.MCPAuthOAuth
-	s.OAuth = &config.MCPOAuthToken{
-		AccessToken:      token.AccessToken,
-		RefreshToken:     token.RefreshToken,
-		ExpiresAt:        expiresAt,
-		ClientID:         flow.clientID,
-		ClientSecret:     flow.clientSecret,
-		TokenAuthMethod:  flow.authMethod,
-		Scopes:           scopes,
-		Resource:         flow.resource,
-		ASURL:            flow.asURL,
-		Issuer:           flow.issuer,
-		RegistrationMode: flow.regMode,
-		AuthorizedAt:     time.Now().Unix(),
-	}
-	if flow.regMode == "dcr" {
-		cfg.EnsureMCP().Clients[flow.asURL] = &config.MCPClientRegistration{
+	_, err := config.Update(func(cfg *config.Config) error {
+		s := cfg.FindMCPServer(flow.serverID)
+		if s == nil {
+			return fmt.Errorf("server %q disappeared from the config", flow.serverID)
+		}
+		s.AuthMode = config.MCPAuthOAuth
+		s.OAuth = &config.MCPOAuthToken{
+			AccessToken:      token.AccessToken,
+			RefreshToken:     token.RefreshToken,
+			ExpiresAt:        expiresAt,
 			ClientID:         flow.clientID,
 			ClientSecret:     flow.clientSecret,
 			TokenAuthMethod:  flow.authMethod,
-			RedirectURI:      flow.redirectURI,
+			Scopes:           scopes,
+			Resource:         flow.resource,
+			ASURL:            flow.asURL,
 			Issuer:           flow.issuer,
-			RegistrationMode: "dcr",
-			RegisteredAt:     time.Now().Unix(),
+			RegistrationMode: flow.regMode,
+			AuthorizedAt:     now,
+			IssuedAt:         now,
 		}
-	}
+		if flow.regMode == "dcr" {
+			cfg.EnsureMCP().Clients[flow.asURL] = &config.MCPClientRegistration{
+				ClientID:         flow.clientID,
+				ClientSecret:     flow.clientSecret,
+				TokenAuthMethod:  flow.authMethod,
+				RedirectURI:      flow.redirectURI,
+				Issuer:           flow.issuer,
+				RegistrationMode: "dcr",
+				RegisteredAt:     now,
+			}
+		}
+		return nil
+	})
 	asmdCache.Delete(flow.asURL)
-	return config.Save(cfg)
+	return err
 }
 
 // Logout revokes the token when the authorization server supports revocation
@@ -948,14 +976,18 @@ func Logout(ctx context.Context, serverID string) error {
 	if s == nil {
 		return fmt.Errorf("unknown MCP server %q", serverID)
 	}
-	if s.OAuth == nil || s.OAuth.AccessToken == "" {
+	if s.OAuth == nil || (s.OAuth.AccessToken == "" && s.OAuth.RefreshToken == "") {
 		return nil
 	}
 	token := *s.OAuth
 	if token.ASURL != "" {
 		if asmd, err := discoverASMetadata(ctx, token.ASURL); err == nil && asmd.RevocationEndpoint != "" {
 			form := url.Values{}
-			form.Set("token", token.AccessToken)
+			revoke := token.AccessToken
+			if revoke == "" {
+				revoke = token.RefreshToken
+			}
+			form.Set("token", revoke)
 			if token.RefreshToken != "" {
 				form.Set("token_type_hint", "refresh_token")
 			}
@@ -964,11 +996,13 @@ func Logout(ctx context.Context, serverID string) error {
 			}
 		}
 	}
-	cfg = config.Load()
-	if target := cfg.FindMCPServer(serverID); target != nil {
-		target.OAuth = nil
-	}
-	return config.Save(cfg)
+	_, err := config.Update(func(cfg *config.Config) error {
+		if target := cfg.FindMCPServer(serverID); target != nil {
+			target.OAuth = nil
+		}
+		return nil
+	})
+	return err
 }
 
 func postRevocation(ctx context.Context, endpoint string, form url.Values, token config.MCPOAuthToken) error {
@@ -1000,10 +1034,22 @@ func postRevocation(ctx context.Context, endpoint string, form url.Values, token
 
 // -- runtime token access --
 
-// bearerToken returns a valid access token for a server, refreshing it when the
-// stored one has expired. It is the only piece the MCP gateway needs from the
-// OAuth layer.
+// bearerToken returns a valid access token for a server, refreshing it when it
+// is close to expiry. Refreshes are serialized per server: providers that
+// rotate refresh tokens (Notion rotates on every refresh) revoke the whole
+// grant when a retired token is replayed, so two goroutines must never refresh
+// the same server at once.
 func (m *Manager) bearerToken(ctx context.Context, serverID string) (string, error) {
+	lock := m.refreshLock(serverID)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.bearerTokenLocked(ctx, serverID)
+}
+
+// bearerTokenLocked reads and refreshes one server's token. The caller holds
+// the server's refresh lock, so a token saved by another refresh is visible
+// here and no two goroutines read and write the same token at once.
+func (m *Manager) bearerTokenLocked(ctx context.Context, serverID string) (string, error) {
 	cfg := m.cfg()
 	if cfg == nil {
 		return "", &AuthRequiredError{ServerID: serverID, Message: "no configuration loaded"}
@@ -1015,46 +1061,106 @@ func (m *Manager) bearerToken(ctx context.Context, serverID string) (string, err
 	if s.OAuth == nil || s.OAuth.AccessToken == "" {
 		return "", &AuthRequiredError{ServerID: serverID, Message: "this server has not been authorized yet"}
 	}
-	if !s.OAuth.IsExpired() {
-		return s.OAuth.AccessToken, nil
+
+	current := s.OAuth.AccessToken
+	if !s.OAuth.NeedsRefresh() {
+		if s.OAuth.IsExpired() && s.OAuth.RefreshToken == "" {
+			return "", &AuthRequiredError{ServerID: serverID, Message: "the access token expired and no refresh token is stored"}
+		}
+		return current, nil
 	}
-	return m.refreshOAuthToken(ctx, s)
+	if s.OAuth.RefreshToken == "" {
+		return "", &AuthRequiredError{ServerID: serverID, Message: "the access token expired and no refresh token is stored"}
+	}
+
+	expired := s.OAuth.IsExpired()
+	token, err := m.refreshOAuthTokenLocked(ctx, s)
+	if err != nil && !expired {
+		// A transient failure during a proactive refresh should not turn into
+		// an outage while the current token still works. A terminal
+		// invalid_grant must still reach the caller so the UI asks for a new
+		// sign-in instead of replaying a revoked token.
+		var authErr *AuthRequiredError
+		if !errors.As(err, &authErr) {
+			return current, nil
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
-// refreshOAuthToken exchanges the refresh token for a new access token and
-// persists it. A rejected refresh token (invalid_grant) clears the stored
-// credentials so the UI shows the server as needing authorization again.
-func (m *Manager) refreshOAuthToken(ctx context.Context, s *config.MCPServerConfig) (string, error) {
+// refreshTokenAfterAuthError refreshes once after an upstream 401/403. If
+// another caller already replaced the rejected access token, it returns that
+// token without spending the refresh token again.
+func (m *Manager) refreshTokenAfterAuthError(ctx context.Context, serverID, rejected string) (string, error) {
+	lock := m.refreshLock(serverID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	cfg := m.cfg()
+	if cfg == nil {
+		return "", &AuthRequiredError{ServerID: serverID, Message: "no configuration loaded"}
+	}
+	s := cfg.FindMCPServer(serverID)
+	if s == nil || s.OAuth == nil {
+		return "", &AuthRequiredError{ServerID: serverID, Message: "this server has not been authorized yet"}
+	}
+	if s.OAuth.AccessToken != "" && s.OAuth.AccessToken != rejected {
+		return s.OAuth.AccessToken, nil
+	}
+	if s.OAuth.RefreshToken == "" {
+		return "", &AuthRequiredError{ServerID: serverID, Message: "the server rejected the token and no refresh token is stored"}
+	}
+	return m.refreshOAuthTokenLocked(ctx, s)
+}
+
+// refreshOAuthTokenLocked exchanges the refresh token for a new access token
+// and persists it. The caller must hold the server's refresh lock. A rejected
+// refresh token (invalid_grant) clears only the exact credential that failed:
+// a concurrent loser must never delete a token another refresh just saved.
+func (m *Manager) refreshOAuthTokenLocked(ctx context.Context, s *config.MCPServerConfig) (string, error) {
 	if s.OAuth == nil || s.OAuth.RefreshToken == "" {
 		return "", &AuthRequiredError{ServerID: s.ID, Message: "the access token expired and no refresh token is stored"}
 	}
+	sentRefresh := s.OAuth.RefreshToken
 	asmd, err := discoverASMetadata(ctx, s.OAuth.ASURL)
 	if err != nil {
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", s.OAuth.RefreshToken)
+	form.Set("refresh_token", sentRefresh)
 	if s.OAuth.Resource != "" {
 		form.Set("resource", s.OAuth.Resource)
 	}
 	token, err := postTokenRequest(ctx, asmd.TokenEndpoint, form, s.OAuth.ClientID, s.OAuth.ClientSecret, s.OAuth.TokenAuthMethod)
 	if err != nil {
 		if errors.Is(err, errInvalidGrant) {
-			if cerr := clearServerToken(s.ID); cerr != nil {
+			cleared, cerr := clearServerTokenIfCurrent(s.ID, sentRefresh)
+			if cerr != nil {
 				log.Printf("[MCP] %s: failed to clear rejected token: %v", s.ID, cerr)
+			}
+			if !cleared {
+				if current := m.currentAccessToken(s.ID); current != "" && current != s.OAuth.AccessToken {
+					// Another refresh already replaced the credential that failed.
+					return current, nil
+				}
 			}
 			return "", &AuthRequiredError{ServerID: s.ID, Message: "authorization expired; sign in again"}
 		}
 		return "", err
 	}
+
+	now := time.Now().Unix()
 	expiresAt := int64(0)
 	if token.ExpiresIn > 0 {
-		expiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix()
+		expiresAt = now + int64(token.ExpiresIn)
 	}
 	refresh := token.RefreshToken
 	if refresh == "" {
-		refresh = s.OAuth.RefreshToken
+		refresh = sentRefresh
 	}
 	updated := &config.MCPOAuthToken{
 		AccessToken:      token.AccessToken,
@@ -1069,23 +1175,57 @@ func (m *Manager) refreshOAuthToken(ctx context.Context, s *config.MCPServerConf
 		Issuer:           s.OAuth.Issuer,
 		RegistrationMode: s.OAuth.RegistrationMode,
 		AuthorizedAt:     s.OAuth.AuthorizedAt,
+		IssuedAt:         now,
 	}
-	if err := saveServerToken(s.ID, updated); err != nil {
+	if err := saveServerToken(s.ID, sentRefresh, updated); err != nil {
+		if errors.Is(err, errStaleToken) {
+			if current := m.currentAccessToken(s.ID); current != "" {
+				// Another refresh won the race. Use its token, not ours.
+				return current, nil
+			}
+		}
 		log.Printf("[MCP] %s: refreshed token could not be saved: %v", s.ID, err)
+		// Keep the rotated token in this process even when the disk write
+		// failed, so a follow-up request does not replay the retired token.
+		setCurrentServerToken(s.ID, updated)
 	}
 	return updated.AccessToken, nil
 }
 
-// saveServerToken persists a refreshed token and keeps the calling process's
-// in-memory config in sync.
-func saveServerToken(serverID string, token *config.MCPOAuthToken) error {
-	cfg := config.Load()
-	s := cfg.FindMCPServer(serverID)
-	if s == nil {
-		return fmt.Errorf("unknown MCP server %q", serverID)
+// currentAccessToken returns the live access token for a server, if any.
+func (m *Manager) currentAccessToken(serverID string) string {
+	cfg := m.cfg()
+	if cfg == nil {
+		return ""
 	}
-	s.OAuth = token
-	if err := config.Save(cfg); err != nil {
+	s := cfg.FindMCPServer(serverID)
+	if s == nil || s.OAuth == nil {
+		return ""
+	}
+	return s.OAuth.AccessToken
+}
+
+var errStaleToken = errors.New("a newer OAuth token was persisted by another refresh")
+
+// saveServerToken persists a refreshed token with compare-and-set semantics:
+// expectedRefresh is the token that was sent to the endpoint, and the write is
+// skipped when another refresh already replaced it. It then keeps the calling
+// process's live config in sync.
+func saveServerToken(serverID, expectedRefresh string, token *config.MCPOAuthToken) error {
+	_, err := config.Update(func(cfg *config.Config) error {
+		s := cfg.FindMCPServer(serverID)
+		if s == nil {
+			return fmt.Errorf("unknown MCP server %q", serverID)
+		}
+		if expectedRefresh != "" {
+			if s.OAuth == nil || s.OAuth.RefreshToken != expectedRefresh {
+				return errStaleToken
+			}
+		}
+		s.OAuth = token
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	config.UpdateCurrent(func(cur *config.Config) {
@@ -1101,23 +1241,53 @@ func saveServerToken(serverID string, token *config.MCPOAuthToken) error {
 	return nil
 }
 
-func clearServerToken(serverID string) error {
-	cfg := config.Load()
-	if s := cfg.FindMCPServer(serverID); s != nil {
+// clearServerTokenIfCurrent clears a server's credentials only when the stored
+// refresh token is still the one that failed. It reports whether it cleared
+// anything, so a stale loser can leave a newer token alone.
+func clearServerTokenIfCurrent(serverID, expectedRefresh string) (bool, error) {
+	cleared := false
+	_, err := config.Update(func(cfg *config.Config) error {
+		s := cfg.FindMCPServer(serverID)
+		if s == nil || s.OAuth == nil {
+			return nil
+		}
+		if expectedRefresh != "" && s.OAuth.RefreshToken != expectedRefresh {
+			return nil
+		}
 		s.OAuth = nil
+		cleared = true
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-	if err := config.Save(cfg); err != nil {
-		return err
+	if cleared {
+		config.UpdateCurrent(func(cur *config.Config) {
+			if cur == nil {
+				return
+			}
+			if cs := cur.FindMCPServer(serverID); cs != nil {
+				cs.OAuth = nil
+			}
+		})
 	}
+	return cleared, nil
+}
+
+// setCurrentServerToken mirrors a token into the live config without touching
+// disk. It is the fallback when the atomic save fails but the endpoint has
+// already rotated the refresh token.
+func setCurrentServerToken(serverID string, token *config.MCPOAuthToken) {
 	config.UpdateCurrent(func(cur *config.Config) {
 		if cur == nil {
 			return
 		}
 		if cs := cur.FindMCPServer(serverID); cs != nil {
-			cs.OAuth = nil
+			cp := *token
+			cp.Scopes = append([]string(nil), token.Scopes...)
+			cs.OAuth = &cp
 		}
 	})
-	return nil
 }
 
 // -- helpers --

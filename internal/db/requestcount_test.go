@@ -10,8 +10,9 @@ import (
 
 func TestRequestCountSince(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("APPDATA", dir) // Windows
-	t.Setenv("HOME", dir)    // macOS
+	t.Setenv("APPDATA", dir)         // Windows
+	t.Setenv("HOME", dir)            // macOS
+	t.Setenv("XDG_CONFIG_HOME", dir) // Linux
 	if err := os.MkdirAll(platform.ConfigDir(), 0755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}

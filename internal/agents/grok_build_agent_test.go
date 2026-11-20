@@ -19,6 +19,7 @@ func setTestHomeAndConfigDir(t *testing.T) string {
 	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("HOME", tmp)
 	t.Setenv("APPDATA", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
 	// Empryo reads its global config from the Local app-data folder on Windows.
 	t.Setenv("LOCALAPPDATA", tmp)
 	return tmp

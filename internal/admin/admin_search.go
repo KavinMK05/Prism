@@ -70,8 +70,10 @@ func handleSearchConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			sc.CustomProviders = newList
 		}
-		c.Search = sc
-		if err := config.Save(c); err != nil {
+		if _, err := config.Update(func(fresh *config.Config) error {
+			fresh.Search = sc
+			return nil
+		}); err != nil {
 			writeJSONError(w, "save failed: "+err.Error(), 500)
 			return
 		}

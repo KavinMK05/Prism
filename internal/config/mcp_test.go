@@ -18,6 +18,9 @@ func isolateConfigDir(t *testing.T) string {
 	t.Setenv("APPDATA", tmp)
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	// Linux reads XDG_CONFIG_HOME first. Without this, tests would write to
+	// the developer's real ~/.config/prism/config.json.
+	t.Setenv("XDG_CONFIG_HOME", tmp)
 	return tmp
 }
 

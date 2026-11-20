@@ -523,11 +523,12 @@ func SetAgentAutoSync(agentID string, enabled bool) error {
 	if !isKnownAgentID(agentID) {
 		return fmt.Errorf("unknown agent: %s", agentID)
 	}
-	cfg := config.Load()
-	integrations := cfg.EnsureAgentIntegrations()
-	integrations.AutoSync[agentID] = enabled
-	integrations.AutoSyncMigrated = true
-	if err := config.Save(cfg); err != nil {
+	if _, err := config.Update(func(fresh *config.Config) error {
+		integrations := fresh.EnsureAgentIntegrations()
+		integrations.AutoSync[agentID] = enabled
+		integrations.AutoSyncMigrated = true
+		return nil
+	}); err != nil {
 		return err
 	}
 	config.UpdateCurrent(func(current *config.Config) {
@@ -547,8 +548,7 @@ func SetAgentAutoSync(agentID string, enabled bool) error {
 // disabled until the user clicks Setup.
 func InitializeAutoSync() error {
 	cfg := config.Load()
-	integrations := cfg.EnsureAgentIntegrations()
-	if integrations.AutoSyncMigrated {
+	if cfg.EnsureAgentIntegrations().AutoSyncMigrated {
 		return nil
 	}
 
@@ -560,15 +560,21 @@ func InitializeAutoSync() error {
 			autoSync[id] = IsAgentActive(id)
 		}
 	}
-	integrations.AutoSync = autoSync
-	integrations.AutoSyncMigrated = true
-	if err := config.Save(cfg); err != nil {
+	if _, err := config.Update(func(fresh *config.Config) error {
+		integrations := fresh.EnsureAgentIntegrations()
+		integrations.AutoSync = autoSync
+		integrations.AutoSyncMigrated = true
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to initialize agent auto-sync: %w", err)
 	}
 	config.UpdateCurrent(func(current *config.Config) {
-		if current != nil {
-			current.AgentIntegrations = cfg.AgentIntegrations
+		if current == nil {
+			return
 		}
+		integrations := current.EnsureAgentIntegrations()
+		integrations.AutoSync = autoSync
+		integrations.AutoSyncMigrated = true
 	})
 	return nil
 }
