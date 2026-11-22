@@ -1125,7 +1125,14 @@ func (m *Manager) refreshOAuthTokenLocked(ctx context.Context, s *config.MCPServ
 		return "", &AuthRequiredError{ServerID: s.ID, Message: "the access token expired and no refresh token is stored"}
 	}
 	sentRefresh := s.OAuth.RefreshToken
-	asmd, err := discoverASMetadata(ctx, s.OAuth.ASURL)
+	// Detach the exchange from the caller. An MCP client may disconnect while
+	// the refresh is in flight, and providers that rotate refresh tokens
+	// (Notion does on every exchange) retire the sent token as soon as they
+	// accept the request. Canceling here would lose the rotated token and force
+	// the user through a new sign-in; postTokenRequest still applies its own
+	// timeout, so the exchange cannot hang.
+	refreshCtx := context.WithoutCancel(ctx)
+	asmd, err := discoverASMetadata(refreshCtx, s.OAuth.ASURL)
 	if err != nil {
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
@@ -1135,7 +1142,7 @@ func (m *Manager) refreshOAuthTokenLocked(ctx context.Context, s *config.MCPServ
 	if s.OAuth.Resource != "" {
 		form.Set("resource", s.OAuth.Resource)
 	}
-	token, err := postTokenRequest(ctx, asmd.TokenEndpoint, form, s.OAuth.ClientID, s.OAuth.ClientSecret, s.OAuth.TokenAuthMethod)
+	token, err := postTokenRequest(refreshCtx, asmd.TokenEndpoint, form, s.OAuth.ClientID, s.OAuth.ClientSecret, s.OAuth.TokenAuthMethod)
 	if err != nil {
 		if errors.Is(err, errInvalidGrant) {
 			cleared, cerr := clearServerTokenIfCurrent(s.ID, sentRefresh)
@@ -1147,6 +1154,11 @@ func (m *Manager) refreshOAuthTokenLocked(ctx context.Context, s *config.MCPServ
 					// Another refresh already replaced the credential that failed.
 					return current, nil
 				}
+			} else {
+				// Without this line the credential disappears from config.json
+				// with no trace, which makes "it asked me to sign in again"
+				// impossible to diagnose after the fact.
+				log.Printf("[MCP] %s: refresh token was rejected; cleared stored credentials", s.ID)
 			}
 			return "", &AuthRequiredError{ServerID: s.ID, Message: "authorization expired; sign in again"}
 		}

@@ -259,6 +259,64 @@ func TestProactiveInvalidGrantIsTerminal(t *testing.T) {
 	}
 }
 
+// A client disconnect must not cancel a refresh that already reached the
+// authorization server. Notion retires the refresh token as soon as it accepts
+// the exchange, so aborting the response loses the only usable credential and
+// the next attempt is invalid_grant.
+func TestRefreshSurvivesCallerCancellation(t *testing.T) {
+	isolateMCPConfig(t)
+	as := newRotatingAS(t, "rt-0")
+	as.blockFirst = true
+	publishRefreshFixture(t, as.URL, "at-0", "rt-0")
+
+	mgr := NewManager(config.Current)
+	t.Cleanup(mgr.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type result struct {
+		token string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		token, err := mgr.bearerToken(ctx, "fake")
+		done <- result{token: token, err: err}
+	}()
+
+	select {
+	case <-as.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the refresh never reached the token endpoint")
+	}
+
+	// The caller goes away while the token endpoint is still working, exactly
+	// as an MCP client that closes its connection after listing tools.
+	cancel()
+	close(as.release)
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("refresh was canceled by the caller: %v", r.err)
+		}
+		if r.token != "at-1" {
+			t.Errorf("token = %q, want at-1", r.token)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bearerToken did not return")
+	}
+
+	stored := config.Load().FindMCPServer("fake")
+	if stored == nil || stored.OAuth == nil {
+		t.Fatal("the rotated token was not persisted")
+	}
+	if stored.OAuth.AccessToken != "at-1" || stored.OAuth.RefreshToken != "rt-1" {
+		t.Errorf("stored token = %+v, want at-1/rt-1", stored.OAuth)
+	}
+}
+
 // A 401 from the upstream must force one refresh and replay the request once.
 func TestHTTPTransportRefreshesOn401AndRetriesOnce(t *testing.T) {
 	var mu sync.Mutex
